@@ -101,6 +101,15 @@ When the user says to prepare for imminent compaction:
 4. commit the completed persistence pass unless the work is deliberately
    mid-surgery
 
+After any major completed pass, assume compaction may be imminent even if the
+user did not say so yet:
+
+1. run `tools/heimdall_prepare_compaction.py`
+2. sync only the persistent state that genuinely changed
+3. rerun the helper
+4. commit the persistence pass before moving on unless the work is
+   deliberately mid-surgery
+
 ## Operating Discipline
 
 - Before substantial edits, restate the current mechanism and intended change.
