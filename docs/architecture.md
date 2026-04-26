@@ -420,6 +420,10 @@ Suggested generic env surface:
 - `GC_ACCESS_BASE_URL=https://heimdall.gamecult.org`
 - `GC_ACCESS_INTERNAL_URL=http://127.0.0.1:4100`
 - `GC_ACCESS_SESSION_SECRET=...`
+- `GC_ACCESS_SIGNING_PRIVATE_KEY_PEM=...`
+- `GC_ACCESS_SIGNING_KEY_ID=...`
+- `GC_ACCESS_SESSION_TTL_SECONDS=3600`
+- `GC_ACCESS_STATE_TTL_SECONDS=600`
 - `GC_ACCESS_PROVIDER_DISCORD_CLIENT_ID=...`
 - `GC_ACCESS_PROVIDER_DISCORD_CLIENT_SECRET=...`
 - `GC_ACCESS_PROVIDER_DISCORD_BOT_TOKEN=...`
@@ -437,6 +441,10 @@ Suggested generic env surface:
 - `GC_ACCESS_PROVIDER_FAILURE_GRACE_SECONDS=3600`
 
 Only configure the providers Heimdall actually owns for a given deployment.
+
+If `GC_ACCESS_SIGNING_PRIVATE_KEY_PEM` is absent, the current skeleton falls
+back to an ephemeral dev signing key. That is acceptable for local iteration
+and absolutely not acceptable for real deployment.
 
 Per-app binding should live in code or profile config, not in cloned provider
 env namespaces. App-local binding and runtime config such as creator

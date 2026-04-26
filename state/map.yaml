@@ -1,7 +1,7 @@
 project:
   name: Heimdall
   status: active
-  phase: service_topology_alignment
+  phase: service_contract_skeleton
   premise: >
     Build Heimdall as one reusable GameCult auth authority service for OAuth,
     linked identities, local sessions, grants, and capability claims without
@@ -59,6 +59,7 @@ active_subgoals:
 
 accepted_design:
   - `docs/architecture.md` is the canonical shared architecture note.
+  - `docs/service-contract.md` records the concrete HTTP/JWKS contract of the landed skeleton.
   - `docs/app-profiles/*.md` are thin app bindings, not duplicate brains.
   - Heimdall owns provider OAuth, identity linking, signed local sessions, grants, entitlement refresh, capability evaluation, and audit events.
   - Host apps own their domain data, runtime state, and product-specific resources.
@@ -66,11 +67,13 @@ accepted_design:
   - A shared Heimdall store, if it exists, should hold auth/control-plane truth only.
   - Repixelizer is the first auth-blank hosted-app binding.
   - StreamPixels is the migration case that proves shared authority must not imply audience-data centralization.
+  - The first service skeleton is a standalone TypeScript/Fastify app with Ed25519 JWT signing, JWKS discovery, signed OAuth `state`, and app-profile-driven shared capability evaluation.
 
 landed_baseline:
   - Shared architecture extracted into its own repo and renamed to Heimdall.
   - Repixelizer and StreamPixels app-profile notes created.
   - Repo-local state, handoff, and compaction scaffolding created.
+  - Initial Heimdall service skeleton landed with discovery, JWKS, OAuth start/callback contract surfaces, and claim issuance scaffolding.
 
 rejected_paths:
   - name: per_app_auth_copy_paste
@@ -81,5 +84,5 @@ rejected_paths:
     reason: reusing auth mechanics does not justify centralizing app-domain audience or product data
 
 current_status:
-  summary: The shared hosted-access planning work now lives in Heimdall, a service-first auth authority repo with a Yggdrasil-hosted topology in mind. The key boundary is explicit: Heimdall owns OAuth, linking, grants, entitlement refresh, and signed claims; app-domain data remains app-owned; routine route authorization stays local after claim verification.
-  next_action: Start the first implementation-oriented pass by defining Heimdall's service contract and skeleton: OAuth start/callback surfaces, signed session and claim payloads, claim verification material for app backends, and the first Repixelizer and StreamPixels integration seams.
+  summary: Heimdall now has a first standalone service skeleton: TypeScript/Fastify runtime, Ed25519 JWT signing, JWKS/discovery exposure, signed OAuth start-state scaffolding, and app-profile-driven claim issuance for Repixelizer and StreamPixels. The key boundary still holds: Heimdall owns auth/control-plane authority and credential custody; app-domain bindings and runtime behavior remain app-owned.
+  next_action: Land durable persistence and the first real provider path on top of the skeleton: persisted signing key material, accounts/linked identities/grants, a real provider callback/token exchange slice, and the first end-to-end Repixelizer binding.

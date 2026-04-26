@@ -12,14 +12,19 @@ and the architecture note first, then fix this file.
 
 ## Current machine
 
-There is no landed auth machine here yet.
+There is now a first landed Heimdall skeleton.
 
 What exists right now is:
 
 - the shared architecture note
+- the concrete service contract in `docs/service-contract.md`
 - app-binding notes for Repixelizer and StreamPixels
-- explicit state/doctrine scaffolding so the plan does not immediately turn
-  into soup
+- a standalone TypeScript/Fastify service skeleton under `src/`
+- Ed25519 JWT signing plus JWKS/discovery exposure
+- OAuth start/callback contract surfaces with signed `state`
+- app-profile-driven claim issuance for Repixelizer and StreamPixels
+- explicit state/doctrine scaffolding so the plan does not immediately turn into
+  soup
 
 ## Primary objective
 
@@ -80,21 +85,33 @@ Goals:
 
 ### Phase 1: Contract and schema scaffold
 
-- define:
-  - signed claim/session payloads
-  - JWKS or equivalent verification surface
-  - OAuth `state` and callback contracts
-  - grant / entitlement / audit record shapes
-  - app profile / capability rule inputs and outputs
+Landed in the first pass:
+
+- signed claim/session payload shape
+- Ed25519 JWKS verification surface
+- OAuth `state` and callback contract surfaces
+- app profile / capability rule inputs and outputs
+
+Still to do in this phase:
+
+- durable grant / entitlement / audit record shapes
+- persistence-backed account and linked-identity schema details
 
 ### Phase 2: Heimdall service skeleton
 
-- create the first real service layout for:
-  - provider OAuth start/callback routes
-  - account / linked-identity persistence
-  - session issuance and refresh
-  - capability evaluation
-  - audit logging
+Landed in the first pass:
+
+- provider OAuth start route scaffolding
+- callback route scaffolding with signed-state validation
+- session/claim issuance contract
+- capability evaluation for shared app capabilities
+
+Next in this phase:
+
+- account / linked-identity persistence
+- provider token exchange and refresh
+- audit logging
+- non-ephemeral signing key handling
 
 ### Phase 3: Repixelizer binding
 

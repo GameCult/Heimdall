@@ -27,16 +27,22 @@ Do not trust this file for the exact live HEAD. Always check git.
 
 ## Current Orientation
 
-- this repo is still planning and service-contract work, not a landed auth
-  service yet
+- this repo now has an initial standalone Heimdall service skeleton
 - the canonical shared architecture lives in `docs/architecture.md`
+- the concrete HTTP/JWKS contract lives in `docs/service-contract.md`
 - app profiles live under `docs/app-profiles/`
 - the key boundary is explicit:
-  - Heimdall owns OAuth, linking, grants, entitlement refresh, and signed claim
-    issuance
+  - Heimdall owns OAuth, linking, managed provider credential custody, grants,
+    entitlement refresh, and signed claim issuance
   - app-domain data stays app-owned by default
   - host apps verify signed claims locally for routine auth instead of calling
     Heimdall on every request
+- the landed skeleton already exposes:
+  - `/.well-known/jwks.json`
+  - `/.well-known/heimdall-configuration`
+  - `/v1/oauth/{provider}/start`
+  - `/v1/oauth/{provider}/callback`
+  - `/v1/apps/{appSlug}/claims/issue`
 - Repixelizer is the first auth-blank binding target
 - StreamPixels is the migration target with useful existing auth seams that
   should not be flattened into mush
@@ -58,13 +64,12 @@ Do not trust this file for the exact live HEAD. Always check git.
 Do not continue implementation automatically from a rehydrate-only request.
 
 If the user asks to continue, the current next move is to define the first
-Heimdall service contract and skeleton:
+real provider/storage slice on top of the landed skeleton:
 
-- OAuth start/callback surfaces
-- signed session / claim shape
-- claim verification contract for app backends
-- entitlement/grant persistence boundaries
-- Repixelizer and StreamPixels integration seams
+- durable account / linked-identity / grant persistence
+- persisted signing key material
+- first real provider callback/token exchange path
+- first end-to-end Repixelizer binding
 
 without dragging app-domain data into the shared layer and without forcing
 per-request auth round-trips.
