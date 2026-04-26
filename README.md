@@ -1,6 +1,7 @@
 # Heimdall
 
-Heimdall is the planned shared auth authority for GameCult-hosted experiments.
+Heimdall is the shared auth authority taking shape for GameCult-hosted
+experiments.
 
 The point is painfully simple:
 
@@ -13,7 +14,7 @@ The point is painfully simple:
 
 ## Current Shape
 
-This repo now has an initial standalone service skeleton.
+This repo now has a stateful first slice instead of a decorative skeleton.
 
 Landed right now:
 
@@ -21,14 +22,20 @@ Landed right now:
 - Ed25519 JWT signing plus `/.well-known/jwks.json`
 - signed OAuth start-state scaffolding for Discord, Patreon, GitHub, Twitch,
   and YouTube
+- durable auth/control-plane storage with in-memory and Postgres backends
+- account, linked-identity, session, grant, entitlement snapshot, and audit
+  persistence
+- a real Discord OAuth callback path for the first Repixelizer access flow
 - app profile surfaces for Repixelizer and StreamPixels
 - signed claim issuance for app-local verification experiments
 
 Still not landed:
 
-- provider token exchange on callback
-- durable account/session/grant storage
-- end-to-end app integrations
+- non-ephemeral signing key handling
+- real token encryption at rest instead of "encrypted" field names doing
+  cosplay
+- end-to-end app integrations in consumer repos
+- refresh/revocation flows and admin surfaces
 
 Canonical docs:
 

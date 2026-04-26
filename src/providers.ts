@@ -18,7 +18,7 @@ export const providerCatalog: Record<Provider, ProviderDescriptor> = {
     key: "discord",
     displayName: "Discord",
     authorizationEndpoint: "https://discord.com/oauth2/authorize",
-    defaultScopes: ["identify", "guilds"],
+    defaultScopes: ["identify", "email", "guilds.members.read"],
     roles: ["identity", "entitlement"],
     clientIdEnv: "GC_ACCESS_PROVIDER_DISCORD_CLIENT_ID",
     clientSecretEnv: "GC_ACCESS_PROVIDER_DISCORD_CLIENT_SECRET",

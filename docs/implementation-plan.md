@@ -23,6 +23,10 @@ What exists right now is:
 - Ed25519 JWT signing plus JWKS/discovery exposure
 - OAuth start/callback contract surfaces with signed `state`
 - app-profile-driven claim issuance for Repixelizer and StreamPixels
+- in-memory/Postgres auth-control-plane storage
+- persisted accounts, linked identities, sessions, grants, entitlement
+  snapshots, and audit records
+- a real Discord provider callback slice for Repixelizer access
 - explicit state/doctrine scaffolding so the plan does not immediately turn into
   soup
 
@@ -54,6 +58,7 @@ Goals:
 - define OAuth start/callback/link surfaces
 - define grant and entitlement persistence boundaries
 - define how app backends verify claims locally
+  This is now the next missing seam, not a hypothetical one.
 
 ### 3. Make Repixelizer the first auth-blank consumer
 
@@ -94,8 +99,8 @@ Landed in the first pass:
 
 Still to do in this phase:
 
-- durable grant / entitlement / audit record shapes
-- persistence-backed account and linked-identity schema details
+- production-safe signing key persistence
+- token custody hardening instead of plain placeholder storage
 
 ### Phase 2: Heimdall service skeleton
 
@@ -108,16 +113,16 @@ Landed in the first pass:
 
 Next in this phase:
 
-- account / linked-identity persistence
-- provider token exchange and refresh
-- audit logging
+- provider refresh/revocation flows
 - non-ephemeral signing key handling
+- token encryption at rest
 
 ### Phase 3: Repixelizer binding
 
 - integrate Heimdall into the hosted demo
 - gate `POST /api/jobs`
 - gate per-job read/cancel/event routes by local session ownership
+- land a small verifier seam so Repixelizer can trust Heimdall JWTs locally
 
 ### Phase 4: StreamPixels authority migration
 

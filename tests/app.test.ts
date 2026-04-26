@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { type FastifyInstance } from "fastify";
 import { buildApp } from "../src/app.js";
 import { type HeimdallConfig } from "../src/config.js";
-import { decodeJwt, verifyJwt } from "../src/signing.js";
+import { type OAuthProviderRuntime } from "../src/oauth.js";
+import { verifyJwt } from "../src/signing.js";
 
 function createTestConfig(): HeimdallConfig {
   return {
@@ -13,12 +14,67 @@ function createTestConfig(): HeimdallConfig {
     issuer: "https://heimdall.gamecult.org",
     sessionTtlSeconds: 3600,
     stateTtlSeconds: 600,
+    storage: {
+      backend: "memory",
+      applySchemaOnStartup: true,
+    },
+    apps: {
+      repixelizer: {
+        discordGuildId: "gamecult-guild",
+        discordAllowedRoleIds: ["role-repixelizer"],
+      },
+    },
     providers: {
       discord: { clientId: "discord-client", clientSecret: "discord-secret" },
       patreon: { clientId: "patreon-client", clientSecret: "patreon-secret" },
       github: { clientId: "github-client", clientSecret: "github-secret" },
       twitch: { clientId: "twitch-client", clientSecret: "twitch-secret" },
       youtube: { clientId: "youtube-client", clientSecret: "youtube-secret" },
+    },
+  };
+}
+
+function createMockDiscordRuntime(): OAuthProviderRuntime {
+  return {
+    async exchangeAuthorizationCode() {
+      return {
+        accessToken: "discord-access-token",
+        refreshToken: "discord-refresh-token",
+        tokenType: "Bearer",
+        scope: ["identify", "email", "guilds.members.read"],
+        expiresAt: "2026-04-26T13:00:00.000Z",
+        raw: { source: "test" },
+      };
+    },
+    async resolveIdentity() {
+      return {
+        provider: "discord",
+        providerUserId: "discord-user-123",
+        username: "meta",
+        displayName: "Meta",
+        primaryEmail: "meta@gamecult.org",
+        profile: { id: "discord-user-123", username: "meta" },
+      };
+    },
+    async evaluateEntitlements({ callback }) {
+      return {
+        facts: ["discord.in_guild", "discord.allowed_role"],
+        snapshots: [
+          {
+            accountId: callback.accountId,
+            provider: "discord",
+            scope: "repixelizer:discord_role_access:gamecult-guild",
+            evaluatedAt: "2026-04-26T12:00:00.000Z",
+            isAllowed: true,
+            reasonCode: "matched_role",
+            reasonDetail: "Matched Repixelizer access role.",
+            rawSummaryJson: {
+              guildId: "gamecult-guild",
+              matchedRoles: ["role-repixelizer"],
+            },
+          },
+        ],
+      };
     },
   };
 }
@@ -37,13 +93,28 @@ function getPublicKey(app: FastifyInstance) {
   ).heimdallContext.keys.publicKey;
 }
 
+async function startDiscordSignIn(app: FastifyInstance): Promise<string> {
+  const response = await app.inject({
+    method: "POST",
+    url: "/v1/oauth/discord/start",
+    payload: {
+      appSlug: "repixelizer",
+      mode: "sign_in",
+      returnTo: "https://repixelizer.gamecult.org/app/",
+    },
+  });
+
+  expect(response.statusCode).toBe(201);
+  return response.json().stateToken as string;
+}
+
 afterEach(async () => {
   while (apps.length) {
     await apps.pop()?.close();
   }
 });
 
-describe("Heimdall service skeleton", () => {
+describe("Heimdall service", () => {
   it("serves discovery and JWKS metadata", async () => {
     const app = await buildApp({ config: createTestConfig() });
     apps.push(app);
@@ -96,50 +167,84 @@ describe("Heimdall service skeleton", () => {
     const payload = response.json();
     expect(payload.authorizationUrl).toContain("discord.com/oauth2/authorize");
 
-    const decoded = decodeJwt(payload.stateToken);
-    expect(decoded.payload).toEqual(
-      expect.objectContaining({
-        typ: "heimdall_oauth_state",
-        provider: "discord",
-        app_slug: "repixelizer",
-      })
-    );
+    const verified = verifyJwt(payload.stateToken as string, getPublicKey(app));
+    expect(verified.valid).toBe(true);
+    if (verified.valid) {
+      expect(verified.payload).toEqual(
+        expect.objectContaining({
+          typ: "heimdall_oauth_state",
+          provider: "discord",
+          app_slug: "repixelizer",
+        })
+      );
+    }
   });
 
-  it("issues signed claims and evaluates shared app capabilities", async () => {
-    const app = await buildApp({ config: createTestConfig() });
+  it("completes a provider callback and issues a verified Repixelizer claim", async () => {
+    const app = await buildApp({
+      config: createTestConfig(),
+      oauthRuntimes: {
+        discord: createMockDiscordRuntime(),
+      },
+    });
     apps.push(app);
 
+    const stateToken = await startDiscordSignIn(app);
     const response = await app.inject({
-      method: "POST",
-      url: "/v1/apps/repixelizer/claims/issue",
-      payload: {
-        accountId: "acct_repixelizer_001",
-        displayName: "Meta",
-        facts: ["discord.allowed_role", "grant.operator"],
-        linkedIdentities: [
-          {
-            provider: "discord",
-            providerUserId: "123456789",
-            username: "meta",
-          },
-        ],
-      },
+      method: "GET",
+      url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(stateToken)}`,
     });
 
     expect(response.statusCode).toBe(201);
     const payload = response.json();
-    expect(payload.sharedCapabilities).toEqual(
-      expect.arrayContaining(["app_access", "queue_submit", "admin_access"])
+    expect(payload.sharedCapabilities).toEqual(expect.arrayContaining(["app_access", "queue_submit"]));
+    expect(payload.account).toEqual(
+      expect.objectContaining({
+        displayName: "Meta",
+        primaryEmail: "meta@gamecult.org",
+      })
     );
+    expect(payload.entitlements.facts).toEqual(expect.arrayContaining(["discord.allowed_role"]));
 
-    const verified = verifyJwt(payload.accessToken, getPublicKey(app));
+    const verified = verifyJwt(payload.accessToken as string, getPublicKey(app));
     expect(verified.valid).toBe(true);
+    if (verified.valid) {
+      expect(verified.payload).toEqual(
+        expect.objectContaining({
+          typ: "heimdall_access",
+          aud: "repixelizer",
+          account_id: payload.account.id,
+        })
+      );
+      expect(verified.payload.capabilities).toEqual(expect.arrayContaining(["app_access", "queue_submit"]));
+    }
+  });
 
-    const tokenDecoded = decodeJwt(payload.accessToken);
-    expect(tokenDecoded.payload.capabilities).toEqual(
-      expect.arrayContaining(["app_access", "queue_submit", "admin_access"])
-    );
+  it("redirects browser callbacks back to the app with a token fragment", async () => {
+    const app = await buildApp({
+      config: createTestConfig(),
+      oauthRuntimes: {
+        discord: createMockDiscordRuntime(),
+      },
+    });
+    apps.push(app);
+
+    const stateToken = await startDiscordSignIn(app);
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(stateToken)}`,
+      headers: {
+        accept: "text/html",
+      },
+    });
+
+    expect(response.statusCode).toBe(302);
+    const redirectUrl = new URL(response.headers.location ?? "");
+    expect(redirectUrl.origin + redirectUrl.pathname).toBe("https://repixelizer.gamecult.org/app/");
+    const fragment = new URLSearchParams(redirectUrl.hash.slice(1));
+    expect(fragment.get("heimdall_status")).toBe("success");
+    expect(fragment.get("heimdall_provider")).toBe("discord");
+    expect(fragment.get("heimdall_access_token")).toBeTruthy();
   });
 
   it("exposes StreamPixels hybrid capability seams without granting them blindly", async () => {

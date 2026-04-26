@@ -28,6 +28,22 @@ export interface OAuthStartRequest {
   requestedScopes?: string[];
 }
 
+export interface OAuthStatePayload {
+  iss: string;
+  sub: AppSlug;
+  aud: Provider;
+  jti: string;
+  iat: number;
+  nbf: number;
+  exp: number;
+  typ: "heimdall_oauth_state";
+  provider: Provider;
+  app_slug: AppSlug;
+  mode: OAuthMode;
+  return_to: string;
+  connection: OAuthConnectionBinding | null;
+}
+
 export interface LinkedIdentityInput {
   provider: Provider;
   providerUserId: string;

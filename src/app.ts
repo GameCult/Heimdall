@@ -6,40 +6,26 @@ import {
   connectionKinds,
   oauthModes,
   providers,
-  type AccessClaimPayload,
   type AppSlug,
-  type IssueClaimRequest,
+  type OAuthMode,
   type OAuthConnectionBinding,
+  type OAuthStatePayload,
   type OAuthStartRequest,
   type Provider,
 } from "./contracts.js";
+import { mapIssueClaimRequest, issueAccessClaim, type IssueAccessClaimInput } from "./claims.js";
 import { getAppProfile, serializeAppProfile, supportsProvider } from "./app-profiles.js";
 import { type HeimdallConfig, loadConfig } from "./config.js";
+import { createOAuthRuntimeRegistry, type OAuthRuntimeRegistry } from "./oauth.js";
 import { buildAuthorizationUrl, providerCatalog, providerExpectedEnv } from "./providers.js";
 import { createRuntimeKeyMaterial, signJwt, verifyJwt } from "./signing.js";
+import { createStore, type HeimdallStore } from "./store/index.js";
+import { type CreateAccountInput, type StoredCapabilityGrant, type UpsertLinkedIdentityInput } from "./store/types.js";
 
 interface BuildAppOptions {
   config?: HeimdallConfig;
-}
-
-function nowEpochSeconds(): number {
-  return Math.floor(Date.now() / 1000);
-}
-
-function clampTtlSeconds(value: number, fallback: number): number {
-  if (!Number.isFinite(value)) {
-    return fallback;
-  }
-
-  return Math.max(60, Math.min(86_400, Math.trunc(value)));
-}
-
-function normalizeFacts(request: IssueClaimRequest): string[] {
-  const facts = new Set(request.facts ?? []);
-  if (request.accountId.trim() || request.linkedIdentities?.length) {
-    facts.add("identity.authenticated");
-  }
-  return [...facts].sort();
+  store?: HeimdallStore;
+  oauthRuntimes?: Partial<OAuthRuntimeRegistry>;
 }
 
 function buildDiscovery(config: HeimdallConfig) {
@@ -59,36 +45,37 @@ function buildDiscovery(config: HeimdallConfig) {
   };
 }
 
+function nowEpochSeconds(): number {
+  return Math.floor(Date.now() / 1000);
+}
+
 function buildOAuthStateToken(options: {
   config: HeimdallConfig;
   provider: Provider;
   appSlug: AppSlug;
-  mode: OAuthStartRequest["mode"];
+  mode: OAuthMode;
   returnTo: string;
   connection: OAuthConnectionBinding | undefined;
   keys: ReturnType<typeof createRuntimeKeyMaterial>;
 }): { token: string; expiresAt: string } {
   const issuedAt = nowEpochSeconds();
   const expiresAtEpoch = issuedAt + options.config.stateTtlSeconds;
-
-  const token = signJwt(
-    {
-      iss: options.config.issuer,
-      sub: options.appSlug,
-      aud: options.provider,
-      jti: randomUUID(),
-      iat: issuedAt,
-      nbf: issuedAt,
-      exp: expiresAtEpoch,
-      typ: "heimdall_oauth_state",
-      provider: options.provider,
-      app_slug: options.appSlug,
-      mode: options.mode,
-      return_to: options.returnTo,
-      connection: options.connection ?? null,
-    },
-    options.keys
-  );
+  const payload: OAuthStatePayload = {
+    iss: options.config.issuer,
+    sub: options.appSlug,
+    aud: options.provider,
+    jti: randomUUID(),
+    iat: issuedAt,
+    nbf: issuedAt,
+    exp: expiresAtEpoch,
+    typ: "heimdall_oauth_state",
+    provider: options.provider,
+    app_slug: options.appSlug,
+    mode: options.mode,
+    return_to: options.returnTo,
+    connection: options.connection ?? null,
+  };
+  const token = signJwt(payload as unknown as Record<string, unknown>, options.keys);
 
   return {
     token,
@@ -96,11 +83,69 @@ function buildOAuthStateToken(options: {
   };
 }
 
+function parseOAuthStatePayload(payload: Record<string, unknown>): OAuthStatePayload | null {
+  if (
+    payload.typ !== "heimdall_oauth_state" ||
+    typeof payload.provider !== "string" ||
+    !providers.includes(payload.provider as Provider) ||
+    typeof payload.app_slug !== "string" ||
+    !appSlugs.includes(payload.app_slug as AppSlug) ||
+    typeof payload.mode !== "string" ||
+    !oauthModes.includes(payload.mode as OAuthMode) ||
+    typeof payload.return_to !== "string" ||
+    typeof payload.iss !== "string" ||
+    typeof payload.sub !== "string" ||
+    typeof payload.aud !== "string" ||
+    typeof payload.jti !== "string" ||
+    typeof payload.iat !== "number" ||
+    typeof payload.nbf !== "number" ||
+    typeof payload.exp !== "number"
+  ) {
+    return null;
+  }
+
+  return payload as unknown as OAuthStatePayload;
+}
+
+function buildGrantFacts(grants: StoredCapabilityGrant[]): string[] {
+  return grants.map((grant) => `grant.${grant.capability}`);
+}
+
+function prefersHtml(acceptHeader: string | undefined): boolean {
+  if (!acceptHeader) {
+    return false;
+  }
+
+  return acceptHeader.includes("text/html") || acceptHeader.includes("application/xhtml+xml");
+}
+
+function buildRedirectUrl(returnTo: string, params: Record<string, string | undefined>): string {
+  const url = new URL(returnTo);
+  const fragment = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(params)) {
+    if (value) {
+      fragment.set(key, value);
+    }
+  }
+
+  url.hash = fragment.toString();
+  return url.toString();
+}
+
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
   const config = options.config ?? loadConfig();
+  const store = options.store ?? (await createStore(config));
   const keys = createRuntimeKeyMaterial(config);
+  const oauthRuntimes: OAuthRuntimeRegistry = {
+    ...createOAuthRuntimeRegistry(),
+    ...(options.oauthRuntimes ?? {}),
+  };
   const app = Fastify({ logger: false });
-  app.decorate("heimdallContext", { config, keys });
+  app.decorate("heimdallContext", { config, keys, store, oauthRuntimes });
+  app.addHook("onClose", async () => {
+    await store.close();
+  });
 
   await app.register(cors, {
     origin: true,
@@ -111,6 +156,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     ok: true,
     service: config.serviceName,
     issuer: config.issuer,
+    storageBackend: config.storage.backend,
     now: new Date().toISOString(),
   }));
 
@@ -272,41 +318,227 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         return { error: "invalid_state", detail: verification.error };
       }
 
-      const statePayload = verification.payload;
-      if (statePayload.typ !== "heimdall_oauth_state" || statePayload.provider !== request.params.provider) {
+      const statePayload = parseOAuthStatePayload(verification.payload);
+      if (!statePayload || statePayload.provider !== request.params.provider) {
         reply.code(400);
         return { error: "state_provider_mismatch" };
       }
 
       if (request.query.error) {
+        const redirectUrl = buildRedirectUrl(statePayload.return_to, {
+          heimdall_status: "error",
+          heimdall_provider: request.params.provider,
+          heimdall_error: "provider_error",
+          heimdall_error_description: request.query.error_description ?? request.query.error,
+        });
+        if (prefersHtml(request.headers.accept)) {
+          return reply.redirect(redirectUrl);
+        }
+
         reply.code(400);
         return {
           error: "provider_error",
           provider: request.params.provider,
           providerError: request.query.error,
           providerErrorDescription: request.query.error_description,
+          redirectUrl,
         };
       }
 
       if (!request.query.code) {
+        const redirectUrl = buildRedirectUrl(statePayload.return_to, {
+          heimdall_status: "error",
+          heimdall_provider: request.params.provider,
+          heimdall_error: "missing_code",
+        });
+        if (prefersHtml(request.headers.accept)) {
+          return reply.redirect(redirectUrl);
+        }
+
         reply.code(400);
-        return { error: "missing_code" };
+        return { error: "missing_code", redirectUrl };
       }
 
-      reply.code(501);
-      return {
-        error: "token_exchange_not_implemented",
-        provider: request.params.provider,
-        appSlug: statePayload.app_slug,
-        mode: statePayload.mode,
-        returnTo: statePayload.return_to,
-        connection: statePayload.connection,
-        codeReceived: true,
-      };
+      const callbackUrl = `${config.publicBaseUrl}/v1/oauth/${request.params.provider}/callback`;
+      const runtime = oauthRuntimes[request.params.provider];
+
+      try {
+        const tokenSet = await runtime.exchangeAuthorizationCode({
+          config,
+          code: request.query.code,
+          redirectUri: callbackUrl,
+        });
+        const identity = await runtime.resolveIdentity({
+          accessToken: tokenSet.accessToken,
+        });
+        const nowIso = new Date().toISOString();
+        let account = await store.findAccountByLinkedIdentity(identity.provider, identity.providerUserId);
+
+        if (!account) {
+          const createAccountInput: CreateAccountInput = {
+            createdAt: nowIso,
+            lastSeenAt: nowIso,
+          };
+          const displayName = identity.displayName ?? identity.username;
+          if (displayName !== undefined) {
+            createAccountInput.displayName = displayName;
+          }
+          if (identity.primaryEmail !== undefined) {
+            createAccountInput.primaryEmail = identity.primaryEmail;
+          }
+          account = await store.createAccount(createAccountInput);
+        } else {
+          const accountUpdates: { displayName?: string; primaryEmail?: string } = {};
+          const displayName = identity.displayName ?? identity.username;
+          if (displayName !== undefined) {
+            accountUpdates.displayName = displayName;
+          }
+          if (identity.primaryEmail !== undefined) {
+            accountUpdates.primaryEmail = identity.primaryEmail;
+          }
+          await store.touchAccount(account.id, nowIso, accountUpdates);
+        }
+
+        const linkedIdentityInput: UpsertLinkedIdentityInput = {
+          accountId: account.id,
+          provider: identity.provider,
+          providerUserId: identity.providerUserId,
+          scopes: tokenSet.scope,
+          profileJson: identity.profile,
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        };
+        if (identity.username !== undefined) {
+          linkedIdentityInput.username = identity.username;
+        }
+        if (identity.displayName !== undefined) {
+          linkedIdentityInput.displayName = identity.displayName;
+        }
+        if (identity.primaryEmail !== undefined) {
+          linkedIdentityInput.primaryEmail = identity.primaryEmail;
+        }
+        linkedIdentityInput.accessTokenEncrypted = tokenSet.accessToken;
+        if (tokenSet.refreshToken !== undefined) {
+          linkedIdentityInput.refreshTokenEncrypted = tokenSet.refreshToken;
+        }
+        if (tokenSet.expiresAt !== undefined) {
+          linkedIdentityInput.tokenExpiresAt = tokenSet.expiresAt;
+        }
+        await store.upsertLinkedIdentity(linkedIdentityInput);
+
+        const entitlementEvaluation = await runtime.evaluateEntitlements({
+          config,
+          callback: {
+            appSlug: statePayload.app_slug,
+            accountId: account.id,
+            connection: statePayload.connection,
+          },
+          identity,
+          tokenSet,
+        });
+        for (const snapshot of entitlementEvaluation.snapshots) {
+          await store.upsertEntitlementSnapshot(snapshot);
+        }
+
+        const grants = await store.listActiveGrants(account.id, statePayload.app_slug, nowIso);
+        const issueInput: IssueAccessClaimInput = {
+          appSlug: statePayload.app_slug,
+          accountId: account.id,
+          linkedIdentities: await store.listLinkedIdentitiesForAccount(account.id),
+          facts: [...entitlementEvaluation.facts, ...buildGrantFacts(grants)],
+        };
+        if (account.displayName !== undefined) {
+          issueInput.displayName = account.displayName;
+        }
+
+        const issued = await issueAccessClaim({
+          config,
+          keys,
+          store,
+          input: issueInput,
+        });
+
+        await store.createAuditEvent({
+          accountId: account.id,
+          sessionId: issued.session.sessionId,
+          appSlug: statePayload.app_slug,
+          eventType: "oauth_callback_succeeded",
+          eventPayloadJson: {
+            provider: request.params.provider,
+            mode: statePayload.mode,
+            returnTo: statePayload.return_to,
+            grantedFacts: issued.claimSet.facts,
+            sharedCapabilities: issued.sharedCapabilities,
+          },
+          createdAt: nowIso,
+        });
+
+        const redirectUrl = buildRedirectUrl(statePayload.return_to, {
+          heimdall_status: "success",
+          heimdall_provider: request.params.provider,
+          heimdall_app_slug: statePayload.app_slug,
+          heimdall_account_id: account.id,
+          heimdall_session_id: issued.session.sessionId,
+          heimdall_access_token: issued.accessToken,
+        });
+
+        if (prefersHtml(request.headers.accept)) {
+          return reply.redirect(redirectUrl);
+        }
+
+        reply.code(201);
+        return {
+          provider: request.params.provider,
+          mode: statePayload.mode,
+          account,
+          linkedIdentity: identity,
+          token: {
+            tokenType: tokenSet.tokenType,
+            scope: tokenSet.scope,
+            expiresAt: tokenSet.expiresAt,
+          },
+          entitlements: entitlementEvaluation,
+          redirectUrl,
+          returnTo: statePayload.return_to,
+          ...issued,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "OAuth callback failed.";
+        const nowIso = new Date().toISOString();
+        await store.createAuditEvent({
+          appSlug: statePayload.app_slug,
+          eventType: "oauth_callback_failed",
+          eventPayloadJson: {
+            provider: request.params.provider,
+            mode: statePayload.mode,
+            error: message,
+          },
+          createdAt: nowIso,
+        });
+
+        const redirectUrl = buildRedirectUrl(statePayload.return_to, {
+          heimdall_status: "error",
+          heimdall_provider: request.params.provider,
+          heimdall_error: "oauth_callback_failed",
+          heimdall_error_description: message,
+        });
+        if (prefersHtml(request.headers.accept)) {
+          return reply.redirect(redirectUrl);
+        }
+
+        reply.code(502);
+        return {
+          error: "oauth_callback_failed",
+          detail: message,
+          provider: request.params.provider,
+          appSlug: statePayload.app_slug,
+          redirectUrl,
+        };
+      }
     }
   );
 
-  app.post<{ Params: { appSlug: AppSlug }; Body: IssueClaimRequest }>(
+  app.post<{ Params: { appSlug: AppSlug }; Body: import("./contracts.js").IssueClaimRequest }>(
     "/v1/apps/:appSlug/claims/issue",
     {
       schema: {
@@ -352,65 +584,14 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       },
     },
     async (request, reply) => {
-      const profile = getAppProfile(request.params.appSlug);
-      const facts = normalizeFacts(request.body);
-      const factSet = new Set(facts);
-      const linkedIdentities = request.body.linkedIdentities ?? [];
-      const sharedCapabilities = profile.evaluateSharedCapabilities({
-        accountId: request.body.accountId,
-        facts: factSet,
-        identities: linkedIdentities,
+      const issued = await issueAccessClaim({
+        config,
+        keys,
+        store,
+        input: mapIssueClaimRequest(request.params.appSlug, request.body),
       });
-
-      const issuedAt = nowEpochSeconds();
-      const ttlSeconds = clampTtlSeconds(request.body.ttlSeconds ?? config.sessionTtlSeconds, config.sessionTtlSeconds);
-      const expiresAtEpoch = issuedAt + ttlSeconds;
-      const sessionId = request.body.sessionId ?? randomUUID();
-      const accessClaim: AccessClaimPayload = {
-        iss: config.issuer,
-        aud: profile.slug,
-        sub: request.body.accountId,
-        sid: sessionId,
-        jti: randomUUID(),
-        iat: issuedAt,
-        nbf: issuedAt,
-        exp: expiresAtEpoch,
-        typ: "heimdall_access",
-        account_id: request.body.accountId,
-        access_revision: request.body.accessRevision ?? 1,
-        app: {
-          slug: profile.slug,
-          profile_version: profile.profileVersion,
-        },
-        facts,
-        capabilities: sharedCapabilities,
-        identities: linkedIdentities,
-      };
-
-      if (request.body.displayName) {
-        accessClaim.display_name = request.body.displayName;
-      }
-
       reply.code(201);
-      return {
-        session: {
-          accountId: request.body.accountId,
-          sessionId,
-          appSlug: profile.slug,
-          accessRevision: accessClaim.access_revision,
-          expiresAt: new Date(expiresAtEpoch * 1000).toISOString(),
-        },
-        accessToken: signJwt(accessClaim as unknown as Record<string, unknown>, keys),
-        claimSet: accessClaim,
-        verification: {
-          issuer: config.issuer,
-          jwksUri: `${config.publicBaseUrl}/.well-known/jwks.json`,
-          alg: keys.alg,
-          kid: keys.kid,
-        },
-        sharedCapabilities,
-        hybridCapabilities: profile.capabilities.filter((capability) => capability.mode === "hybrid"),
-      };
+      return issued;
     }
   );
 

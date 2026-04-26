@@ -5,6 +5,17 @@ export interface ProviderClientConfig {
   clientSecret?: string;
 }
 
+export interface StorageConfig {
+  backend: "memory" | "postgres";
+  databaseUrl?: string;
+  applySchemaOnStartup: boolean;
+}
+
+export interface RepixelizerBindingConfig {
+  discordGuildId?: string;
+  discordAllowedRoleIds: string[];
+}
+
 export interface HeimdallConfig {
   serviceName: string;
   host: string;
@@ -15,6 +26,10 @@ export interface HeimdallConfig {
   stateTtlSeconds: number;
   signingPrivateKeyPem?: string;
   signingKeyId?: string;
+  storage: StorageConfig;
+  apps: {
+    repixelizer: RepixelizerBindingConfig;
+  };
   providers: Record<Provider, ProviderClientConfig>;
 }
 
@@ -29,6 +44,34 @@ function readInt(envValue: string | undefined, fallback: number): number {
 
   const parsed = Number.parseInt(envValue, 10);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function readBoolean(envValue: string | undefined, fallback: boolean): boolean {
+  if (!envValue) {
+    return fallback;
+  }
+
+  const normalized = envValue.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+
+  return fallback;
+}
+
+function readCsv(envValue: string | undefined): string[] {
+  if (!envValue) {
+    return [];
+  }
+
+  return envValue
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
 }
 
 function readProviderConfig(env: NodeJS.ProcessEnv, provider: Provider): ProviderClientConfig {
@@ -53,6 +96,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): HeimdallConfig
   const port = readInt(env.PORT, 4100);
   const publicBaseUrl = trimTrailingSlash(env.GC_ACCESS_BASE_URL ?? `http://${host}:${port}`);
   const issuer = trimTrailingSlash(env.GC_ACCESS_ISSUER ?? publicBaseUrl);
+  const storageBackend =
+    env.GC_ACCESS_STORAGE_BACKEND === "postgres" || env.GC_ACCESS_DATABASE_URL ? "postgres" : "memory";
   const providersConfig = Object.fromEntries(
     providers.map((provider) => [provider, readProviderConfig(env, provider)])
   ) as Record<Provider, ProviderClientConfig>;
@@ -65,6 +110,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): HeimdallConfig
     issuer,
     sessionTtlSeconds: readInt(env.GC_ACCESS_SESSION_TTL_SECONDS, 3600),
     stateTtlSeconds: readInt(env.GC_ACCESS_STATE_TTL_SECONDS, 600),
+    storage: {
+      backend: storageBackend,
+      applySchemaOnStartup: readBoolean(env.GC_ACCESS_APPLY_SCHEMA_ON_STARTUP, true),
+    },
+    apps: {
+      repixelizer: {
+        discordAllowedRoleIds: readCsv(env.GC_ACCESS_APP_REPIXELIZER_DISCORD_ALLOWED_ROLE_IDS),
+      },
+    },
     providers: providersConfig,
   };
 
@@ -75,6 +129,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): HeimdallConfig
 
   if (env.GC_ACCESS_SIGNING_KEY_ID) {
     config.signingKeyId = env.GC_ACCESS_SIGNING_KEY_ID;
+  }
+
+  if (env.GC_ACCESS_DATABASE_URL) {
+    config.storage.databaseUrl = env.GC_ACCESS_DATABASE_URL;
+  }
+
+  if (env.GC_ACCESS_APP_REPIXELIZER_DISCORD_GUILD_ID) {
+    config.apps.repixelizer.discordGuildId = env.GC_ACCESS_APP_REPIXELIZER_DISCORD_GUILD_ID;
   }
 
   return config;

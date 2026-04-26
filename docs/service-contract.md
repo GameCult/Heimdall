@@ -1,10 +1,10 @@
 # Heimdall Service Contract
 
-This file describes the first landed Heimdall service skeleton.
+This file describes the first landed Heimdall service slice.
 
 It is the concrete HTTP/JWKS contract that now exists in the repo. It is not a
-claim that provider token exchange, persistence, or app bindings are fully
-implemented yet.
+claim that every provider, consumer binding, or production-hardening concern is
+done yet.
 
 ## Current stack
 
@@ -28,6 +28,7 @@ Response:
   "ok": true,
   "service": "heimdall",
   "issuer": "https://heimdall.gamecult.org",
+  "storageBackend": "memory",
   "now": "2026-04-26T12:00:00.000Z"
 }
 ```
@@ -157,11 +158,15 @@ Current status:
 
 - validates signed `state`
 - returns provider errors cleanly
-- returns `501 token_exchange_not_implemented` after successful state/code
-  validation
-
-That is deliberate. The contract is landed; provider token exchange and account
-persistence are next.
+- for Discord, exchanges the authorization code, resolves the provider
+  identity, persists the local account/link/session/audit records, evaluates
+  Repixelizer entitlement facts, and issues a signed Heimdall access claim
+- for browser-style callers, redirects back to `returnTo` with a fragment
+  carrying status and the issued access token
+- for non-browser callers, returns JSON with the issued claim, session, account
+  summary, token metadata, and entitlement result
+- other configured providers still return "not implemented" at the runtime
+  adapter layer until their callback paths are added
 
 ### `POST /v1/apps/{appSlug}/claims/issue`
 
@@ -254,19 +259,17 @@ Examples:
 
 The following are not landed yet:
 
-- provider token exchange on callback
-- durable account/session/grant storage
-- linked-identity persistence
-- entitlement snapshot persistence
+- non-ephemeral signing key handling
+- actual token encryption at rest and secret-management policy
 - refresh/revocation flows
 - app-facing middleware packages or reference verifiers
+- admin/grant management surfaces
 
 ## Next implementation move
 
-Build durable storage plus the first real provider path on top of this
-skeleton:
+Build the first consumer seam and harden the custody story:
 
 - persisted signing key material
-- accounts and linked identities
-- real callback exchange for one provider slice
-- first end-to-end Repixelizer binding
+- real token encryption at rest
+- a reference verifier / middleware contract for app backends
+- the first Repixelizer consumer binding that trusts Heimdall claims locally
