@@ -7,8 +7,9 @@ authority service for GameCult-hosted experiments.
 
 Its basic promise is:
 
-- let people sign in with Discord and/or Patreon
-- decide access from GameCult/community entitlements and local grants
+- let people sign in through app-relevant providers such as Discord, Patreon,
+  GitHub, Twitch, or YouTube
+- decide access from provider entitlements, local grants, and per-app policy
 - issue signed local claims that hosted apps can verify without trusting raw
   provider tokens
 
@@ -23,7 +24,7 @@ If every experiment rebuilds:
 - entitlement refresh
 - session cookies
 - grant handling
-- "Discord role OR Patreon tier" logic
+- provider-specific gate logic
 
 then we get five near-identical auth pits and deserve what happens next.
 
@@ -56,14 +57,14 @@ bind its own policy and runtime seams onto it.
 - `LinkedIdentity`
   one external provider identity attached to exactly one local account
 - `EntitlementSnapshot`
-  cached result from a provider or grant source saying whether some claim is
+  cached result from an entitlement source saying whether some claim is
   currently true
 - `CapabilityGrant`
   a reusable local grant such as `global_member`, `app_access`, or
   `admin_access`, scoped either globally or to one app
 - `AppAccessProfile`
-  the per-app binding that names capabilities, allowed provider sources, and
-  policy rules
+  the per-app binding that names capabilities, relevant identity providers,
+  entitlement sources, and policy rules
 - `Session`
   signed local app/browser session; the browser gets this, not provider tokens
 - `AccessClaim`
@@ -71,14 +72,39 @@ bind its own policy and runtime seams onto it.
 - `AuditEvent`
   durable record for login, link, unlink, refresh, denial, and admin overrides
 
+## Provider taxonomy
+
+Heimdall should classify outside systems by what role they play, not by whether
+their brand name appears somewhere in an app.
+
+- `Identity provider`
+  proves who the user is and can supply one `LinkedIdentity`
+- `Entitlement source`
+  answers whether some access-relevant claim is currently true
+- `Local grant source`
+  records app or operator-issued overrides inside Heimdall
+- `App-owned connector OAuth`
+  authenticates an app's operational integration with a third-party platform
+  and does **not** become Heimdall territory just because it uses OAuth
+
+One provider can play different roles in different apps:
+
+- Repixelizer can treat Discord and Patreon as both identity and entitlement
+  sources
+- Bifrost can treat GitHub as identity proof while keeping membership approval,
+  roles, and governance state app-local
+- StreamPixels can reuse shared viewer identity patterns while keeping
+  creator-side Twitch/YouTube connector credentials and runtime plumbing
+  StreamPixels-owned
+
 ## System shape
 
 ```mermaid
 flowchart TD
     A["Browser / app web UI"] --> B["Hosted experiment web surface"]
     B -->|start auth / link| C["Heimdall"]
-    C --> D["Discord OAuth + guild role checks"]
-    C --> E["Patreon OAuth + campaign/tier checks"]
+    C --> D["Shared identity providers"]
+    C --> E["Shared entitlement sources"]
     C --> F["Local auth/control-plane store"]
     C --> G["Signed sessions / claims"]
     B -->|verify claims locally| H["Hosted experiment runtime"]
@@ -90,6 +116,8 @@ The important split:
   sessions, claims, grants, and audit surfaces
 - the host experiment owns its workload, queue, editor, render path, viewer
   profile model, creator model, or other product-specific machinery
+- app-owned operational connector OAuth stays with the app unless there is a
+  very deliberate reason to centralize it
 
 Do not smear provider logic directly through every host runtime.
 
@@ -190,24 +218,41 @@ Important invariants:
 - one provider identity belongs to one local account only
 - provider tokens stay server-side only
 - session cookies represent local sessions, not provider trust directly
-- app-specific capability checks read signed local claims, not Discord or
-  Patreon on every route
+- app-specific capability checks read signed local claims, not upstream
+  providers on every route
 
 ## Provider adapters
 
-Shared provider/gate adapters should be boring and reusable:
+Shared adapters should be boring and reusable:
 
-- `DiscordRoleEntitlementProvider`
+- `DiscordIdentityProvider`
   - login via Discord OAuth
+- `PatreonIdentityProvider`
+  - login via Patreon OAuth
+- `GitHubIdentityProvider`
+  - login via GitHub OAuth for apps that use GitHub identity as the local
+    person-key
+- `TwitchIdentityProvider`
+  - optional shared login identity when an app wants Twitch-backed sign-in
+- `YouTubeIdentityProvider`
+  - optional shared login identity when an app wants YouTube-backed sign-in
+- `DiscordRoleEntitlementProvider`
   - entitlement check via guild membership and role ids, ideally through the
     GameCult bot token server-side
 - `PatreonMembershipEntitlementProvider`
-  - login via Patreon OAuth
   - entitlement check via campaign membership and tier ids
 - `ManualGrantProvider`
   - local override for staff, migrations, experiments, or emergency access
 - `InviteGrantProvider`
   - reusable invite-issued app or role grants where that pattern makes sense
+
+Important rule:
+
+- a provider being used anywhere in an app does not automatically make all uses
+  of that provider Heimdall-owned
+- creator/operational connector OAuth such as StreamPixels broadcaster
+  connectors stays app-owned unless it is deliberately promoted into the shared
+  auth authority
 
 ## Policy model
 
@@ -234,6 +279,10 @@ app_access   = discord.allowed_role || patreon.allowed_tier || grant.global_memb
 queue_submit = app_access
 admin_access = grant.operator || grant.admin_access
 ```
+
+The important part is not the provider names in the example. It is that app
+profiles choose which identity facts, entitlement snapshots, and local grants
+feed each capability.
 
 ## Request path discipline
 
@@ -350,18 +399,27 @@ Suggested generic env surface:
 - `GC_ACCESS_BASE_URL=https://heimdall.gamecult.org`
 - `GC_ACCESS_INTERNAL_URL=http://127.0.0.1:4100`
 - `GC_ACCESS_SESSION_SECRET=...`
-- `GC_ACCESS_DISCORD_CLIENT_ID=...`
-- `GC_ACCESS_DISCORD_CLIENT_SECRET=...`
-- `GC_ACCESS_DISCORD_BOT_TOKEN=...`
-- `GC_ACCESS_DISCORD_GUILD_ID=...`
-- `GC_ACCESS_PATREON_CLIENT_ID=...`
-- `GC_ACCESS_PATREON_CLIENT_SECRET=...`
-- `GC_ACCESS_PATREON_CAMPAIGN_ID=...`
+- `GC_ACCESS_PROVIDER_DISCORD_CLIENT_ID=...`
+- `GC_ACCESS_PROVIDER_DISCORD_CLIENT_SECRET=...`
+- `GC_ACCESS_PROVIDER_DISCORD_BOT_TOKEN=...`
+- `GC_ACCESS_PROVIDER_DISCORD_GUILD_ID=...`
+- `GC_ACCESS_PROVIDER_PATREON_CLIENT_ID=...`
+- `GC_ACCESS_PROVIDER_PATREON_CLIENT_SECRET=...`
+- `GC_ACCESS_PROVIDER_PATREON_CAMPAIGN_ID=...`
+- `GC_ACCESS_PROVIDER_GITHUB_CLIENT_ID=...`
+- `GC_ACCESS_PROVIDER_GITHUB_CLIENT_SECRET=...`
+- `GC_ACCESS_PROVIDER_TWITCH_CLIENT_ID=...`
+- `GC_ACCESS_PROVIDER_TWITCH_CLIENT_SECRET=...`
+- `GC_ACCESS_PROVIDER_YOUTUBE_CLIENT_ID=...`
+- `GC_ACCESS_PROVIDER_YOUTUBE_CLIENT_SECRET=...`
 - `GC_ACCESS_ENTITLEMENT_CACHE_TTL_SECONDS=900`
 - `GC_ACCESS_PROVIDER_FAILURE_GRACE_SECONDS=3600`
 
+Only configure the providers Heimdall actually owns for a given deployment.
+
 Per-app binding should live in code or profile config, not in cloned provider
-env namespaces.
+env namespaces. App-owned connector OAuth should stay under the app's own env
+surface even when the upstream provider name overlaps.
 
 ## Audit Result
 
