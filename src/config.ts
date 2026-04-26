@@ -26,7 +26,10 @@ export interface HeimdallConfig {
   stateTtlSeconds: number;
   completionTtlSeconds: number;
   signingPrivateKeyPem?: string;
+  signingPrivateKeyPath?: string;
+  bootstrapSigningPrivateKeyOnMissing: boolean;
   signingKeyId?: string;
+  tokenEncryptionKeyBase64?: string;
   storage: StorageConfig;
   apps: {
     repixelizer: RepixelizerBindingConfig;
@@ -112,6 +115,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): HeimdallConfig
     sessionTtlSeconds: readInt(env.GC_ACCESS_SESSION_TTL_SECONDS, 3600),
     stateTtlSeconds: readInt(env.GC_ACCESS_STATE_TTL_SECONDS, 600),
     completionTtlSeconds: readInt(env.GC_ACCESS_COMPLETION_TTL_SECONDS, 300),
+    bootstrapSigningPrivateKeyOnMissing: readBoolean(env.GC_ACCESS_SIGNING_PRIVATE_KEY_BOOTSTRAP, false),
     storage: {
       backend: storageBackend,
       applySchemaOnStartup: readBoolean(env.GC_ACCESS_APPLY_SCHEMA_ON_STARTUP, true),
@@ -129,8 +133,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): HeimdallConfig
     config.signingPrivateKeyPem = signingPrivateKeyPem;
   }
 
+  if (env.GC_ACCESS_SIGNING_PRIVATE_KEY_PATH) {
+    config.signingPrivateKeyPath = env.GC_ACCESS_SIGNING_PRIVATE_KEY_PATH;
+  }
+
   if (env.GC_ACCESS_SIGNING_KEY_ID) {
     config.signingKeyId = env.GC_ACCESS_SIGNING_KEY_ID;
+  }
+
+  if (env.GC_ACCESS_TOKEN_ENCRYPTION_KEY_BASE64) {
+    config.tokenEncryptionKeyBase64 = env.GC_ACCESS_TOKEN_ENCRYPTION_KEY_BASE64;
   }
 
   if (env.GC_ACCESS_DATABASE_URL) {

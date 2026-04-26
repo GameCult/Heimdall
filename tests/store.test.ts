@@ -53,6 +53,15 @@ describe("PostgresStore", () => {
       },
     ]);
 
+    const storedIdentity = await store.findStoredLinkedIdentity("discord", "discord-user-123");
+    expect(storedIdentity).toEqual(
+      expect.objectContaining({
+        provider: "discord",
+        accessTokenEncrypted: "encrypted-access-token",
+        refreshTokenEncrypted: "encrypted-refresh-token",
+      })
+    );
+
     await store.createCapabilityGrant({
       accountId: account.id,
       scopeType: "app",

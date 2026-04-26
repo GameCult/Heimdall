@@ -29,6 +29,9 @@ What exists right now is:
 - a real Discord provider callback slice for Repixelizer access
 - a one-time browser completion handoff so auth callback pages can post back to
   the opener instead of leaking final app auth in URL fragments
+- file-backed signing-key loading/bootstrap for stable service identity
+- AES-256-GCM token sealing for managed provider credentials at rest
+- a local verifier helper that app backends can use against Heimdall JWKS
 - explicit state/doctrine scaffolding so the plan does not immediately turn into
   soup
 
@@ -60,7 +63,7 @@ Goals:
 - define OAuth start/callback/link surfaces
 - define grant and entitlement persistence boundaries
 - define how app backends verify claims locally
-  This is now the next missing seam, not a hypothetical one.
+  This seam now exists in reference form and needs its first real consumer.
 
 ### 3. Make Repixelizer the first auth-blank consumer
 
@@ -101,8 +104,8 @@ Landed in the first pass:
 
 Still to do in this phase:
 
-- production-safe signing key persistence
-- token custody hardening instead of plain placeholder storage
+- key rotation policy instead of just stable key loading
+- token custody retrieval/refresh surfaces beyond initial storage
 
 ### Phase 2: Heimdall service skeleton
 
@@ -116,8 +119,7 @@ Landed in the first pass:
 Next in this phase:
 
 - provider refresh/revocation flows
-- non-ephemeral signing key handling
-- token encryption at rest
+- connection lifecycle and token-rotation work
 
 ### Phase 3: Repixelizer binding
 
@@ -125,7 +127,7 @@ Next in this phase:
 - consume the one-time completion flow from the Repixelizer frontend/backend
 - gate `POST /api/jobs`
 - gate per-job read/cancel/event routes by local session ownership
-- land a small verifier seam so Repixelizer can trust Heimdall JWTs locally
+- consume the landed verifier seam so Repixelizer can trust Heimdall JWTs locally
 
 ### Phase 4: StreamPixels authority migration
 

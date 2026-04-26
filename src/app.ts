@@ -18,6 +18,7 @@ import { mapIssueClaimRequest, issueAccessClaim, type IssueAccessClaimInput } fr
 import { getAppProfile, serializeAppProfile, supportsProvider } from "./app-profiles.js";
 import { renderBrowserHandoffPage } from "./browser-handoff.js";
 import { type HeimdallConfig, loadConfig } from "./config.js";
+import { createTokenCustody, type TokenCustody } from "./custody.js";
 import { grantFact } from "./facts.js";
 import { createOAuthRuntimeRegistry, type OAuthRuntimeRegistry } from "./oauth.js";
 import { buildAuthorizationUrl, providerCatalog, providerExpectedEnv } from "./providers.js";
@@ -29,6 +30,7 @@ interface BuildAppOptions {
   config?: HeimdallConfig;
   store?: HeimdallStore;
   oauthRuntimes?: Partial<OAuthRuntimeRegistry>;
+  tokenCustody?: TokenCustody;
 }
 
 function buildDiscovery(config: HeimdallConfig) {
@@ -126,12 +128,13 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   const config = options.config ?? loadConfig();
   const store = options.store ?? (await createStore(config));
   const keys = createRuntimeKeyMaterial(config);
+  const tokenCustody = options.tokenCustody ?? createTokenCustody(config);
   const oauthRuntimes: OAuthRuntimeRegistry = {
     ...createOAuthRuntimeRegistry(),
     ...(options.oauthRuntimes ?? {}),
   };
   const app = Fastify({ logger: false });
-  app.decorate("heimdallContext", { config, keys, store, oauthRuntimes });
+  app.decorate("heimdallContext", { config, keys, store, oauthRuntimes, tokenCustody });
   app.addHook("onClose", async () => {
     await store.close();
   });
@@ -146,6 +149,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     service: config.serviceName,
     issuer: config.issuer,
     storageBackend: config.storage.backend,
+    signingKeySource: keys.source,
+    tokenCustodySource: tokenCustody.source,
     now: new Date().toISOString(),
   }));
 
@@ -416,9 +421,9 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         if (identity.primaryEmail !== undefined) {
           linkedIdentityInput.primaryEmail = identity.primaryEmail;
         }
-        linkedIdentityInput.accessTokenEncrypted = tokenSet.accessToken;
+        linkedIdentityInput.accessTokenEncrypted = tokenCustody.encrypt(tokenSet.accessToken);
         if (tokenSet.refreshToken !== undefined) {
-          linkedIdentityInput.refreshTokenEncrypted = tokenSet.refreshToken;
+          linkedIdentityInput.refreshTokenEncrypted = tokenCustody.encrypt(tokenSet.refreshToken);
         }
         if (tokenSet.expiresAt !== undefined) {
           linkedIdentityInput.tokenExpiresAt = tokenSet.expiresAt;

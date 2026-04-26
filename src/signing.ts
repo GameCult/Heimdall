@@ -7,6 +7,8 @@ import {
   verify,
   type KeyObject,
 } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { type HeimdallConfig } from "./config.js";
 
 type Jwk = {
@@ -16,12 +18,15 @@ type Jwk = {
   [key: string]: unknown;
 };
 
+export type PublicSigningJwk = Jwk & { alg: "EdDSA"; kid: string; use: "sig" };
+
 export interface RuntimeKeyMaterial {
   alg: "EdDSA";
   kid: string;
   privateKey: KeyObject;
   publicKey: KeyObject;
-  publicJwk: Jwk & { alg: "EdDSA"; kid: string; use: "sig" };
+  publicJwk: PublicSigningJwk;
+  source: "configured_pem" | "configured_file" | "bootstrapped_file" | "ephemeral_dev";
 }
 
 function encodeBase64Url(input: string | Buffer): string {
@@ -43,10 +48,75 @@ function buildKeyId(publicJwk: Jwk, explicitKeyId?: string): string {
   return `ed25519-${thumbprint.slice(0, 12)}`;
 }
 
+function exportPrivateKeyPem(privateKey: KeyObject): string {
+  const exported = privateKey.export({
+    format: "pem",
+    type: "pkcs8",
+  }) as string | Buffer;
+  return typeof exported === "string" ? exported : exported.toString("utf8");
+}
+
+function loadPrivateKeyFromPath(path: string): KeyObject {
+  return createPrivateKey(readFileSync(path, "utf8"));
+}
+
+function createOrLoadPrivateKeyFromPath(config: HeimdallConfig): {
+  privateKey: KeyObject;
+  source: RuntimeKeyMaterial["source"];
+} {
+  const path = config.signingPrivateKeyPath;
+  if (!path) {
+    return {
+      privateKey: generateKeyPairSync("ed25519").privateKey,
+      source: "ephemeral_dev",
+    };
+  }
+
+  if (existsSync(path)) {
+    return {
+      privateKey: loadPrivateKeyFromPath(path),
+      source: "configured_file",
+    };
+  }
+
+  if (!config.bootstrapSigningPrivateKeyOnMissing) {
+    throw new Error(
+      `Signing key file '${path}' does not exist. Set GC_ACCESS_SIGNING_PRIVATE_KEY_BOOTSTRAP=1 to create it on first boot.`
+    );
+  }
+
+  const privateKey = generateKeyPairSync("ed25519").privateKey;
+  mkdirSync(dirname(path), { recursive: true });
+  try {
+    writeFileSync(path, exportPrivateKeyPem(privateKey), {
+      encoding: "utf8",
+      mode: 0o600,
+      flag: "wx",
+    });
+    return {
+      privateKey,
+      source: "bootstrapped_file",
+    };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+      throw error;
+    }
+
+    return {
+      privateKey: loadPrivateKeyFromPath(path),
+      source: "configured_file",
+    };
+  }
+}
+
 export function createRuntimeKeyMaterial(config: HeimdallConfig): RuntimeKeyMaterial {
-  const privateKey = config.signingPrivateKeyPem
-    ? createPrivateKey(config.signingPrivateKeyPem)
-    : generateKeyPairSync("ed25519").privateKey;
+  const loaded = config.signingPrivateKeyPem
+    ? {
+        privateKey: createPrivateKey(config.signingPrivateKeyPem),
+        source: "configured_pem" as const,
+      }
+    : createOrLoadPrivateKeyFromPath(config);
+  const privateKey = loaded.privateKey;
   const publicKey = createPublicKey(privateKey);
   const exportedJwk = publicKey.export({ format: "jwk" }) as Jwk;
   const kid = buildKeyId(exportedJwk, config.signingKeyId);
@@ -62,6 +132,7 @@ export function createRuntimeKeyMaterial(config: HeimdallConfig): RuntimeKeyMate
       kid,
       use: "sig",
     },
+    source: loaded.source,
   };
 }
 

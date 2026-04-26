@@ -50,6 +50,12 @@ Do not trust this file for the exact live HEAD. Always check git.
   claim issuance for the Repixelizer slice
 - browser-style auth handoff now uses a one-time completion code posted back to
   the opener, with backend redemption instead of fragment-token handoff
+- signing keys can now load from a persisted file path and bootstrap that file
+  on first boot when explicitly enabled
+- managed provider tokens are now sealed at rest with AES-256-GCM instead of
+  being dumped into "encrypted" columns raw like an insult
+- `src/verifier.ts` now provides a small local JWT verifier seam for app
+  backends
 - Repixelizer is the first auth-blank binding target
 - StreamPixels is the migration target with useful existing auth seams that
   should not be flattened into mush
@@ -73,12 +79,11 @@ Do not continue implementation automatically from a rehydrate-only request.
 If the user asks to continue, the current next move is to harden and consume
 the landed slice:
 
-- persisted signing key material
-- real token encryption at rest
-- a reference verifier / middleware seam for app backends
 - the first Repixelizer consumer integration that opens auth in a new browser
   context, redeems Heimdall completion codes server-side, and trusts Heimdall
   claims locally
+- any small app-facing middleware sugar needed once that integration starts
+  colliding with real routes
 
 without dragging app-domain data into the shared layer and without forcing
 per-request auth round-trips.

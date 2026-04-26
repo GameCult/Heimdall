@@ -93,6 +93,16 @@ export class InMemoryStore implements HeimdallStore {
     return null;
   }
 
+  async findStoredLinkedIdentity(provider: Provider, providerUserId: string): Promise<StoredLinkedIdentity | null> {
+    for (const linkedIdentity of this.linkedIdentities.values()) {
+      if (linkedIdentity.provider === provider && linkedIdentity.providerUserId === providerUserId) {
+        return clone(linkedIdentity);
+      }
+    }
+
+    return null;
+  }
+
   async upsertLinkedIdentity(input: UpsertLinkedIdentityInput): Promise<StoredLinkedIdentity> {
     const existing = [...this.linkedIdentities.values()].find(
       (identity) => identity.provider === input.provider && identity.providerUserId === input.providerUserId

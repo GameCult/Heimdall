@@ -20,21 +20,23 @@ Landed right now:
 
 - a TypeScript/Fastify service scaffold under `src/`
 - Ed25519 JWT signing plus `/.well-known/jwks.json`
+- file-backed signing-key loading/bootstrap so restart does not vaporize the
+  service identity when you configure a real key path
 - signed OAuth start-state scaffolding for Discord, Patreon, GitHub, Twitch,
   and YouTube
 - durable auth/control-plane storage with in-memory and Postgres backends
 - account, linked-identity, session, grant, entitlement snapshot, and audit
   persistence
 - a real Discord OAuth callback path for the first Repixelizer access flow
+- AES-256-GCM sealing for managed provider tokens at rest
 - a one-time browser completion exchange for opener `postMessage` handoff
 - app profile surfaces for Repixelizer and StreamPixels
 - signed claim issuance for app-local verification experiments
+- a local verifier helper in `src/verifier.ts` so app backends can validate
+  Heimdall JWTs without phoning home on every guarded request
 
 Still not landed:
 
-- non-ephemeral signing key handling
-- real token encryption at rest instead of "encrypted" field names doing
-  cosplay
 - end-to-end app integrations in consumer repos
 - refresh/revocation flows and admin surfaces
 

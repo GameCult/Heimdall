@@ -29,6 +29,8 @@ Response:
   "service": "heimdall",
   "issuer": "https://heimdall.gamecult.org",
   "storageBackend": "memory",
+  "signingKeySource": "configured_file",
+  "tokenCustodySource": "configured",
   "now": "2026-04-26T12:00:00.000Z"
 }
 ```
@@ -42,9 +44,13 @@ Purpose:
 Notes:
 
 - current skeleton signs with Ed25519
-- if `GC_ACCESS_SIGNING_PRIVATE_KEY_PEM` is absent, the service generates an
-  ephemeral dev key at startup
-- production should use a persisted private key and stable `kid`
+- `GC_ACCESS_SIGNING_PRIVATE_KEY_PEM` still works for direct secret injection
+- `GC_ACCESS_SIGNING_PRIVATE_KEY_PATH` lets the service load a persisted key
+  from disk
+- if the path is missing and `GC_ACCESS_SIGNING_PRIVATE_KEY_BOOTSTRAP=1`, the
+  service bootstraps a new key file on first start
+- if neither PEM nor path is configured, the service still generates an
+  ephemeral dev key at startup and deserves no sympathy when the `kid` changes
 
 ### `GET /.well-known/heimdall-configuration`
 
@@ -238,6 +244,27 @@ Important behavior:
 - app backends should redeem them server-side
 - the browser should not keep the final access token in callback URL fragments
 
+### Reference local verifier seam
+
+Purpose:
+
+- give app backends a tiny local verification helper instead of encouraging
+  per-request Heimdall callbacks
+
+Current reference helper:
+
+- `src/verifier.ts`
+
+Current helper contract:
+
+- build the verifier once from Heimdall `issuer`, app slug, and JWKS
+- verify Ed25519 signature locally by `kid`
+- reject wrong `iss`, wrong `aud`, malformed claim shape, `nbf` violations,
+  and expired tokens
+- accept a small clock-skew window for normal same-host reality
+
+This is a reference seam, not a magical shared middleware product yet.
+
 ### `POST /v1/apps/{appSlug}/claims/issue`
 
 Purpose:
@@ -332,17 +359,14 @@ Examples:
 
 The following are not landed yet:
 
-- non-ephemeral signing key handling
-- actual token encryption at rest and secret-management policy
 - refresh/revocation flows
-- app-facing middleware packages or reference verifiers
 - admin/grant management surfaces
 
 ## Next implementation move
 
-Build the first consumer seam and harden the custody story:
+Consume the hardened slice in the first real app binding:
 
-- persisted signing key material
-- real token encryption at rest
-- a reference verifier / middleware contract for app backends
 - the first Repixelizer consumer binding that trusts Heimdall claims locally
+- the first Repixelizer backend redeem path for completion codes
+- any missing app-local session bridge or verifier middleware sugar that makes
+  that integration less feral

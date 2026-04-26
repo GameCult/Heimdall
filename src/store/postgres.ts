@@ -274,6 +274,21 @@ export class PostgresStore implements HeimdallStore {
     return result.rowCount ? mapAccountRow(expectRow(result.rows[0], "findAccountByLinkedIdentity")) : null;
   }
 
+  async findStoredLinkedIdentity(provider: Provider, providerUserId: string): Promise<StoredLinkedIdentity | null> {
+    const result = await this.pool.query<LinkedIdentityRow>(
+      `
+      SELECT *
+      FROM linked_identities
+      WHERE provider = $1
+        AND provider_user_id = $2
+      LIMIT 1
+      `,
+      [provider, providerUserId]
+    );
+
+    return result.rowCount ? mapLinkedIdentityRow(expectRow(result.rows[0], "findStoredLinkedIdentity")) : null;
+  }
+
   async upsertLinkedIdentity(input: UpsertLinkedIdentityInput): Promise<StoredLinkedIdentity> {
     const id = input.id ?? randomUUID();
     const result = await this.pool.query<LinkedIdentityRow>(

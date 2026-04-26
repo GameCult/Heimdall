@@ -5,6 +5,8 @@ import { type HeimdallConfig } from "../src/config.js";
 import { entitlementFacts, grantFacts, identityFacts } from "../src/facts.js";
 import { type OAuthProviderRuntime } from "../src/oauth.js";
 import { verifyJwt } from "../src/signing.js";
+import { createHeimdallAccessTokenVerifier } from "../src/verifier.js";
+import { InMemoryStore } from "../src/store/index.js";
 
 function createTestConfig(): HeimdallConfig {
   return {
@@ -16,6 +18,8 @@ function createTestConfig(): HeimdallConfig {
     sessionTtlSeconds: 3600,
     stateTtlSeconds: 600,
     completionTtlSeconds: 300,
+    bootstrapSigningPrivateKeyOnMissing: false,
+    tokenEncryptionKeyBase64: Buffer.alloc(32, 7).toString("base64"),
     storage: {
       backend: "memory",
       applySchemaOnStartup: true,
@@ -93,6 +97,21 @@ function getPublicKey(app: FastifyInstance) {
       };
     }
   ).heimdallContext.keys.publicKey;
+}
+
+function getHeimdallContext(app: FastifyInstance) {
+  return (app as FastifyInstance & {
+    heimdallContext: {
+      keys: {
+        publicKey: Parameters<typeof verifyJwt>[1];
+        publicJwk: { alg: "EdDSA"; kid: string; use: "sig"; [key: string]: unknown };
+      };
+      tokenCustody: {
+        decrypt(ciphertext: string): string;
+      };
+      store: InMemoryStore;
+    };
+  }).heimdallContext;
 }
 
 async function startDiscordSignIn(app: FastifyInstance): Promise<string> {
@@ -183,8 +202,10 @@ describe("Heimdall service", () => {
   });
 
   it("completes a provider callback and issues a verified Repixelizer claim", async () => {
+    const store = new InMemoryStore();
     const app = await buildApp({
       config: createTestConfig(),
+      store,
       oauthRuntimes: {
         discord: createMockDiscordRuntime(),
       },
@@ -213,6 +234,17 @@ describe("Heimdall service", () => {
       })
     );
     expect(payload.entitlements.facts).toEqual(expect.arrayContaining([entitlementFacts.appAccess]));
+
+    const storedIdentity = await store.findStoredLinkedIdentity("discord", "discord-user-123");
+    expect(storedIdentity).toEqual(expect.objectContaining({ provider: "discord" }));
+    expect(storedIdentity?.accessTokenEncrypted).toMatch(/^gc_tok_v1:/);
+    expect(storedIdentity?.accessTokenEncrypted).not.toBe("discord-access-token");
+    expect(getHeimdallContext(app).tokenCustody.decrypt(storedIdentity?.accessTokenEncrypted ?? "")).toBe(
+      "discord-access-token"
+    );
+    expect(getHeimdallContext(app).tokenCustody.decrypt(storedIdentity?.refreshTokenEncrypted ?? "")).toBe(
+      "discord-refresh-token"
+    );
 
     const verified = verifyJwt(payload.accessToken as string, getPublicKey(app));
     expect(verified.valid).toBe(true);
@@ -325,6 +357,25 @@ describe("Heimdall service", () => {
     const payload = response.json();
     expect(payload.sharedCapabilities).toEqual(
       expect.arrayContaining(["app_access", "queue_submit", "admin_access"])
+    );
+
+    const verifier = createHeimdallAccessTokenVerifier({
+      issuer: "https://heimdall.gamecult.org",
+      appSlug: "repixelizer",
+      jwks: {
+        keys: [getHeimdallContext(app).keys.publicJwk],
+      },
+    });
+    expect(verifier.verify(payload.accessToken as string)).toEqual(
+      expect.objectContaining({
+        valid: true,
+        claimSet: expect.objectContaining({
+          aud: "repixelizer",
+          app: expect.objectContaining({
+            slug: "repixelizer",
+          }),
+        }),
+      })
     );
   });
 
