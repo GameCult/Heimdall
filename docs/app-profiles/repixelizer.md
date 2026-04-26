@@ -49,8 +49,7 @@ job_cancel_own = app_access + resource ownership check
 
 ```text
 app_access =
-  discord.allowed_role
-  || patreon.allowed_tier
+  entitlement.app_access
   || grant.global_member
   || grant.app_access
 

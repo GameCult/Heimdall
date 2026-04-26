@@ -16,6 +16,7 @@ import {
 import { mapIssueClaimRequest, issueAccessClaim, type IssueAccessClaimInput } from "./claims.js";
 import { getAppProfile, serializeAppProfile, supportsProvider } from "./app-profiles.js";
 import { type HeimdallConfig, loadConfig } from "./config.js";
+import { grantFact } from "./facts.js";
 import { createOAuthRuntimeRegistry, type OAuthRuntimeRegistry } from "./oauth.js";
 import { buildAuthorizationUrl, providerCatalog, providerExpectedEnv } from "./providers.js";
 import { createRuntimeKeyMaterial, signJwt, verifyJwt } from "./signing.js";
@@ -108,7 +109,7 @@ function parseOAuthStatePayload(payload: Record<string, unknown>): OAuthStatePay
 }
 
 function buildGrantFacts(grants: StoredCapabilityGrant[]): string[] {
-  return grants.map((grant) => `grant.${grant.capability}`);
+  return grants.map((grant) => grantFact(grant.capability));
 }
 
 function prefersHtml(acceptHeader: string | undefined): boolean {

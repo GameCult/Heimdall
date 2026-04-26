@@ -184,7 +184,7 @@ Request body:
 {
   "accountId": "acct_repixelizer_001",
   "displayName": "Meta",
-  "facts": ["discord.allowed_role", "grant.operator"],
+  "facts": ["entitlement.app_access", "grant.operator"],
   "linkedIdentities": [
     {
       "provider": "discord",
@@ -247,6 +247,9 @@ Important current rule:
 
 - Heimdall only grants fully shared capabilities directly
 - hybrid capabilities still require app-local checks after claim verification
+- claim facts should prefer app-facing entitlement names over provider-branded
+  trivia when a provider-specific detail is not actually needed by the
+  consumer
 
 Examples:
 

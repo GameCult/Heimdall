@@ -294,14 +294,22 @@ AppAccessProfile {
 Example rule style:
 
 ```text
-app_access   = discord.allowed_role || patreon.allowed_tier || grant.global_member || grant.app_access
+app_access   = entitlement.app_access || grant.global_member || grant.app_access
 queue_submit = app_access
 admin_access = grant.operator || grant.admin_access
 ```
 
-The important part is not the provider names in the example. It is that app
-profiles choose which identity facts, entitlement snapshots, and local grants
-feed each capability.
+The important part is not naming a provider in every rule. It is that app
+profiles choose which identity facts, app-facing entitlement facts, snapshots,
+and local grants feed each capability.
+
+Preferred fact-vocabulary rule:
+
+- signed claim facts should prefer app-facing names such as
+  `entitlement.app_access`
+- provider-specific evidence such as Discord role ids or Patreon tiers should
+  usually stay in entitlement snapshots and linked-identity metadata unless a
+  consumer truly needs that exact upstream detail in the claim
 
 ## Request path discipline
 

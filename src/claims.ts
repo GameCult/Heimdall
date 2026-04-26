@@ -7,6 +7,7 @@ import {
 } from "./contracts.js";
 import { getAppProfile } from "./app-profiles.js";
 import { type HeimdallConfig } from "./config.js";
+import { identityFacts } from "./facts.js";
 import { signJwt, type RuntimeKeyMaterial } from "./signing.js";
 import { type CreateSessionInput, type HeimdallStore } from "./store/types.js";
 
@@ -26,7 +27,7 @@ function normalizeFacts(accountId: string, linkedIdentities: LinkedIdentityInput
   const normalized = new Set(facts);
 
   if (accountId.trim() || linkedIdentities.length) {
-    normalized.add("identity.authenticated");
+    normalized.add(identityFacts.authenticated);
   }
 
   return [...normalized].sort();

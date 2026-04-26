@@ -1,4 +1,5 @@
 import { type AppSlug, type LinkedIdentityInput, type Provider } from "./contracts.js";
+import { entitlementFacts, grantFacts, identityFacts } from "./facts.js";
 
 export type CapabilityMode = "shared" | "hybrid";
 
@@ -34,7 +35,7 @@ function hasAnyFact(facts: Set<string>, values: readonly string[]): boolean {
 const repixelizerProfile: AppProfile = {
   slug: "repixelizer",
   displayName: "Repixelizer",
-  profileVersion: "2026-04-26",
+  profileVersion: "2026-04-26.1",
   identityProviders: ["discord", "patreon"],
   entitlementSources: ["discord", "patreon"],
   managedConnectionProviders: [],
@@ -43,8 +44,7 @@ const repixelizerProfile: AppProfile = {
       key: "app_access",
       mode: "shared",
       summary: "May load the protected hosted GUI.",
-      sharedRule:
-        "discord.allowed_role || patreon.allowed_tier || grant.global_member || grant.app_access",
+      sharedRule: "entitlement.app_access || grant.global_member || grant.app_access",
     },
     {
       key: "queue_submit",
@@ -74,17 +74,16 @@ const repixelizerProfile: AppProfile = {
   evaluateSharedCapabilities(context) {
     const capabilities: string[] = [];
     const appAccess = hasAnyFact(context.facts, [
-      "discord.allowed_role",
-      "patreon.allowed_tier",
-      "grant.global_member",
-      "grant.app_access",
+      entitlementFacts.appAccess,
+      grantFacts.globalMember,
+      grantFacts.appAccess,
     ]);
 
     if (appAccess) {
       capabilities.push("app_access", "queue_submit");
     }
 
-    if (hasAnyFact(context.facts, ["grant.operator", "grant.admin_access"])) {
+    if (hasAnyFact(context.facts, [grantFacts.operator, grantFacts.adminAccess])) {
       capabilities.push("admin_access");
     }
 
@@ -104,7 +103,7 @@ const streampixelsProfile: AppProfile = {
       key: "viewer_access",
       mode: "shared",
       summary: "Authenticated viewer session for control-plane surfaces.",
-      sharedRule: "identity.authenticated",
+      sharedRule: identityFacts.authenticated,
     },
     {
       key: "creator_access",
@@ -124,17 +123,17 @@ const streampixelsProfile: AppProfile = {
       key: "operator_access",
       mode: "shared",
       summary: "Global operator access.",
-      sharedRule: "grant.operator",
+      sharedRule: grantFacts.operator,
     },
   ],
   evaluateSharedCapabilities(context) {
     const capabilities: string[] = [];
 
-    if (context.facts.has("identity.authenticated")) {
+    if (context.facts.has(identityFacts.authenticated)) {
       capabilities.push("viewer_access");
     }
 
-    if (context.facts.has("grant.operator")) {
+    if (context.facts.has(grantFacts.operator)) {
       capabilities.push("operator_access");
     }
 

@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import { type AppSlug, type OAuthConnectionBinding, type Provider } from "./contracts.js";
 import { type HeimdallConfig } from "./config.js";
+import { entitlementFacts } from "./facts.js";
 import { type CreateEntitlementSnapshotInput } from "./store/types.js";
 
 export interface OAuthTokenSet {
@@ -211,10 +212,10 @@ async function evaluateDiscordEntitlements(options: {
   };
   const roles = member.roles ?? [];
   const matchedRoles = allowedRoleIds.filter((roleId) => roles.includes(roleId));
-  const facts = ["discord.in_guild"];
+  const facts: string[] = [];
 
   if (matchedRoles.length > 0) {
-    facts.push("discord.allowed_role");
+    facts.push(entitlementFacts.appAccess);
   }
 
   return {
@@ -229,7 +230,7 @@ async function evaluateDiscordEntitlements(options: {
         reasonCode: matchedRoles.length > 0 ? "matched_role" : "missing_role",
         reasonDetail:
           matchedRoles.length > 0
-            ? `Matched Discord roles: ${matchedRoles.join(", ")}`
+            ? "Matched a configured Repixelizer access role."
             : allowedRoleIds.length
               ? "User is in the guild but lacks the configured Repixelizer access role."
               : "No Repixelizer Discord role ids are configured.",

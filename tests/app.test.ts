@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { type FastifyInstance } from "fastify";
 import { buildApp } from "../src/app.js";
 import { type HeimdallConfig } from "../src/config.js";
+import { entitlementFacts, grantFacts, identityFacts } from "../src/facts.js";
 import { type OAuthProviderRuntime } from "../src/oauth.js";
 import { verifyJwt } from "../src/signing.js";
 
@@ -58,7 +59,7 @@ function createMockDiscordRuntime(): OAuthProviderRuntime {
     },
     async evaluateEntitlements({ callback }) {
       return {
-        facts: ["discord.in_guild", "discord.allowed_role"],
+        facts: [entitlementFacts.appAccess],
         snapshots: [
           {
             accountId: callback.accountId,
@@ -204,7 +205,7 @@ describe("Heimdall service", () => {
         primaryEmail: "meta@gamecult.org",
       })
     );
-    expect(payload.entitlements.facts).toEqual(expect.arrayContaining(["discord.allowed_role"]));
+    expect(payload.entitlements.facts).toEqual(expect.arrayContaining([entitlementFacts.appAccess]));
 
     const verified = verifyJwt(payload.accessToken as string, getPublicKey(app));
     expect(verified.valid).toBe(true);
@@ -216,8 +217,39 @@ describe("Heimdall service", () => {
           account_id: payload.account.id,
         })
       );
+      expect(verified.payload.facts).toEqual(
+        expect.arrayContaining([identityFacts.authenticated, entitlementFacts.appAccess])
+      );
       expect(verified.payload.capabilities).toEqual(expect.arrayContaining(["app_access", "queue_submit"]));
     }
+  });
+
+  it("issues direct claims from provider-agnostic entitlement facts", async () => {
+    const app = await buildApp({ config: createTestConfig() });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/apps/repixelizer/claims/issue",
+      payload: {
+        accountId: "acct_repixelizer_001",
+        displayName: "Meta",
+        facts: [entitlementFacts.appAccess, grantFacts.operator],
+        linkedIdentities: [
+          {
+            provider: "discord",
+            providerUserId: "123456789",
+            username: "meta",
+          },
+        ],
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
+    const payload = response.json();
+    expect(payload.sharedCapabilities).toEqual(
+      expect.arrayContaining(["app_access", "queue_submit", "admin_access"])
+    );
   });
 
   it("redirects browser callbacks back to the app with a token fragment", async () => {
