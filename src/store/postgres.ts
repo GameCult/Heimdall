@@ -4,12 +4,14 @@ import { type AppSlug, type LinkedIdentityInput, type Provider } from "../contra
 import { CREATE_SCHEMA_SQL } from "./schema.js";
 import {
   type CreateAccountInput,
+  type CreateAuthCompletionInput,
   type CreateAuditEventInput,
   type CreateCapabilityGrantInput,
   type CreateEntitlementSnapshotInput,
   type CreateSessionInput,
   type HeimdallStore,
   type StoredAccount,
+  type StoredAuthCompletion,
   type StoredCapabilityGrant,
   type StoredLinkedIdentity,
   type StoredSession,
@@ -66,6 +68,20 @@ interface SessionRow extends QueryResultRow {
   claims_json: Record<string, unknown>;
 }
 
+interface AuthCompletionRow extends QueryResultRow {
+  code: string;
+  app_slug: AppSlug;
+  provider: Provider;
+  mode: "sign_in" | "link" | "connect";
+  account_id: string;
+  session_id: string;
+  return_to: string;
+  payload_json: Record<string, unknown>;
+  created_at: string | Date;
+  expires_at: string | Date;
+  consumed_at: string | Date | null;
+}
+
 function expectRow<T>(row: T | undefined, label: string): T {
   if (!row) {
     throw new Error(`${label} query returned no rows.`);
@@ -76,6 +92,10 @@ function expectRow<T>(row: T | undefined, label: string): T {
 
 function nullable<T>(value: T | undefined): T | null {
   return value ?? null;
+}
+
+function normalizeTimestamp(value: string | Date): string {
+  return value instanceof Date ? value.toISOString() : value;
 }
 
 function parseScopes(value: string): string[] {
@@ -177,6 +197,27 @@ function mapSessionRow(row: SessionRow): StoredSession {
     accessRevision: row.access_revision,
     claimsJson: row.claims_json,
   };
+}
+
+function mapAuthCompletionRow(row: AuthCompletionRow): StoredAuthCompletion {
+  const completion: StoredAuthCompletion = {
+    code: row.code,
+    appSlug: row.app_slug,
+    provider: row.provider,
+    mode: row.mode,
+    accountId: row.account_id,
+    sessionId: row.session_id,
+    returnTo: row.return_to,
+    createdAt: normalizeTimestamp(row.created_at),
+    expiresAt: normalizeTimestamp(row.expires_at),
+    payloadJson: row.payload_json,
+  };
+
+  if (row.consumed_at) {
+    completion.consumedAt = normalizeTimestamp(row.consumed_at);
+  }
+
+  return completion;
 }
 
 export class PostgresStore implements HeimdallStore {
@@ -393,6 +434,51 @@ export class PostgresStore implements HeimdallStore {
     );
 
     return mapSessionRow(expectRow(result.rows[0], "createSession"));
+  }
+
+  async createAuthCompletion(input: CreateAuthCompletionInput): Promise<StoredAuthCompletion> {
+    const code = input.code ?? randomUUID();
+    const result = await this.pool.query<AuthCompletionRow>(
+      `
+      INSERT INTO auth_completions (
+        code, app_slug, provider, mode, account_id, session_id,
+        return_to, payload_json, created_at, expires_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      RETURNING *
+      `,
+      [
+        code,
+        input.appSlug,
+        input.provider,
+        input.mode,
+        input.accountId,
+        input.sessionId,
+        input.returnTo,
+        JSON.stringify(input.payloadJson),
+        input.createdAt,
+        input.expiresAt,
+      ]
+    );
+
+    return mapAuthCompletionRow(expectRow(result.rows[0], "createAuthCompletion"));
+  }
+
+  async consumeAuthCompletion(appSlug: AppSlug, code: string, at: string): Promise<StoredAuthCompletion | null> {
+    const result = await this.pool.query<AuthCompletionRow>(
+      `
+      UPDATE auth_completions
+      SET consumed_at = $3
+      WHERE code = $1
+        AND app_slug = $2
+        AND consumed_at IS NULL
+        AND expires_at > $3
+      RETURNING *
+      `,
+      [code, appSlug, at]
+    );
+
+    return result.rowCount ? mapAuthCompletionRow(expectRow(result.rows[0], "consumeAuthCompletion")) : null;
   }
 
   async upsertEntitlementSnapshot(input: CreateEntitlementSnapshotInput): Promise<void> {

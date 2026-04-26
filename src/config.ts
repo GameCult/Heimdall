@@ -24,6 +24,7 @@ export interface HeimdallConfig {
   issuer: string;
   sessionTtlSeconds: number;
   stateTtlSeconds: number;
+  completionTtlSeconds: number;
   signingPrivateKeyPem?: string;
   signingKeyId?: string;
   storage: StorageConfig;
@@ -110,6 +111,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): HeimdallConfig
     issuer,
     sessionTtlSeconds: readInt(env.GC_ACCESS_SESSION_TTL_SECONDS, 3600),
     stateTtlSeconds: readInt(env.GC_ACCESS_STATE_TTL_SECONDS, 600),
+    completionTtlSeconds: readInt(env.GC_ACCESS_COMPLETION_TTL_SECONDS, 300),
     storage: {
       backend: storageBackend,
       applySchemaOnStartup: readBoolean(env.GC_ACCESS_APPLY_SCHEMA_ON_STARTUP, true),

@@ -95,6 +95,22 @@ Heimdall should be involved in:
 - session and claim issuance
 - entitlement refresh
 
+Preferred browser handoff:
+
+1. Repixelizer opens Heimdall auth in a script-opened new tab/window
+2. Heimdall completes provider auth and upstream entitlement checks
+3. Heimdall callback posts a one-time completion code back to the opener
+4. the callback context tries to close itself
+5. Repixelizer backend redeems the completion code with Heimdall
+6. Repixelizer establishes local trusted auth state from the redeemed result
+
+Important rule:
+
+- Repixelizer should not rely on a raw access token arriving in the callback
+  URL
+- the browser may see a one-time completion code in fallback paths, but the
+  final trusted auth material should come from backend redemption
+
 Repixelizer should still do locally:
 
 - claim verification on guarded routes

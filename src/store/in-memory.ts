@@ -2,12 +2,14 @@ import { randomUUID } from "node:crypto";
 import { type AppSlug, type LinkedIdentityInput, type Provider } from "../contracts.js";
 import {
   type CreateAccountInput,
+  type CreateAuthCompletionInput,
   type CreateAuditEventInput,
   type CreateCapabilityGrantInput,
   type CreateEntitlementSnapshotInput,
   type CreateSessionInput,
   type HeimdallStore,
   type StoredAccount,
+  type StoredAuthCompletion,
   type StoredCapabilityGrant,
   type StoredLinkedIdentity,
   type StoredSession,
@@ -35,6 +37,7 @@ export class InMemoryStore implements HeimdallStore {
   private readonly linkedIdentities = new Map<string, StoredLinkedIdentity>();
   private readonly grants = new Map<string, StoredCapabilityGrant>();
   private readonly sessions = new Map<string, StoredSession>();
+  private readonly authCompletions = new Map<string, StoredAuthCompletion>();
   private readonly entitlementSnapshots = new Map<string, CreateEntitlementSnapshotInput>();
   private readonly auditEvents = new Map<string, CreateAuditEventInput>();
 
@@ -193,6 +196,38 @@ export class InMemoryStore implements HeimdallStore {
     const session: StoredSession = clone(input);
     this.sessions.set(session.id, session);
     return clone(session);
+  }
+
+  async createAuthCompletion(input: CreateAuthCompletionInput): Promise<StoredAuthCompletion> {
+    const completion: StoredAuthCompletion = {
+      code: input.code ?? randomUUID(),
+      appSlug: input.appSlug,
+      provider: input.provider,
+      mode: input.mode,
+      accountId: input.accountId,
+      sessionId: input.sessionId,
+      returnTo: input.returnTo,
+      createdAt: input.createdAt,
+      expiresAt: input.expiresAt,
+      payloadJson: clone(input.payloadJson),
+    };
+
+    this.authCompletions.set(completion.code, clone(completion));
+    return clone(completion);
+  }
+
+  async consumeAuthCompletion(appSlug: AppSlug, code: string, at: string): Promise<StoredAuthCompletion | null> {
+    const completion = this.authCompletions.get(code);
+    if (!completion) {
+      return null;
+    }
+
+    if (completion.appSlug !== appSlug || completion.expiresAt <= at || completion.consumedAt) {
+      return null;
+    }
+
+    completion.consumedAt = at;
+    return clone(completion);
   }
 
   async upsertEntitlementSnapshot(input: CreateEntitlementSnapshotInput): Promise<void> {

@@ -108,6 +108,34 @@ describe("PostgresStore", () => {
       createdAt: now,
     });
 
+    const completion = await store.createAuthCompletion({
+      appSlug: "repixelizer",
+      provider: "discord",
+      mode: "sign_in",
+      accountId: account.id,
+      sessionId: "session-123",
+      returnTo: "https://repixelizer.gamecult.org/app/",
+      createdAt: now,
+      expiresAt: "2026-04-26T12:05:00.000Z",
+      payloadJson: {
+        status: "success",
+        provider: "discord",
+        appSlug: "repixelizer",
+      },
+    });
+
+    const consumed = await store.consumeAuthCompletion("repixelizer", completion.code, "2026-04-26T12:01:00.000Z");
+    expect(consumed).toEqual(
+      expect.objectContaining({
+        code: completion.code,
+        appSlug: "repixelizer",
+        consumedAt: "2026-04-26T12:01:00.000Z",
+      })
+    );
+
+    const consumedAgain = await store.consumeAuthCompletion("repixelizer", completion.code, "2026-04-26T12:02:00.000Z");
+    expect(consumedAgain).toBeNull();
+
     await store.close();
   });
 });

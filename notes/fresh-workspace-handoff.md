@@ -43,10 +43,13 @@ Do not trust this file for the exact live HEAD. Always check git.
   - `/.well-known/heimdall-configuration`
   - `/v1/oauth/{provider}/start`
   - `/v1/oauth/{provider}/callback`
+  - `/v1/apps/{appSlug}/auth-completions/redeem`
   - `/v1/apps/{appSlug}/claims/issue`
 - the Discord callback path now performs real code exchange, identity
   resolution, auth persistence, entitlement evaluation, audit logging, and
   claim issuance for the Repixelizer slice
+- browser-style auth handoff now uses a one-time completion code posted back to
+  the opener, with backend redemption instead of fragment-token handoff
 - Repixelizer is the first auth-blank binding target
 - StreamPixels is the migration target with useful existing auth seams that
   should not be flattened into mush
@@ -73,8 +76,9 @@ the landed slice:
 - persisted signing key material
 - real token encryption at rest
 - a reference verifier / middleware seam for app backends
-- the first Repixelizer consumer integration that trusts Heimdall claims
-  locally
+- the first Repixelizer consumer integration that opens auth in a new browser
+  context, redeems Heimdall completion codes server-side, and trusts Heimdall
+  claims locally
 
 without dragging app-domain data into the shared layer and without forcing
 per-request auth round-trips.

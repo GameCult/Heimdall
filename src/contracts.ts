@@ -61,6 +61,10 @@ export interface IssueClaimRequest {
   ttlSeconds?: number;
 }
 
+export interface RedeemAuthCompletionRequest {
+  completionCode: string;
+}
+
 export interface AccessClaimPayload {
   iss: string;
   aud: AppSlug;

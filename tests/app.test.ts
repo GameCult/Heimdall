@@ -15,6 +15,7 @@ function createTestConfig(): HeimdallConfig {
     issuer: "https://heimdall.gamecult.org",
     sessionTtlSeconds: 3600,
     stateTtlSeconds: 600,
+    completionTtlSeconds: 300,
     storage: {
       backend: "memory",
       applySchemaOnStartup: true,
@@ -198,6 +199,12 @@ describe("Heimdall service", () => {
 
     expect(response.statusCode).toBe(201);
     const payload = response.json();
+    expect(payload.completion).toEqual(
+      expect.objectContaining({
+        code: expect.any(String),
+        redeemEndpoint: "https://heimdall.gamecult.org/v1/apps/repixelizer/auth-completions/redeem",
+      })
+    );
     expect(payload.sharedCapabilities).toEqual(expect.arrayContaining(["app_access", "queue_submit"]));
     expect(payload.account).toEqual(
       expect.objectContaining({
@@ -222,6 +229,75 @@ describe("Heimdall service", () => {
       );
       expect(verified.payload.capabilities).toEqual(expect.arrayContaining(["app_access", "queue_submit"]));
     }
+  });
+
+  it("redeems a completion code exactly once", async () => {
+    const app = await buildApp({
+      config: createTestConfig(),
+      oauthRuntimes: {
+        discord: createMockDiscordRuntime(),
+      },
+    });
+    apps.push(app);
+
+    const stateToken = await startDiscordSignIn(app);
+    const callbackResponse = await app.inject({
+      method: "GET",
+      url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(stateToken)}`,
+    });
+    const completionCode = callbackResponse.json().completion.code as string;
+
+    const redeemResponse = await app.inject({
+      method: "POST",
+      url: "/v1/apps/repixelizer/auth-completions/redeem",
+      payload: {
+        completionCode,
+      },
+    });
+
+    expect(redeemResponse.statusCode).toBe(201);
+    expect(redeemResponse.json()).toEqual(
+      expect.objectContaining({
+        status: "success",
+        provider: "discord",
+        appSlug: "repixelizer",
+      })
+    );
+
+    const secondRedeemResponse = await app.inject({
+      method: "POST",
+      url: "/v1/apps/repixelizer/auth-completions/redeem",
+      payload: {
+        completionCode,
+      },
+    });
+
+    expect(secondRedeemResponse.statusCode).toBe(410);
+  });
+
+  it("renders a browser handoff page that posts a completion code instead of a token", async () => {
+    const app = await buildApp({
+      config: createTestConfig(),
+      oauthRuntimes: {
+        discord: createMockDiscordRuntime(),
+      },
+    });
+    apps.push(app);
+
+    const stateToken = await startDiscordSignIn(app);
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(stateToken)}`,
+      headers: {
+        accept: "text/html",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["content-type"]).toContain("text/html");
+    expect(response.body).toContain("window.opener.postMessage");
+    expect(response.body).toContain("heimdall_completion_code");
+    expect(response.body).not.toContain("heimdall_access_token");
   });
 
   it("issues direct claims from provider-agnostic entitlement facts", async () => {
@@ -250,33 +326,6 @@ describe("Heimdall service", () => {
     expect(payload.sharedCapabilities).toEqual(
       expect.arrayContaining(["app_access", "queue_submit", "admin_access"])
     );
-  });
-
-  it("redirects browser callbacks back to the app with a token fragment", async () => {
-    const app = await buildApp({
-      config: createTestConfig(),
-      oauthRuntimes: {
-        discord: createMockDiscordRuntime(),
-      },
-    });
-    apps.push(app);
-
-    const stateToken = await startDiscordSignIn(app);
-    const response = await app.inject({
-      method: "GET",
-      url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(stateToken)}`,
-      headers: {
-        accept: "text/html",
-      },
-    });
-
-    expect(response.statusCode).toBe(302);
-    const redirectUrl = new URL(response.headers.location ?? "");
-    expect(redirectUrl.origin + redirectUrl.pathname).toBe("https://repixelizer.gamecult.org/app/");
-    const fragment = new URLSearchParams(redirectUrl.hash.slice(1));
-    expect(fragment.get("heimdall_status")).toBe("success");
-    expect(fragment.get("heimdall_provider")).toBe("discord");
-    expect(fragment.get("heimdall_access_token")).toBeTruthy();
   });
 
   it("exposes StreamPixels hybrid capability seams without granting them blindly", async () => {

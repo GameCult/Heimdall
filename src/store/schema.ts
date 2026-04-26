@@ -42,6 +42,23 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE INDEX IF NOT EXISTS sessions_account_id_idx
   ON sessions(account_id);
 
+CREATE TABLE IF NOT EXISTS auth_completions (
+  code TEXT PRIMARY KEY,
+  app_slug TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  mode TEXT NOT NULL,
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  return_to TEXT NOT NULL,
+  payload_json JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  consumed_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS auth_completions_lookup_idx
+  ON auth_completions(app_slug, expires_at, consumed_at);
+
 CREATE TABLE IF NOT EXISTS capability_grants (
   id TEXT PRIMARY KEY,
   account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,

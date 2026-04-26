@@ -1,4 +1,4 @@
-import { type AppSlug, type LinkedIdentityInput, type Provider } from "../contracts.js";
+import { type AppSlug, type LinkedIdentityInput, type OAuthMode, type Provider } from "../contracts.js";
 
 export interface StoredAccount {
   id: string;
@@ -121,6 +121,33 @@ export interface CreateAuditEventInput {
   createdAt: string;
 }
 
+export interface StoredAuthCompletion {
+  code: string;
+  appSlug: AppSlug;
+  provider: Provider;
+  mode: OAuthMode;
+  accountId: string;
+  sessionId: string;
+  returnTo: string;
+  createdAt: string;
+  expiresAt: string;
+  consumedAt?: string;
+  payloadJson: Record<string, unknown>;
+}
+
+export interface CreateAuthCompletionInput {
+  code?: string;
+  appSlug: AppSlug;
+  provider: Provider;
+  mode: OAuthMode;
+  accountId: string;
+  sessionId: string;
+  returnTo: string;
+  createdAt: string;
+  expiresAt: string;
+  payloadJson: Record<string, unknown>;
+}
+
 export interface HeimdallStore {
   ensureSchema(): Promise<void>;
   close(): Promise<void>;
@@ -132,6 +159,8 @@ export interface HeimdallStore {
   createCapabilityGrant(input: CreateCapabilityGrantInput): Promise<StoredCapabilityGrant>;
   listActiveGrants(accountId: string, appSlug: AppSlug, at: string): Promise<StoredCapabilityGrant[]>;
   createSession(input: CreateSessionInput): Promise<StoredSession>;
+  createAuthCompletion(input: CreateAuthCompletionInput): Promise<StoredAuthCompletion>;
+  consumeAuthCompletion(appSlug: AppSlug, code: string, at: string): Promise<StoredAuthCompletion | null>;
   upsertEntitlementSnapshot(input: CreateEntitlementSnapshotInput): Promise<void>;
   createAuditEvent(input: CreateAuditEventInput): Promise<void>;
 }

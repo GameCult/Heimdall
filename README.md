@@ -26,6 +26,7 @@ Landed right now:
 - account, linked-identity, session, grant, entitlement snapshot, and audit
   persistence
 - a real Discord OAuth callback path for the first Repixelizer access flow
+- a one-time browser completion exchange for opener `postMessage` handoff
 - app profile surfaces for Repixelizer and StreamPixels
 - signed claim issuance for app-local verification experiments
 

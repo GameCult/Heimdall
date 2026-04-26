@@ -152,7 +152,8 @@ Failure mode right now:
 Purpose:
 
 - validate signed OAuth `state`
-- serve as the landing surface for future code/token exchange
+- complete the provider callback flow
+- hand browser callers back to the app through a one-time completion exchange
 
 Current status:
 
@@ -161,12 +162,81 @@ Current status:
 - for Discord, exchanges the authorization code, resolves the provider
   identity, persists the local account/link/session/audit records, evaluates
   Repixelizer entitlement facts, and issues a signed Heimdall access claim
-- for browser-style callers, redirects back to `returnTo` with a fragment
-  carrying status and the issued access token
-- for non-browser callers, returns JSON with the issued claim, session, account
-  summary, token metadata, and entitlement result
+- for browser-style callers, renders a Heimdall-hosted completion page that
+  posts a one-time completion code back to the opener and tries to close
+  itself
+- if opener handoff fails, the completion page still offers a fallback return
+  link carrying only the one-time completion code, not the access token
+- for non-browser callers, returns JSON with the issued claim/session data plus
+  completion metadata
 - other configured providers still return "not implemented" at the runtime
   adapter layer until their callback paths are added
+
+Success response for non-browser callers now includes:
+
+```json
+{
+  "completion": {
+    "code": "<one-time-code>",
+    "expiresAt": "2026-04-26T12:05:00.000Z",
+    "redeemEndpoint": "https://heimdall.gamecult.org/v1/apps/repixelizer/auth-completions/redeem"
+  }
+}
+```
+
+### `POST /v1/apps/{appSlug}/auth-completions/redeem`
+
+Purpose:
+
+- redeem a short-lived one-time browser completion code
+- return the trusted Heimdall auth result to the app backend
+
+Request body:
+
+```json
+{
+  "completionCode": "<one-time-code>"
+}
+```
+
+Response:
+
+```json
+{
+  "status": "success",
+  "provider": "discord",
+  "mode": "sign_in",
+  "appSlug": "repixelizer",
+  "account": {
+    "id": "acct_repixelizer_001",
+    "displayName": "Meta"
+  },
+  "session": {
+    "accountId": "acct_repixelizer_001",
+    "sessionId": "uuid",
+    "appSlug": "repixelizer",
+    "accessRevision": 1,
+    "expiresAt": "2026-04-26T13:00:00.000Z"
+  },
+  "accessToken": "<signed-jwt>",
+  "claimSet": {},
+  "verification": {
+    "issuer": "https://heimdall.gamecult.org",
+    "jwksUri": "https://heimdall.gamecult.org/.well-known/jwks.json",
+    "alg": "EdDSA",
+    "kid": "ed25519-..."
+  },
+  "sharedCapabilities": ["app_access", "queue_submit"],
+  "hybridCapabilities": []
+}
+```
+
+Important behavior:
+
+- completion codes are one-time use
+- completion codes are short-lived
+- app backends should redeem them server-side
+- the browser should not keep the final access token in callback URL fragments
 
 ### `POST /v1/apps/{appSlug}/claims/issue`
 

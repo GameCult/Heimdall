@@ -9,12 +9,14 @@ import {
   type AppSlug,
   type OAuthMode,
   type OAuthConnectionBinding,
+  type RedeemAuthCompletionRequest,
   type OAuthStatePayload,
   type OAuthStartRequest,
   type Provider,
 } from "./contracts.js";
 import { mapIssueClaimRequest, issueAccessClaim, type IssueAccessClaimInput } from "./claims.js";
 import { getAppProfile, serializeAppProfile, supportsProvider } from "./app-profiles.js";
+import { renderBrowserHandoffPage } from "./browser-handoff.js";
 import { type HeimdallConfig, loadConfig } from "./config.js";
 import { grantFact } from "./facts.js";
 import { createOAuthRuntimeRegistry, type OAuthRuntimeRegistry } from "./oauth.js";
@@ -118,20 +120,6 @@ function prefersHtml(acceptHeader: string | undefined): boolean {
   }
 
   return acceptHeader.includes("text/html") || acceptHeader.includes("application/xhtml+xml");
-}
-
-function buildRedirectUrl(returnTo: string, params: Record<string, string | undefined>): string {
-  const url = new URL(returnTo);
-  const fragment = new URLSearchParams();
-
-  for (const [key, value] of Object.entries(params)) {
-    if (value) {
-      fragment.set(key, value);
-    }
-  }
-
-  url.hash = fragment.toString();
-  return url.toString();
 }
 
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
@@ -326,14 +314,19 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       }
 
       if (request.query.error) {
-        const redirectUrl = buildRedirectUrl(statePayload.return_to, {
-          heimdall_status: "error",
-          heimdall_provider: request.params.provider,
-          heimdall_error: "provider_error",
-          heimdall_error_description: request.query.error_description ?? request.query.error,
-        });
         if (prefersHtml(request.headers.accept)) {
-          return reply.redirect(redirectUrl);
+          reply.type("text/html; charset=utf-8");
+          return reply.send(
+            renderBrowserHandoffPage({
+              status: "error",
+              provider: request.params.provider,
+              appSlug: statePayload.app_slug,
+              mode: statePayload.mode,
+              returnTo: statePayload.return_to,
+              error: "provider_error",
+              errorDescription: request.query.error_description ?? request.query.error,
+            })
+          );
         }
 
         reply.code(400);
@@ -342,22 +335,27 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           provider: request.params.provider,
           providerError: request.query.error,
           providerErrorDescription: request.query.error_description,
-          redirectUrl,
+          returnTo: statePayload.return_to,
         };
       }
 
       if (!request.query.code) {
-        const redirectUrl = buildRedirectUrl(statePayload.return_to, {
-          heimdall_status: "error",
-          heimdall_provider: request.params.provider,
-          heimdall_error: "missing_code",
-        });
         if (prefersHtml(request.headers.accept)) {
-          return reply.redirect(redirectUrl);
+          reply.type("text/html; charset=utf-8");
+          return reply.send(
+            renderBrowserHandoffPage({
+              status: "error",
+              provider: request.params.provider,
+              appSlug: statePayload.app_slug,
+              mode: statePayload.mode,
+              returnTo: statePayload.return_to,
+              error: "missing_code",
+            })
+          );
         }
 
         reply.code(400);
-        return { error: "missing_code", redirectUrl };
+        return { error: "missing_code", returnTo: statePayload.return_to };
       }
 
       const callbackUrl = `${config.publicBaseUrl}/v1/oauth/${request.params.provider}/callback`;
@@ -474,34 +472,79 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           createdAt: nowIso,
         });
 
-        const redirectUrl = buildRedirectUrl(statePayload.return_to, {
-          heimdall_status: "success",
-          heimdall_provider: request.params.provider,
-          heimdall_app_slug: statePayload.app_slug,
-          heimdall_account_id: account.id,
-          heimdall_session_id: issued.session.sessionId,
-          heimdall_access_token: issued.accessToken,
+        const accountSummary: {
+          id: string;
+          displayName?: string;
+          primaryEmail?: string;
+        } = {
+          id: account.id,
+        };
+        if (account.displayName !== undefined) {
+          accountSummary.displayName = account.displayName;
+        }
+        if (account.primaryEmail !== undefined) {
+          accountSummary.primaryEmail = account.primaryEmail;
+        }
+
+        const completionPayload = {
+          status: "success",
+          provider: request.params.provider,
+          mode: statePayload.mode,
+          appSlug: statePayload.app_slug,
+          account: accountSummary,
+          entitlements: entitlementEvaluation,
+          returnTo: statePayload.return_to,
+          ...issued,
+        };
+        const completionExpiresAt = new Date(Date.now() + config.completionTtlSeconds * 1000).toISOString();
+        const completion = await store.createAuthCompletion({
+          appSlug: statePayload.app_slug,
+          provider: request.params.provider,
+          mode: statePayload.mode,
+          accountId: account.id,
+          sessionId: issued.session.sessionId,
+          returnTo: statePayload.return_to,
+          createdAt: nowIso,
+          expiresAt: completionExpiresAt,
+          payloadJson: completionPayload as unknown as Record<string, unknown>,
+        });
+
+        await store.createAuditEvent({
+          accountId: account.id,
+          sessionId: issued.session.sessionId,
+          appSlug: statePayload.app_slug,
+          eventType: "auth_completion_created",
+          eventPayloadJson: {
+            provider: request.params.provider,
+            mode: statePayload.mode,
+            completionCode: completion.code,
+            expiresAt: completion.expiresAt,
+          },
+          createdAt: nowIso,
         });
 
         if (prefersHtml(request.headers.accept)) {
-          return reply.redirect(redirectUrl);
+          reply.type("text/html; charset=utf-8");
+          return reply.send(
+            renderBrowserHandoffPage({
+              status: "success",
+              provider: request.params.provider,
+              appSlug: statePayload.app_slug,
+              mode: statePayload.mode,
+              returnTo: statePayload.return_to,
+              completionCode: completion.code,
+            })
+          );
         }
 
         reply.code(201);
         return {
-          provider: request.params.provider,
-          mode: statePayload.mode,
-          account,
-          linkedIdentity: identity,
-          token: {
-            tokenType: tokenSet.tokenType,
-            scope: tokenSet.scope,
-            expiresAt: tokenSet.expiresAt,
+          completion: {
+            code: completion.code,
+            expiresAt: completion.expiresAt,
+            redeemEndpoint: `${config.publicBaseUrl}/v1/apps/${statePayload.app_slug}/auth-completions/redeem`,
           },
-          entitlements: entitlementEvaluation,
-          redirectUrl,
-          returnTo: statePayload.return_to,
-          ...issued,
+          ...completionPayload,
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : "OAuth callback failed.";
@@ -517,14 +560,19 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           createdAt: nowIso,
         });
 
-        const redirectUrl = buildRedirectUrl(statePayload.return_to, {
-          heimdall_status: "error",
-          heimdall_provider: request.params.provider,
-          heimdall_error: "oauth_callback_failed",
-          heimdall_error_description: message,
-        });
         if (prefersHtml(request.headers.accept)) {
-          return reply.redirect(redirectUrl);
+          reply.type("text/html; charset=utf-8");
+          return reply.send(
+            renderBrowserHandoffPage({
+              status: "error",
+              provider: request.params.provider,
+              appSlug: statePayload.app_slug,
+              mode: statePayload.mode,
+              returnTo: statePayload.return_to,
+              error: "oauth_callback_failed",
+              errorDescription: message,
+            })
+          );
         }
 
         reply.code(502);
@@ -533,9 +581,58 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           detail: message,
           provider: request.params.provider,
           appSlug: statePayload.app_slug,
-          redirectUrl,
+          returnTo: statePayload.return_to,
         };
       }
+    }
+  );
+
+  app.post<{ Params: { appSlug: AppSlug }; Body: RedeemAuthCompletionRequest }>(
+    "/v1/apps/:appSlug/auth-completions/redeem",
+    {
+      schema: {
+        params: {
+          type: "object",
+          required: ["appSlug"],
+          additionalProperties: false,
+          properties: {
+            appSlug: { type: "string", enum: [...appSlugs] },
+          },
+        },
+        body: {
+          type: "object",
+          required: ["completionCode"],
+          additionalProperties: false,
+          properties: {
+            completionCode: { type: "string", minLength: 1 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const nowIso = new Date().toISOString();
+      const completion = await store.consumeAuthCompletion(request.params.appSlug, request.body.completionCode, nowIso);
+
+      if (!completion) {
+        reply.code(410);
+        return { error: "invalid_or_expired_completion_code" };
+      }
+
+      await store.createAuditEvent({
+        accountId: completion.accountId,
+        sessionId: completion.sessionId,
+        appSlug: completion.appSlug,
+        eventType: "auth_completion_redeemed",
+        eventPayloadJson: {
+          provider: completion.provider,
+          mode: completion.mode,
+          completionCode: completion.code,
+        },
+        createdAt: nowIso,
+      });
+
+      reply.code(201);
+      return completion.payloadJson;
     }
   );
 
