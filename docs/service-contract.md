@@ -126,6 +126,11 @@ Request body:
   "appSlug": "repixelizer",
   "mode": "sign_in",
   "returnTo": "https://repixelizer.gamecult.org/app/",
+  "handoff": {
+    "kind": "backend_callback",
+    "attemptId": "auth-attempt-123",
+    "callbackUrl": "https://repixelizer.gamecult.org/api/auth/heimdall/callback"
+  },
   "connection": {
     "kind": "creator",
     "targetId": "creator:alpha",
@@ -168,17 +173,41 @@ Current status:
 - for Discord, exchanges the authorization code, resolves the provider
   identity, persists the local account/link/session/audit records, evaluates
   Repixelizer entitlement facts, and issues a signed Heimdall access claim
-- for browser-style callers, renders a Heimdall-hosted completion page that
-  posts a one-time completion code back to the opener and tries to close
-  itself
-- if opener handoff fails, the completion page still offers a fallback return
-  link carrying only the one-time completion code, not the access token
-- for non-browser callers, returns JSON with the issued claim/session data plus
-  completion metadata
+- when `handoff.kind=backend_callback`, delivers the auth result directly to
+  the app backend and renders a tiny browser status page that can close itself
+- when `handoff.kind=browser_completion` or handoff is omitted, keeps the older
+  one-time completion-code flow as a fallback path
+- if opener handoff is used and fails, the completion page still offers a
+  fallback return link carrying only the one-time completion code, not the
+  access token
 - other configured providers still return "not implemented" at the runtime
   adapter layer until their callback paths are added
 
-Success response for non-browser callers now includes:
+Success response for backend-callback handoff now includes:
+
+```json
+{
+  "delivery": {
+    "kind": "backend_callback",
+    "attemptId": "auth-attempt-123",
+    "callbackUrl": "https://repixelizer.gamecult.org/api/auth/heimdall/callback",
+    "status": "delivered"
+  },
+  "account": {
+    "id": "acct_repixelizer_001",
+    "displayName": "Meta"
+  },
+  "session": {
+    "accountId": "acct_repixelizer_001",
+    "sessionId": "uuid",
+    "appSlug": "repixelizer",
+    "accessRevision": 1,
+    "expiresAt": "2026-04-26T13:00:00.000Z"
+  }
+}
+```
+
+Success response for browser-completion fallback still includes:
 
 ```json
 {
@@ -190,12 +219,80 @@ Success response for non-browser callers now includes:
 }
 ```
 
+### Backend callback delivery payload
+
+Purpose:
+
+- push the final auth result directly into the app backend without asking the
+  browser to courier it
+
+Current payload shape on success:
+
+```json
+{
+  "source": "heimdall",
+  "kind": "oauth_result",
+  "handoffKind": "backend_callback",
+  "attemptId": "auth-attempt-123",
+  "status": "success",
+  "provider": "discord",
+  "appSlug": "repixelizer",
+  "mode": "sign_in",
+  "returnTo": "https://repixelizer.gamecult.org/app/",
+  "account": {
+    "id": "acct_repixelizer_001",
+    "displayName": "Meta"
+  },
+  "session": {},
+  "accessToken": "<signed-jwt>",
+  "claimSet": {},
+  "verification": {},
+  "sharedCapabilities": ["app_access", "queue_submit"],
+  "hybridCapabilities": [],
+  "entitlements": {
+    "facts": ["entitlement.app_access"],
+    "snapshots": []
+  }
+}
+```
+
+Current payload shape on failure:
+
+```json
+{
+  "source": "heimdall",
+  "kind": "oauth_result",
+  "handoffKind": "backend_callback",
+  "attemptId": "auth-attempt-123",
+  "status": "error",
+  "provider": "discord",
+  "appSlug": "repixelizer",
+  "mode": "sign_in",
+  "returnTo": "https://repixelizer.gamecult.org/app/",
+  "error": "oauth_callback_failed",
+  "errorDescription": "..."
+}
+```
+
+Important behavior:
+
+- app backends should treat this as the preferred same-host or
+  Yggdrasil-reachable integration path
+- app backends should still verify the included Heimdall `accessToken` locally
+- the browser only needs to learn attempt completion, not carry the final auth
+  result
+
 ### `POST /v1/apps/{appSlug}/auth-completions/redeem`
 
 Purpose:
 
 - redeem a short-lived one-time browser completion code
 - return the trusted Heimdall auth result to the app backend
+
+Current role:
+
+- fallback path for looser integrations, manual testing, or opener-based flows
+- not the preferred same-host consumer path anymore
 
 Request body:
 
@@ -367,6 +464,6 @@ The following are not landed yet:
 Consume the hardened slice in the first real app binding:
 
 - the first Repixelizer consumer binding that trusts Heimdall claims locally
-- the first Repixelizer backend redeem path for completion codes
+- the first Repixelizer backend callback endpoint and attempt-status bridge
 - any missing app-local session bridge or verifier middleware sugar that makes
   that integration less feral

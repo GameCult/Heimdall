@@ -50,6 +50,9 @@ Do not trust this file for the exact live HEAD. Always check git.
   claim issuance for the Repixelizer slice
 - browser-style auth handoff now uses a one-time completion code posted back to
   the opener, with backend redemption instead of fragment-token handoff
+- same-host or Yggdrasil-reachable app integrations can now ask Heimdall to
+  deliver the auth result directly to an app backend callback endpoint, leaving
+  the browser with only status/attempt signaling
 - signing keys can now load from a persisted file path and bootstrap that file
   on first boot when explicitly enabled
 - managed provider tokens are now sealed at rest with AES-256-GCM instead of
@@ -80,8 +83,8 @@ If the user asks to continue, the current next move is to harden and consume
 the landed slice:
 
 - the first Repixelizer consumer integration that opens auth in a new browser
-  context, redeems Heimdall completion codes server-side, and trusts Heimdall
-  claims locally
+  context, receives direct backend callback delivery from Heimdall, and trusts
+  Heimdall claims locally
 - any small app-facing middleware sugar needed once that integration starts
   colliding with real routes
 

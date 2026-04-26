@@ -79,6 +79,7 @@ landed_baseline:
   - Durable auth persistence landed for accounts, linked identities, sessions, grants, entitlement snapshots, and audit events.
   - The first real provider slice landed for Discord callback exchange, identity resolution, entitlement evaluation, and session/claim issuance for Repixelizer.
   - Signing-key persistence/bootstrap, managed token encryption at rest, and a local verifier seam landed for the first real consumer integration pass.
+  - Direct backend callback handoff landed as the preferred same-host app-consumer path, with browser completion-code exchange retained as fallback.
 
 rejected_paths:
   - name: per_app_auth_copy_paste
@@ -89,5 +90,5 @@ rejected_paths:
     reason: reusing auth mechanics does not justify centralizing app-domain audience or product data
 
 current_status:
-  summary: Heimdall now has a hardened first provider slice: TypeScript/Fastify runtime, Ed25519 JWT signing with file-backed key support, JWKS/discovery exposure, signed OAuth start-state handling, durable auth/control-plane persistence, a real Discord callback path, AES-256-GCM token sealing for managed provider credentials at rest, a local JWT verifier seam for app backends, and a one-time completion-code exchange that lets browser auth contexts post back to the opener without leaking final app auth in URL fragments. The key boundary still holds: Heimdall owns auth/control-plane authority and credential custody; app-domain bindings and runtime behavior remain app-owned.
-  next_action: Consume the hardened slice in the first real Repixelizer integration: open auth in a new browser context, redeem Heimdall completion codes server-side, trust Heimdall claims locally through the verifier seam, and add any tiny app-local session bridge needed without dragging app-domain data into Heimdall.
+  summary: Heimdall now has a hardened first provider slice plus a direct app-backend handoff path: TypeScript/Fastify runtime, Ed25519 JWT signing with file-backed key support, JWKS/discovery exposure, signed OAuth start-state handling, durable auth/control-plane persistence, a real Discord callback path, AES-256-GCM token sealing for managed provider credentials at rest, a local JWT verifier seam for app backends, direct backend callback delivery for same-host consumers, and the older one-time completion-code exchange retained as fallback. The key boundary still holds: Heimdall owns auth/control-plane authority and credential custody; app-domain bindings and runtime behavior remain app-owned.
+  next_action: Consume the hardened slice in the first real Repixelizer integration: open auth in a new browser context, let Heimdall deliver the result directly to a Repixelizer backend callback endpoint keyed by a local auth attempt, trust Heimdall claims locally through the verifier seam, and add any tiny app-local session bridge or attempt-status surface needed without dragging app-domain data into Heimdall.

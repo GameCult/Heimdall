@@ -99,17 +99,22 @@ Preferred browser handoff:
 
 1. Repixelizer opens Heimdall auth in a script-opened new tab/window
 2. Heimdall completes provider auth and upstream entitlement checks
-3. Heimdall callback posts a one-time completion code back to the opener
-4. the callback context tries to close itself
-5. Repixelizer backend redeems the completion code with Heimdall
-6. Repixelizer establishes local trusted auth state from the redeemed result
+3. Heimdall delivers the auth result directly to a Repixelizer backend callback
+   endpoint keyed by a local auth attempt id
+4. Repixelizer backend establishes local trusted auth state from that direct
+   delivery
+5. the callback context only needs to signal status, try to close itself, and
+   offer a dead-simple return path
+6. the main Repixelizer page learns completion from its own backend by polling,
+   SSE, or websocket
 
 Important rule:
 
 - Repixelizer should not rely on a raw access token arriving in the callback
   URL
-- the browser may see a one-time completion code in fallback paths, but the
-  final trusted auth material should come from backend redemption
+- the browser should not be the primary carrier of the final auth result
+- the one-time completion-code redeem flow remains acceptable as a fallback,
+  not the preferred same-host path
 
 Repixelizer should still do locally:
 

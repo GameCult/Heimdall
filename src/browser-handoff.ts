@@ -1,23 +1,25 @@
-import { type AppSlug, type OAuthMode, type Provider } from "./contracts.js";
+import { type AppSlug, type OAuthHandoffKind, type OAuthMode, type Provider } from "./contracts.js";
 
 interface BrowserHandoffBase {
+  handoffKind: OAuthHandoffKind;
   provider: Provider;
+  appSlug: AppSlug;
+  mode?: OAuthMode;
   returnTo: string;
 }
 
 export interface BrowserHandoffSuccess extends BrowserHandoffBase {
   status: "success";
-  appSlug: AppSlug;
   mode: OAuthMode;
-  completionCode: string;
+  completionCode?: string;
+  attemptId?: string;
 }
 
 export interface BrowserHandoffError extends BrowserHandoffBase {
   status: "error";
-  appSlug: AppSlug;
-  mode?: OAuthMode;
   error: string;
   errorDescription?: string;
+  attemptId?: string;
 }
 
 export type BrowserHandoffPayload = BrowserHandoffSuccess | BrowserHandoffError;
@@ -31,22 +33,26 @@ function buildBrowserFallbackUrl(payload: BrowserHandoffPayload): string {
   const fragment = new URLSearchParams({
     heimdall_status: payload.status,
     heimdall_provider: payload.provider,
+    heimdall_handoff_kind: payload.handoffKind,
   });
-
-  if ("appSlug" in payload) {
-    fragment.set("heimdall_app_slug", payload.appSlug);
-  }
+  fragment.set("heimdall_app_slug", payload.appSlug);
 
   if ("mode" in payload && payload.mode) {
     fragment.set("heimdall_mode", payload.mode);
   }
 
-  if (payload.status === "success") {
+  if (payload.attemptId) {
+    fragment.set("heimdall_attempt_id", payload.attemptId);
+  }
+
+  if (payload.status === "success" && payload.completionCode) {
     fragment.set("heimdall_completion_code", payload.completionCode);
   } else {
-    fragment.set("heimdall_error", payload.error);
-    if (payload.errorDescription) {
-      fragment.set("heimdall_error_description", payload.errorDescription);
+    if (payload.status === "error") {
+      fragment.set("heimdall_error", payload.error);
+      if (payload.errorDescription) {
+        fragment.set("heimdall_error_description", payload.errorDescription);
+      }
     }
   }
 
@@ -69,7 +75,9 @@ export function renderBrowserHandoffPage(payload: BrowserHandoffPayload): string
   );
   const scriptBody = serializeForScript(
     payload.status === "success"
-      ? "You can return to the app now."
+      ? payload.handoffKind === "backend_callback"
+        ? "The app backend has the auth result already. You can return to the app now."
+        : "You can return to the app now."
       : "The authentication flow failed. Return to the app to continue."
   );
 

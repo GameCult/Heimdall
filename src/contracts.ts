@@ -14,17 +14,34 @@ export const connectionKinds = ["account", "creator", "workspace", "project", "c
 
 export type ConnectionKind = (typeof connectionKinds)[number];
 
+export const oauthHandoffKinds = ["browser_completion", "backend_callback"] as const;
+
+export type OAuthHandoffKind = (typeof oauthHandoffKinds)[number];
+
 export interface OAuthConnectionBinding {
   kind: ConnectionKind;
   targetId: string;
   summary?: string;
 }
 
+export interface OAuthBrowserCompletionHandoff {
+  kind: "browser_completion";
+}
+
+export interface OAuthBackendCallbackHandoff {
+  kind: "backend_callback";
+  attemptId: string;
+  callbackUrl: string;
+}
+
+export type OAuthHandoff = OAuthBrowserCompletionHandoff | OAuthBackendCallbackHandoff;
+
 export interface OAuthStartRequest {
   appSlug: AppSlug;
   mode: OAuthMode;
   returnTo: string;
   connection?: OAuthConnectionBinding;
+  handoff?: OAuthHandoff;
   requestedScopes?: string[];
 }
 
@@ -42,6 +59,7 @@ export interface OAuthStatePayload {
   mode: OAuthMode;
   return_to: string;
   connection: OAuthConnectionBinding | null;
+  handoff: OAuthHandoff | null;
 }
 
 export interface LinkedIdentityInput {

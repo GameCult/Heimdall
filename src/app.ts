@@ -1,12 +1,15 @@
 import { randomUUID } from "node:crypto";
 import cors from "@fastify/cors";
 import Fastify, { type FastifyInstance } from "fastify";
+import { deliverBackendHandoff, type BackendHandoffPayload } from "./backend-handoff.js";
 import {
   appSlugs,
   connectionKinds,
+  oauthHandoffKinds,
   oauthModes,
   providers,
   type AppSlug,
+  type OAuthHandoff,
   type OAuthMode,
   type OAuthConnectionBinding,
   type RedeemAuthCompletionRequest,
@@ -61,6 +64,7 @@ function buildOAuthStateToken(options: {
   mode: OAuthMode;
   returnTo: string;
   connection: OAuthConnectionBinding | undefined;
+  handoff: OAuthHandoff;
   keys: ReturnType<typeof createRuntimeKeyMaterial>;
 }): { token: string; expiresAt: string } {
   const issuedAt = nowEpochSeconds();
@@ -79,6 +83,7 @@ function buildOAuthStateToken(options: {
     mode: options.mode,
     return_to: options.returnTo,
     connection: options.connection ?? null,
+    handoff: options.handoff,
   };
   const token = signJwt(payload as unknown as Record<string, unknown>, options.keys);
 
@@ -89,6 +94,16 @@ function buildOAuthStateToken(options: {
 }
 
 function parseOAuthStatePayload(payload: Record<string, unknown>): OAuthStatePayload | null {
+  const handoff = payload.handoff;
+  const handoffIsValid =
+    handoff === null ||
+    handoff === undefined ||
+    (typeof handoff === "object" &&
+      handoff !== null &&
+      ((handoff as Record<string, unknown>).kind === "browser_completion" ||
+        ((handoff as Record<string, unknown>).kind === "backend_callback" &&
+          typeof (handoff as Record<string, unknown>).attemptId === "string" &&
+          typeof (handoff as Record<string, unknown>).callbackUrl === "string")));
   if (
     payload.typ !== "heimdall_oauth_state" ||
     typeof payload.provider !== "string" ||
@@ -104,12 +119,18 @@ function parseOAuthStatePayload(payload: Record<string, unknown>): OAuthStatePay
     typeof payload.jti !== "string" ||
     typeof payload.iat !== "number" ||
     typeof payload.nbf !== "number" ||
-    typeof payload.exp !== "number"
+    typeof payload.exp !== "number" ||
+    !handoffIsValid
   ) {
     return null;
   }
 
-  return payload as unknown as OAuthStatePayload;
+  const normalizedPayload = payload as unknown as OAuthStatePayload;
+  if (!normalizedPayload.handoff) {
+    normalizedPayload.handoff = { kind: "browser_completion" };
+  }
+
+  return normalizedPayload;
 }
 
 function buildGrantFacts(grants: StoredCapabilityGrant[]): string[] {
@@ -122,6 +143,40 @@ function prefersHtml(acceptHeader: string | undefined): boolean {
   }
 
   return acceptHeader.includes("text/html") || acceptHeader.includes("application/xhtml+xml");
+}
+
+function normalizeOAuthHandoff(value: OAuthStartRequest["handoff"]): OAuthHandoff {
+  if (!value) {
+    return { kind: "browser_completion" };
+  }
+
+  if (value.kind === "browser_completion") {
+    return value;
+  }
+
+  if (
+    value.kind === "backend_callback" &&
+    typeof value.attemptId === "string" &&
+    value.attemptId.trim() &&
+    typeof value.callbackUrl === "string" &&
+    value.callbackUrl.trim()
+  ) {
+    return {
+      kind: "backend_callback",
+      attemptId: value.attemptId.trim(),
+      callbackUrl: value.callbackUrl.trim(),
+    };
+  }
+
+  throw new Error("Invalid OAuth handoff definition.");
+}
+
+async function maybeDeliverBackendHandoff(handoff: OAuthHandoff, payload: BackendHandoffPayload): Promise<void> {
+  if (handoff.kind !== "backend_callback") {
+    return;
+  }
+
+  await deliverBackendHandoff(handoff.callbackUrl, payload);
 }
 
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
@@ -216,6 +271,16 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
                 summary: { type: "string" },
               },
             },
+            handoff: {
+              type: "object",
+              required: ["kind"],
+              additionalProperties: false,
+              properties: {
+                kind: { type: "string", enum: [...oauthHandoffKinds] },
+                attemptId: { type: "string", minLength: 1 },
+                callbackUrl: { type: "string", format: "uri" },
+              },
+            },
           },
         },
       },
@@ -230,6 +295,17 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           error: "provider_not_supported_for_app",
           provider,
           appSlug: profile.slug,
+        };
+      }
+
+      let handoff: OAuthHandoff;
+      try {
+        handoff = normalizeOAuthHandoff(request.body.handoff);
+      } catch (error) {
+        reply.code(400);
+        return {
+          error: "invalid_handoff",
+          detail: error instanceof Error ? error.message : "Invalid OAuth handoff definition.",
         };
       }
 
@@ -251,6 +327,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         mode: request.body.mode,
         returnTo: request.body.returnTo,
         connection: request.body.connection,
+        handoff,
         keys,
       });
 
@@ -267,6 +344,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           state: state.token,
           requestedScopes: request.body.requestedScopes,
         }),
+        handoff,
         stateToken: state.token,
         stateExpiresAt: state.expiresAt,
       };
@@ -317,17 +395,36 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         reply.code(400);
         return { error: "state_provider_mismatch" };
       }
+      const handoff = statePayload.handoff ?? { kind: "browser_completion" };
 
       if (request.query.error) {
+        if (handoff.kind === "backend_callback") {
+          await maybeDeliverBackendHandoff(handoff, {
+            source: "heimdall",
+            kind: "oauth_result",
+            handoffKind: "backend_callback",
+            attemptId: handoff.attemptId,
+            status: "error",
+            provider: request.params.provider,
+            appSlug: statePayload.app_slug,
+            mode: statePayload.mode,
+            returnTo: statePayload.return_to,
+            error: "provider_error",
+            errorDescription: request.query.error_description ?? request.query.error,
+          });
+        }
+
         if (prefersHtml(request.headers.accept)) {
           reply.type("text/html; charset=utf-8");
           return reply.send(
             renderBrowserHandoffPage({
+              handoffKind: handoff.kind,
               status: "error",
               provider: request.params.provider,
               appSlug: statePayload.app_slug,
               mode: statePayload.mode,
               returnTo: statePayload.return_to,
+              ...(handoff.kind === "backend_callback" ? { attemptId: handoff.attemptId } : {}),
               error: "provider_error",
               errorDescription: request.query.error_description ?? request.query.error,
             })
@@ -345,15 +442,32 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       }
 
       if (!request.query.code) {
+        if (handoff.kind === "backend_callback") {
+          await maybeDeliverBackendHandoff(handoff, {
+            source: "heimdall",
+            kind: "oauth_result",
+            handoffKind: "backend_callback",
+            attemptId: handoff.attemptId,
+            status: "error",
+            provider: request.params.provider,
+            appSlug: statePayload.app_slug,
+            mode: statePayload.mode,
+            returnTo: statePayload.return_to,
+            error: "missing_code",
+          });
+        }
+
         if (prefersHtml(request.headers.accept)) {
           reply.type("text/html; charset=utf-8");
           return reply.send(
             renderBrowserHandoffPage({
+              handoffKind: handoff.kind,
               status: "error",
               provider: request.params.provider,
               appSlug: statePayload.app_slug,
               mode: statePayload.mode,
               returnTo: statePayload.return_to,
+              ...(handoff.kind === "backend_callback" ? { attemptId: handoff.attemptId } : {}),
               error: "missing_code",
             })
           );
@@ -501,6 +615,65 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           returnTo: statePayload.return_to,
           ...issued,
         };
+        if (handoff.kind === "backend_callback") {
+          await maybeDeliverBackendHandoff(handoff, {
+            source: "heimdall",
+            kind: "oauth_result",
+            handoffKind: "backend_callback",
+            attemptId: handoff.attemptId,
+            status: "success",
+            provider: request.params.provider,
+            appSlug: statePayload.app_slug,
+            mode: statePayload.mode,
+            returnTo: statePayload.return_to,
+            account: accountSummary,
+            entitlements: entitlementEvaluation,
+            ...issued,
+          });
+
+          await store.createAuditEvent({
+            accountId: account.id,
+            sessionId: issued.session.sessionId,
+            appSlug: statePayload.app_slug,
+            eventType: "backend_handoff_delivered",
+            eventPayloadJson: {
+              provider: request.params.provider,
+              mode: statePayload.mode,
+              attemptId: handoff.attemptId,
+              callbackUrl: handoff.callbackUrl,
+            },
+            createdAt: nowIso,
+          });
+
+          if (prefersHtml(request.headers.accept)) {
+            reply.type("text/html; charset=utf-8");
+            return reply.send(
+              renderBrowserHandoffPage({
+                handoffKind: "backend_callback",
+                status: "success",
+                provider: request.params.provider,
+                appSlug: statePayload.app_slug,
+                mode: statePayload.mode,
+                returnTo: statePayload.return_to,
+                attemptId: handoff.attemptId,
+              })
+            );
+          }
+
+          reply.code(201);
+          return {
+            delivery: {
+              kind: "backend_callback",
+              attemptId: handoff.attemptId,
+              callbackUrl: handoff.callbackUrl,
+              status: "delivered",
+            },
+            account: accountSummary,
+            session: issued.session,
+            verification: issued.verification,
+          };
+        }
+
         const completionExpiresAt = new Date(Date.now() + config.completionTtlSeconds * 1000).toISOString();
         const completion = await store.createAuthCompletion({
           appSlug: statePayload.app_slug,
@@ -532,6 +705,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           reply.type("text/html; charset=utf-8");
           return reply.send(
             renderBrowserHandoffPage({
+              handoffKind: "browser_completion",
               status: "success",
               provider: request.params.provider,
               appSlug: statePayload.app_slug,
@@ -565,15 +739,35 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           createdAt: nowIso,
         });
 
-        if (prefersHtml(request.headers.accept)) {
-          reply.type("text/html; charset=utf-8");
-          return reply.send(
-            renderBrowserHandoffPage({
+        if (handoff.kind === "backend_callback") {
+          try {
+            await maybeDeliverBackendHandoff(handoff, {
+              source: "heimdall",
+              kind: "oauth_result",
+              handoffKind: "backend_callback",
+              attemptId: handoff.attemptId,
               status: "error",
               provider: request.params.provider,
               appSlug: statePayload.app_slug,
               mode: statePayload.mode,
               returnTo: statePayload.return_to,
+              error: "oauth_callback_failed",
+              errorDescription: message,
+            });
+          } catch {}
+        }
+
+        if (prefersHtml(request.headers.accept)) {
+          reply.type("text/html; charset=utf-8");
+          return reply.send(
+            renderBrowserHandoffPage({
+              handoffKind: handoff.kind,
+              status: "error",
+              provider: request.params.provider,
+              appSlug: statePayload.app_slug,
+              mode: statePayload.mode,
+              returnTo: statePayload.return_to,
+              ...(handoff.kind === "backend_callback" ? { attemptId: handoff.attemptId } : {}),
               error: "oauth_callback_failed",
               errorDescription: message,
             })

@@ -86,6 +86,7 @@ function createMockDiscordRuntime(): OAuthProviderRuntime {
 }
 
 const apps: Awaited<ReturnType<typeof buildApp>>[] = [];
+const originalFetch = globalThis.fetch;
 
 function getPublicKey(app: FastifyInstance) {
   return (
@@ -130,6 +131,7 @@ async function startDiscordSignIn(app: FastifyInstance): Promise<string> {
 }
 
 afterEach(async () => {
+  globalThis.fetch = originalFetch;
   while (apps.length) {
     await apps.pop()?.close();
   }
@@ -330,6 +332,74 @@ describe("Heimdall service", () => {
     expect(response.body).toContain("window.opener.postMessage");
     expect(response.body).toContain("heimdall_completion_code");
     expect(response.body).not.toContain("heimdall_access_token");
+  });
+
+  it("delivers auth results directly to app backends when backend callback handoff is requested", async () => {
+    const deliveries: Array<Record<string, unknown>> = [];
+    globalThis.fetch = async (input, init) => {
+      if (String(input) !== "https://repixelizer.gamecult.org/api/auth/heimdall/callback") {
+        throw new Error(`Unexpected fetch target in backend handoff test: ${String(input)}`);
+      }
+
+      deliveries.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(null, { status: 204 });
+    };
+
+    const app = await buildApp({
+      config: createTestConfig(),
+      oauthRuntimes: {
+        discord: createMockDiscordRuntime(),
+      },
+    });
+    apps.push(app);
+
+    const startResponse = await app.inject({
+      method: "POST",
+      url: "/v1/oauth/discord/start",
+      payload: {
+        appSlug: "repixelizer",
+        mode: "sign_in",
+        returnTo: "https://repixelizer.gamecult.org/app/",
+        handoff: {
+          kind: "backend_callback",
+          attemptId: "attempt-123",
+          callbackUrl: "https://repixelizer.gamecult.org/api/auth/heimdall/callback",
+        },
+      },
+    });
+    expect(startResponse.statusCode).toBe(201);
+    const stateToken = startResponse.json().stateToken as string;
+
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(stateToken)}`,
+      headers: {
+        accept: "text/html",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toContain("heimdall_attempt_id");
+    expect(response.body).not.toContain("heimdall_completion_code");
+    expect(deliveries).toHaveLength(1);
+    const delivery = deliveries[0];
+    expect(delivery).toBeDefined();
+    expect(delivery).toEqual(
+      expect.objectContaining({
+        source: "heimdall",
+        kind: "oauth_result",
+        handoffKind: "backend_callback",
+        attemptId: "attempt-123",
+        status: "success",
+        provider: "discord",
+        appSlug: "repixelizer",
+      })
+    );
+
+    const deliveryAccessToken = delivery?.accessToken;
+    expect(typeof deliveryAccessToken).toBe("string");
+    const verified = verifyJwt(String(deliveryAccessToken), getPublicKey(app));
+    expect(verified.valid).toBe(true);
   });
 
   it("issues direct claims from provider-agnostic entitlement facts", async () => {

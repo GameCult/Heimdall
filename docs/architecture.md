@@ -349,19 +349,33 @@ The generic flow should be the same across hosted experiments:
 
 The browser should never be the custodian of provider tokens.
 
-Preferred browser handoff for hosted apps:
+Preferred same-host or Yggdrasil-reachable handoff for hosted apps:
 
 1. the app keeps its main page open
 2. auth starts in a script-opened new browser context
 3. Heimdall callback completes the provider flow server-side
-4. Heimdall returns a short-lived one-time completion artifact
-5. the callback page `postMessage`s that artifact back to the opener and tries
-   to close itself
-6. the host app backend redeems the artifact with Heimdall and establishes the
-   app's local trusted auth state
+4. Heimdall delivers the auth result directly to the host app backend over an
+   internal backend channel
+5. the host app backend establishes the app's local trusted auth state
+6. the callback page only needs to signal completion status, try to close
+   itself, and offer a dead-simple return path
 
-This avoids spraying long-lived app auth into callback URLs while still giving
-the user the familiar "log in over there, keep working over here" flow.
+Recommended browser role in that flow:
+
+- the main app page tracks its own auth attempt locally
+- the main app page learns completion from its own backend by polling, SSE, or
+  websocket
+- the browser should not be the primary carrier of the final auth result
+
+Fallback flow for looser integrations:
+
+- Heimdall can still mint a short-lived one-time completion artifact
+- the callback page can `postMessage` that artifact to the opener
+- the host app backend can redeem it with Heimdall
+- keep this as the portable escape hatch, not the preferred same-host path
+
+This keeps the real auth handoff on the server side while still giving the
+user the familiar "log in over there, keep working over here" flow.
 
 ## App integration contract
 

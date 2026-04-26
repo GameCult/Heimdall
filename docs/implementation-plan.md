@@ -27,8 +27,10 @@ What exists right now is:
 - persisted accounts, linked identities, sessions, grants, entitlement
   snapshots, and audit records
 - a real Discord provider callback slice for Repixelizer access
+- a direct backend callback handoff for same-host app integrations
 - a one-time browser completion handoff so auth callback pages can post back to
-  the opener instead of leaking final app auth in URL fragments
+  the opener instead of leaking final app auth in URL fragments, now retained
+  as fallback rather than the preferred same-host path
 - file-backed signing-key loading/bootstrap for stable service identity
 - AES-256-GCM token sealing for managed provider credentials at rest
 - a local verifier helper that app backends can use against Heimdall JWKS
@@ -124,7 +126,7 @@ Next in this phase:
 ### Phase 3: Repixelizer binding
 
 - integrate Heimdall into the hosted demo
-- consume the one-time completion flow from the Repixelizer frontend/backend
+- consume the direct backend callback flow from the Repixelizer frontend/backend
 - gate `POST /api/jobs`
 - gate per-job read/cancel/event routes by local session ownership
 - consume the landed verifier seam so Repixelizer can trust Heimdall JWTs locally

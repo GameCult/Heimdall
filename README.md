@@ -28,8 +28,11 @@ Landed right now:
 - account, linked-identity, session, grant, entitlement snapshot, and audit
   persistence
 - a real Discord OAuth callback path for the first Repixelizer access flow
+- direct backend callback handoff for same-host or Yggdrasil-reachable app
+  backends
 - AES-256-GCM sealing for managed provider tokens at rest
-- a one-time browser completion exchange for opener `postMessage` handoff
+- a one-time browser completion exchange kept as fallback for opener
+  `postMessage` handoff
 - app profile surfaces for Repixelizer and StreamPixels
 - signed claim issuance for app-local verification experiments
 - a local verifier helper in `src/verifier.ts` so app backends can validate
