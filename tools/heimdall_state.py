@@ -131,7 +131,7 @@ def cmd_close_branch(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Inspect and update GameCult Access persistent state files."
+        description="Inspect and update Heimdall persistent state files."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 

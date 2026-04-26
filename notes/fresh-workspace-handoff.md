@@ -1,6 +1,6 @@
 # Fresh Workspace Handoff
 
-This is the re-entry packet for `E:\Projects\gamecult-access`.
+This is the re-entry packet for `E:\Projects\Heimdall`.
 
 It is intentionally short. Historical proof belongs in git history and the
 distilled `state/evidence.jsonl` ledger; the shared architecture belongs in
@@ -13,7 +13,7 @@ From the repo root:
 
 ```powershell
 # This repo has no dedicated venv yet. Use any working Python 3.11+.
-E:\Projects\repixelizer\.venv\Scripts\python.exe .\tools\gamecult_access_state.py status
+E:\Projects\repixelizer\.venv\Scripts\python.exe .\tools\heimdall_state.py status
 Get-Content '.\state\map.yaml'
 Get-Content '.\notes\fresh-workspace-handoff.md'
 Get-Content '.\docs\architecture.md'
@@ -27,23 +27,29 @@ Do not trust this file for the exact live HEAD. Always check git.
 
 ## Current Orientation
 
-- this repo is planning and extraction work, not a landed auth service yet
+- this repo is still planning and service-contract work, not a landed auth
+  service yet
 - the canonical shared architecture lives in `docs/architecture.md`
 - app profiles live under `docs/app-profiles/`
 - the key boundary is explicit:
-  - shared auth/control-plane mechanics are reusable
+  - Heimdall owns OAuth, linking, grants, entitlement refresh, and signed claim
+    issuance
   - app-domain data stays app-owned by default
-- Repixelizer is the first binding target
-- StreamPixels is the boundary case that proves backbone reuse must not imply
-  audience-data centralization
-- the recommended first implementation mode is an embedded shared package, not a
-  dedicated auth service
+  - host apps verify signed claims locally for routine auth instead of calling
+    Heimdall on every request
+- Repixelizer is the first auth-blank binding target
+- StreamPixels is the migration target with useful existing auth seams that
+  should not be flattened into mush
+- the intended first deployment shape is a Heimdall service on Yggdrasil behind
+  nginx, not an embedded cross-runtime shared library fantasy
 
 ## Critical Doctrine
 
 - Persistent state is the agent's mind.
 - Cut stale architecture notes as ruthlessly as stale code.
 - Do not mistake "shared auth" for "shared database."
+- Do not mistake "shared auth service" for "every guarded route must call the
+  mothership."
 - If compaction hits before boundary findings are persisted, that work is gone.
   Re-gather it instead of pretending continuity happened.
 
@@ -51,16 +57,17 @@ Do not trust this file for the exact live HEAD. Always check git.
 
 Do not continue implementation automatically from a rehydrate-only request.
 
-If the user asks to continue, the current next move is to define the embedded
-`gamecult_access` package seam:
+If the user asks to continue, the current next move is to define the first
+Heimdall service contract and skeleton:
 
-- storage interfaces
-- provider adapter interfaces
-- signed-session claims
-- capability rule evaluation boundaries
+- OAuth start/callback surfaces
+- signed session / claim shape
+- claim verification contract for app backends
+- entitlement/grant persistence boundaries
+- Repixelizer and StreamPixels integration seams
 
-without central-service theatrics and without smearing app-domain data into the
-shared layer.
+without dragging app-domain data into the shared layer and without forcing
+per-request auth round-trips.
 
 ## Immediate Re-entry Instruction
 

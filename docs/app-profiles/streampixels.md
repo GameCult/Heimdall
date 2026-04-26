@@ -2,7 +2,7 @@
 
 ## What this file is
 
-This file records how StreamPixels should fit onto the shared access backbone in
+This file records how StreamPixels should fit onto Heimdall in
 `docs/architecture.md` without turning streamer-audience data into shared auth
 sludge.
 
@@ -27,6 +27,13 @@ That is already compatible with the shared backbone idea.
 - creator/operator capability evaluation
 - grant/invite primitives where they fit
 
+In the service-first Heimdall version, the most likely reusable slice is:
+
+- provider OAuth authority
+- identity-linking authority
+- entitlement refresh
+- shared claim semantics
+
 ## What StreamPixels should keep separate
 
 - viewer audience profiles
@@ -37,7 +44,7 @@ That is already compatible with the shared backbone idea.
 
 In plain language:
 
-- the same backbone can authenticate and authorize the control plane
+- Heimdall can authenticate and authorize the control plane
 - StreamPixels audience data stays StreamPixels data
 
 ## Capability direction

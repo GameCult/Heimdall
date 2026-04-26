@@ -2,7 +2,8 @@
 
 ## What this file is
 
-This file binds Repixelizer onto the shared design in `docs/architecture.md`.
+This file binds Repixelizer onto the shared Heimdall design in
+`docs/architecture.md`.
 
 It is future design, not a claim that the hosted demo already has auth.
 
@@ -89,8 +90,20 @@ Important invariant:
 - job ownership resolves from the local session/account, not from Discord or
   Patreon ids
 
+Heimdall should be involved in:
+
+- login / link entry
+- session and claim issuance
+- entitlement refresh
+
+Repixelizer should still do locally:
+
+- claim verification on guarded routes
+- ownership checks on job reads, events, heartbeat, and cancel
+- queue/runtime behavior
+
 ## Config mapping
 
 - keep runtime/queue/limit env vars under `REPIXELIZER_*`
-- move shared access machinery under `GC_ACCESS_*`
+- move Heimdall integration under `GC_ACCESS_*`
 - keep per-app role/tier/capability bindings small and app-scoped

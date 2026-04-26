@@ -199,10 +199,10 @@ def add_handoff_checks(findings: list[Finding]) -> None:
 
 def add_agents_checks(findings: list[Finding]) -> None:
     text = read_text(AGENTS_PATH)
-    if "gamecult_access_prepare_compaction.py" in text:
+    if "heimdall_prepare_compaction.py" in text:
         findings.append(Finding("ok", "AGENTS.md tells agents to use the compaction helper"))
     else:
-        findings.append(Finding("error", "AGENTS.md does not mention tools/gamecult_access_prepare_compaction.py"))
+        findings.append(Finding("error", "AGENTS.md does not mention tools/heimdall_prepare_compaction.py"))
     if "prepare for imminent compaction" in text.lower():
         findings.append(Finding("ok", "AGENTS.md names the imminent-compaction trigger"))
     else:
@@ -232,7 +232,7 @@ def render_report(findings: list[Finding], status: str, log: str, evidence: list
     }
 
     lines = [
-        "GameCult Access pre-compaction persistence check",
+        "Heimdall pre-compaction persistence check",
         f"Workspace: {ROOT}",
         f"Findings: {counts['ok']} ok, {counts['warn']} warn, {counts['error']} error",
         "",
@@ -280,7 +280,7 @@ def render_report(findings: list[Finding], status: str, log: str, evidence: list
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Audit GameCult Access persistent state before imminent compaction."
+        description="Audit Heimdall persistent state before imminent compaction."
     )
     parser.add_argument(
         "--strict",

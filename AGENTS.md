@@ -1,18 +1,19 @@
-# GameCult Access Instructions
+# Heimdall Instructions
 
 ## Project Purpose
 
-GameCult Access exists to hold the shared auth and access-control architecture
-for GameCult-hosted experiments without letting that shared layer metastasize
-into a giant mixed-data pit.
+Heimdall exists to hold the shared auth authority design for GameCult-hosted
+experiments without letting that shared layer metastasize into a giant
+mixed-data pit.
 
-The planned reusable backbone is:
+The planned shared authority owns:
 
 - provider OAuth and linking
-- signed local sessions
+- signed session / claim issuance
 - entitlement refresh
 - capability evaluation
 - app-facing access claims
+- audit and grant surfaces
 
 The planned non-shared-by-default layer is:
 
@@ -21,6 +22,7 @@ The planned non-shared-by-default layer is:
 - creator data
 - queue/job payloads
 - product-specific state
+- app-local resource ownership checks
 
 ## Canonical State
 
@@ -38,35 +40,35 @@ The planned non-shared-by-default layer is:
 
 ## Important Paths
 
-- Project root: `E:\Projects\gamecult-access`
-- Shared architecture: `E:\Projects\gamecult-access\docs\architecture.md`
-- Implementation plan: `E:\Projects\gamecult-access\docs\implementation-plan.md`
-- Repixelizer profile: `E:\Projects\gamecult-access\docs\app-profiles\repixelizer.md`
-- StreamPixels profile: `E:\Projects\gamecult-access\docs\app-profiles\streampixels.md`
-- Handoff summary: `E:\Projects\gamecult-access\notes\fresh-workspace-handoff.md`
-- State CLI: `E:\Projects\gamecult-access\tools\gamecult_access_state.py`
-- Pre-compaction helper: `E:\Projects\gamecult-access\tools\gamecult_access_prepare_compaction.py`
+- Project root: `E:\Projects\Heimdall`
+- Shared architecture: `E:\Projects\Heimdall\docs\architecture.md`
+- Implementation plan: `E:\Projects\Heimdall\docs\implementation-plan.md`
+- Repixelizer profile: `E:\Projects\Heimdall\docs\app-profiles\repixelizer.md`
+- StreamPixels profile: `E:\Projects\Heimdall\docs\app-profiles\streampixels.md`
+- Handoff summary: `E:\Projects\Heimdall\notes\fresh-workspace-handoff.md`
+- State CLI: `E:\Projects\Heimdall\tools\heimdall_state.py`
+- Pre-compaction helper: `E:\Projects\Heimdall\tools\heimdall_prepare_compaction.py`
 
 ## Useful Commands
 
 This repo does not carry a dedicated virtualenv yet. Use any working Python
-3.11+ interpreter. On this workstation, `E:\Projects\repixelizer\.venv\Scripts\python.exe`
-is known-good.
+3.11+ interpreter. On this workstation,
+`E:\Projects\repixelizer\.venv\Scripts\python.exe` is known-good.
 
 Preferred here:
 
 ```powershell
-E:\Projects\repixelizer\.venv\Scripts\python.exe .\tools\gamecult_access_state.py status
-E:\Projects\repixelizer\.venv\Scripts\python.exe .\tools\gamecult_access_state.py add-evidence --type design --status accepted --note "..."
-E:\Projects\repixelizer\.venv\Scripts\python.exe .\tools\gamecult_access_prepare_compaction.py
+E:\Projects\repixelizer\.venv\Scripts\python.exe .\tools\heimdall_state.py status
+E:\Projects\repixelizer\.venv\Scripts\python.exe .\tools\heimdall_state.py add-evidence --type design --status accepted --note "..."
+E:\Projects\repixelizer\.venv\Scripts\python.exe .\tools\heimdall_prepare_compaction.py
 ```
 
 Fallback if a normal `python` command exists:
 
 ```powershell
-python .\tools\gamecult_access_state.py status
-python .\tools\gamecult_access_state.py add-evidence --type design --status accepted --note "..."
-python .\tools\gamecult_access_prepare_compaction.py
+python .\tools\heimdall_state.py status
+python .\tools\heimdall_state.py add-evidence --type design --status accepted --note "..."
+python .\tools\heimdall_prepare_compaction.py
 ```
 
 ## Session Bootstrap And Re-entry Protocol
@@ -79,21 +81,21 @@ On fresh session load:
    - `docs/architecture.md`
    - `docs/implementation-plan.md`
 2. run:
-   - `python .\tools\gamecult_access_state.py status`
+   - `python .\tools\heimdall_state.py status`
    - `git status --short --branch`
    - `git log --oneline -5`
 3. restate the current next action from persisted state before editing
 
 After compaction or suspicious continuity loss:
 
-1. rerun `gamecult_access_state.py status`
+1. rerun `heimdall_state.py status`
 2. reread `state/map.yaml` and `notes/fresh-workspace-handoff.md`
 3. treat the persisted next action as authoritative unless fresh evidence
    contradicts it
 
 When the user says to prepare for imminent compaction:
 
-1. run `tools/gamecult_access_prepare_compaction.py`
+1. run `tools/heimdall_prepare_compaction.py`
 2. update only the state that actually changed
 3. rerun the helper
 4. commit the completed persistence pass unless the work is deliberately
@@ -102,10 +104,14 @@ When the user says to prepare for imminent compaction:
 ## Operating Discipline
 
 - Before substantial edits, restate the current mechanism and intended change.
-- Keep the shared backbone separate from app-domain data unless there is a very
-  deliberate, source-grounded reason to share something.
-- Prefer embedded shared-package mode before inventing a dedicated auth service.
-- Do not let app profiles turn into duplicate copies of the shared architecture.
+- Keep identity authority central and app-domain data local unless there is a
+  very deliberate, source-grounded reason to share something.
+- Prefer the Yggdrasil-hosted Heimdall service over duplicated per-app provider
+  stacks.
+- Do not require a Heimdall round-trip for every guarded app route; host apps
+  should verify signed claims locally and keep resource ownership checks local.
+- Do not let app profiles turn into duplicate copies of the shared
+  architecture.
 - If the diff grows while the boundary gets blurrier, stop and simplify.
 - Before handoff or compaction, sync `state/map.yaml`, refresh
   `notes/fresh-workspace-handoff.md`, add distilled evidence when future belief

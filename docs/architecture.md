@@ -1,13 +1,16 @@
-# GameCult Hosted Access Architecture
+# Heimdall Architecture
 
 ## What this file is
 
-This file is the shared architecture note for GameCult-hosted experiments that
-need the same basic promise:
+This file is the shared architecture note for Heimdall, the planned auth
+authority service for GameCult-hosted experiments.
+
+Its basic promise is:
 
 - let people sign in with Discord and/or Patreon
-- decide access from GameCult/community entitlements
-- keep app runtimes tied to local sessions and local accounts, not provider ids
+- decide access from GameCult/community entitlements and local grants
+- issue signed local claims that hosted apps can verify without trusting raw
+  provider tokens
 
 It is not a map of landed auth code yet.
 
@@ -19,30 +22,32 @@ If every experiment rebuilds:
 - identity linking
 - entitlement refresh
 - session cookies
-- queue/job ownership
+- grant handling
 - "Discord role OR Patreon tier" logic
 
 then we get five near-identical auth pits and deserve what happens next.
 
-The reusable move is to build one GameCult hosted-access layer and let each app
+The reusable move is to build one Heimdall authority service and let each app
 bind its own policy and runtime seams onto it.
 
 ## Design goals
 
 - one reusable local account/session model across hosted experiments
-- provider login and linking owned by one shared access layer
+- provider login and linking owned by one shared authority
 - per-app capability policies instead of hard-coded one-off gate checks
-- host runtimes consume signed local session claims, not raw provider tokens
+- host runtimes consume signed local claims, not raw provider tokens
+- routine route auth stays local to the host app after claim verification
 - keep app-domain data separate unless there is a deliberate reason to share it
-- start as an embedded shared package before pretending we need a central auth
-  service
+- fit the current GameCult topology: Heimdall on Yggdrasil behind nginx, with
+  hosted apps either on the same host or verifying over normal HTTPS/JWKS
 
 ## Non-goals
 
 - becoming a general public identity provider
 - building multi-tenant SaaS auth machinery
 - inventing global billing analytics because we got bored
-- forcing cross-app single sign-on on day one before a second app exists
+- forcing app-domain data into a shared auth store
+- requiring every guarded route in every app to call Heimdall synchronously
 
 ## Core concepts
 
@@ -61,6 +66,8 @@ bind its own policy and runtime seams onto it.
   policy rules
 - `Session`
   signed local app/browser session; the browser gets this, not provider tokens
+- `AccessClaim`
+  signed app-facing claim set derived from the account, grants, and app policy
 - `AuditEvent`
   durable record for login, link, unlink, refresh, denial, and admin overrides
 
@@ -69,20 +76,20 @@ bind its own policy and runtime seams onto it.
 ```mermaid
 flowchart TD
     A["Browser / app web UI"] --> B["Hosted experiment web surface"]
-    B --> C["GameCult access layer"]
+    B -->|start auth / link| C["Heimdall"]
     C --> D["Discord OAuth + guild role checks"]
     C --> E["Patreon OAuth + campaign/tier checks"]
-    C --> F["Local account/session/grant store"]
-    C --> G["Signed access claims"]
-    G --> H["Hosted experiment runtime"]
+    C --> F["Local auth/control-plane store"]
+    C --> G["Signed sessions / claims"]
+    B -->|verify claims locally| H["Hosted experiment runtime"]
 ```
 
 The important split:
 
-- the access layer owns provider OAuth, identity linking, entitlement refresh,
-  and signed local sessions
-- the host experiment owns its workload, queue, editor, render path, or other
-  product-specific machinery
+- Heimdall owns provider OAuth, identity linking, entitlement refresh, signed
+  sessions, claims, grants, and audit surfaces
+- the host experiment owns its workload, queue, editor, render path, viewer
+  profile model, creator model, or other product-specific machinery
 
 Do not smear provider logic directly through every host runtime.
 
@@ -94,10 +101,11 @@ pour their user data into one communal bucket.
 The reusable thing is:
 
 - provider OAuth plumbing
-- signed local session mechanics
+- signed session and claim mechanics
 - linked-identity primitives
 - entitlement refresh
 - capability evaluation
+- local grant and audit surfaces
 
 The non-reusable-by-default thing is:
 
@@ -109,12 +117,12 @@ The non-reusable-by-default thing is:
 
 Recommended default:
 
-- shared auth/access **code**
+- shared auth/access **authority**
 - separate app databases or at least separate app-owned schemas/tables for
   domain data
-- if a shared access store exists at all, keep it limited to auth/control-plane
-  truth such as identities, grants, entitlement snapshots, sessions, and audit
-  events
+- if a shared Heimdall store exists at all, keep it limited to auth/control
+  plane truth such as identities, grants, entitlement snapshots, sessions,
+  claims metadata, and audit events
 
 Do not let "same auth backbone" quietly mutate into "same user-data swamp."
 
@@ -182,8 +190,8 @@ Important invariants:
 - one provider identity belongs to one local account only
 - provider tokens stay server-side only
 - session cookies represent local sessions, not provider trust directly
-- app-specific capability checks read local claims, not Discord or Patreon on
-  every route
+- app-specific capability checks read signed local claims, not Discord or
+  Patreon on every route
 
 ## Provider adapters
 
@@ -203,7 +211,7 @@ Shared provider/gate adapters should be boring and reusable:
 
 ## Policy model
 
-The reusable core should not hard-code one app's access rules. It should
+The shared authority should not hard-code one app's access rules. It should
 evaluate capabilities against an app profile.
 
 Suggested app-profile shape:
@@ -227,18 +235,41 @@ queue_submit = app_access
 admin_access = grant.operator || grant.admin_access
 ```
 
+## Request path discipline
+
+This is where shared authority stays useful instead of becoming a nuisance.
+
+Heimdall should be in the loop for:
+
+- OAuth start and callback flows
+- explicit identity linking and unlinking
+- session issuance and refresh
+- entitlement refresh
+- grant administration
+- occasional explicit introspection or revocation checks
+
+Host apps should stay in the loop for:
+
+- routine route authorization after claim verification
+- resource ownership checks
+- domain-specific permission decisions that depend on app-local data
+
+Normal guarded routes should **not** need to round-trip to Heimdall every time.
+
 ## Auth and linking flow
 
 The generic flow should be the same across hosted experiments:
 
 1. user starts OAuth from the host app UI
-2. shared access layer signs OAuth `state`
-3. provider callback resolves the provider identity
-4. shared layer finds or creates the local account
-5. if the user was already signed in locally, the identity may link onto the
+2. host app redirects to Heimdall or calls Heimdall to begin the flow
+3. Heimdall signs OAuth `state`
+4. provider callback resolves the provider identity through Heimdall
+5. Heimdall finds or creates the local account
+6. if the user was already signed in locally, the identity may link onto the
    existing account instead of creating a new one
-6. shared layer refreshes entitlements and capability claims
-7. shared layer issues or updates the local session cookie
+7. Heimdall refreshes entitlements and capability claims
+8. Heimdall issues or updates the local session / claim artifacts consumed by
+   the host app
 
 The browser should never be the custodian of provider tokens.
 
@@ -248,6 +279,7 @@ Every hosted experiment should integrate through the same seams:
 
 - define an `app_slug`
 - define the app capability profile
+- verify Heimdall-issued claims locally
 - mark which routes are public, authenticated, or capability-gated
 - attach `account_id`, `session_id`, and `access_revision` to owned resources
   such as jobs, drafts, uploads, or queue entries
@@ -260,50 +292,64 @@ If an app has a queue or job system:
 - active-job cancellation policy is app-specific, but the recommended first cut
   is still "let the active job finish, block new work"
 
+## Deployment topology
+
+Current intended first deployment shape:
+
+- Heimdall runs on `yggdrasil.gamecult.org`
+- Heimdall binds a localhost port behind nginx
+- public auth hostname is expected to become `heimdall.gamecult.org`
+- same-host app stacks such as StreamPixels and Repixelizer call Heimdall over
+  localhost or normal private routing when they need auth-authority work done
+- app backends verify signed claims locally for routine guarded requests
+
+This matches the host pattern already used by other GameCult app workloads.
+
 ## Deployment modes
 
-### Mode 1: Embedded shared package
+### Mode 1: Same-host shared access service
 
 Recommended first cut.
 
-- one shared `gamecult_access` package/module
-- each hosted experiment embeds it
-- each app keeps its own runtime and route integration
-- sessions may still be app-local
+- one Heimdall service on Yggdrasil
+- each hosted experiment keeps its own runtime and route integration
 - each app keeps its own domain-data store
+- apps verify signed claims locally after issuance
 
 Why this is the right first cut:
 
-- reusable without forcing a separate always-on dependency
-- small blast radius
-- easy to evolve while only one or two apps use it
+- fits the current host topology
+- avoids cross-runtime shared-library nonsense
+- keeps OAuth and provider sludge in one place
+- keeps routine guarded requests local inside the app
 
-### Mode 2: Same-host shared access service
+### Mode 2: Multi-host shared access service
 
-Use this when multiple apps on the same server want one shared access store and
-session issuer, but full centralization still feels premature.
+Use this when multiple app stacks across hosts still want one shared auth
+authority, but the same claim-verification discipline continues.
 
-### Mode 3: Dedicated GameCult access service
+### Mode 3: Wider cross-app session platform
 
-Only do this when multiple independently deployed apps genuinely need:
+Only do this when independently deployed apps genuinely need:
 
 - shared cross-app sessions
 - central grant administration
 - one callback origin for all providers
-- enough auth churn that duplicated embedded deployments become the bigger pain
+- enough auth churn that Heimdall is clearly a long-lived platform surface
 
 Do not build this first because it sounds important.
 
-Even in this mode, the dedicated service should own auth/control-plane data, not
-absorb every app's audience or product data.
+Even in this mode, Heimdall should own auth/control-plane data, not absorb
+every app's audience or product data.
 
 ## Configuration split
 
 Suggested generic env surface:
 
 - `GC_ACCESS_ENABLED=1`
+- `GC_ACCESS_BASE_URL=https://heimdall.gamecult.org`
+- `GC_ACCESS_INTERNAL_URL=http://127.0.0.1:4100`
 - `GC_ACCESS_SESSION_SECRET=...`
-- `GC_ACCESS_BASE_URL=https://access.gamecult.org` or host-app local equivalent
 - `GC_ACCESS_DISCORD_CLIENT_ID=...`
 - `GC_ACCESS_DISCORD_CLIENT_SECRET=...`
 - `GC_ACCESS_DISCORD_BOT_TOKEN=...`
@@ -321,10 +367,12 @@ env namespaces.
 
 The correct reusable seam is:
 
-- shared provider/session/entitlement/capability machinery
+- one shared identity authority service
+- local verification of signed claims by each host app
 - thin per-app access profiles and runtime bindings
 
 The incorrect reusable seam is:
 
-- cloning one app’s auth blob into every future experiment
+- cloning one app's auth blob into every future experiment
 - or turning shared auth into shared domain-data soup
+- or forcing every guarded app route to make a Heimdall network hop
