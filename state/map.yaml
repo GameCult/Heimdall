@@ -1,0 +1,81 @@
+project:
+  name: GameCult Access
+  status: active
+  phase: architecture_extraction
+  premise: >
+    Build one reusable GameCult-hosted access backbone for OAuth, linked
+    identities, local sessions, and capability checks without mixing in
+    app-domain audience or product data.
+
+objective:
+  primary: >
+    Create a reusable shared access layer that Repixelizer, StreamPixels, and
+    future GameCult-hosted experiments can bind onto.
+  current: >
+    Lock the shared architecture, extraction path, and app-boundary rules before
+    implementation starts breeding myths.
+
+constraints:
+  - Shared auth/access code is reusable; app-domain data is separate by default.
+  - Prefer an embedded shared package before a dedicated auth service.
+  - App profiles stay thin; the shared architecture note owns the main model.
+  - StreamPixels audience and creator data must not be absorbed into a shared auth store.
+
+invariants:
+  - The map is canonical and slow-changing.
+  - Scratch is temporary and disposable.
+  - Evidence is durable and distilled; routine activity logs belong in git history and commit messages.
+  - The shared access layer owns OAuth, local sessions, entitlement refresh, capability evaluation, and audit surfaces.
+  - App-domain data stays with the host app unless there is a deliberate, source-grounded reason to share it.
+  - Embedded shared-package mode is the default first implementation strategy.
+  - StreamPixels can reuse control-plane auth mechanics without centralizing streamer-audience data.
+  - Persistent state cruft is the same failure class as architecture cruft.
+
+data_flow:
+  observe:
+    - task request
+    - shared architecture note
+    - app profile bindings
+    - current app/runtime seams in Repixelizer and StreamPixels
+  process:
+    - rehydrate from canonical state
+    - choose one bounded architecture or implementation slice
+    - keep shared code and app-domain data boundaries explicit
+    - record only belief-changing evidence
+    - commit or backtrack
+  cut:
+    - reject shared-data creep
+    - reject duplicated auth blobs per app
+    - reject central-service theatrics before two real bindings justify them
+
+active_subgoals:
+  - Keep the shared architecture explicit and separate from app profiles.
+  - Preserve the default boundary that app-domain data remains app-owned.
+  - Make Repixelizer the first binding and StreamPixels the boundary stress test.
+  - Define the extraction seam for an embedded `gamecult_access` package.
+
+accepted_design:
+  - `docs/architecture.md` is the canonical shared architecture note.
+  - `docs/app-profiles/*.md` are thin app bindings, not duplicate brains.
+  - The reusable backbone owns provider OAuth, identity linking, signed local sessions, entitlement refresh, capability evaluation, and audit events.
+  - Host apps own their domain data, runtime state, and product-specific resources.
+  - A future shared access store, if it exists, should hold auth/control-plane truth only.
+  - Repixelizer is the first hosted-app binding.
+  - StreamPixels is the boundary case that proves backbone reuse must not imply audience-data centralization.
+
+landed_baseline:
+  - Shared architecture extracted into its own repo.
+  - Repixelizer and StreamPixels app-profile notes created.
+  - Repo-local state, handoff, and compaction scaffolding created.
+
+rejected_paths:
+  - name: per_app_auth_copy_paste
+    reason: duplicates the same provider/session sludge across every experiment
+  - name: central_auth_service_first
+    reason: adds deployment weight before two real bindings justify it
+  - name: shared_user_data_swamp
+    reason: reusing auth mechanics does not justify centralizing app-domain audience or product data
+
+current_status:
+  summary: The shared hosted-access planning work has been extracted into its own repo with a canonical architecture note, a forward implementation plan, and thin app profiles for Repixelizer and StreamPixels. The key boundary is explicit: reusable auth/control-plane code is shared, app-domain data remains app-owned by default. The recommended first implementation mode is an embedded shared package rather than a dedicated auth service.
+  next_action: Start the first implementation-oriented pass by defining the embedded `gamecult_access` package seam: storage interfaces, provider adapter interfaces, signed-session claims, and capability rule evaluation boundaries, while keeping Repixelizer as the first binding target.

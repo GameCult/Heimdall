@@ -1,0 +1,3 @@
+{"ts":"2026-04-26T00:00:00Z","type":"design","status":"accepted","note":"The shared hosted-access plan was extracted from Repixelizer into its own repo so the backbone can evolve separately from app-specific notes."}
+{"ts":"2026-04-26T00:00:00Z","type":"design","status":"accepted","note":"The recommended first implementation mode is an embedded shared gamecult_access package, not a dedicated auth service."}
+{"ts":"2026-04-26T00:00:00Z","type":"boundary","status":"accepted","note":"StreamPixels can reuse the same auth/control-plane backbone, but streamer-audience data, creator memberships, connector credentials, and runtime state should remain StreamPixels-owned."}

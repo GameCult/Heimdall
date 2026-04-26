@@ -1,0 +1,17 @@
+{
+  "branches": [
+    {
+      "id": "main",
+      "hypothesis": "A shared GameCult access backbone can be reused across hosted experiments if OAuth/session/capability machinery is centralized while app-domain data stays app-owned.",
+      "status": "active",
+      "artifacts": [
+        "state/map.yaml",
+        "state/scratch.md",
+        "state/evidence.jsonl",
+        "docs/architecture.md",
+        "docs/implementation-plan.md"
+      ],
+      "notes": "Current mainline. Repixelizer is the first binding target; StreamPixels is the boundary stress test."
+    }
+  ]
+}
