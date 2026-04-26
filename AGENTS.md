@@ -109,6 +109,8 @@ user did not say so yet:
 3. rerun the helper
 4. commit the persistence pass before moving on unless the work is
    deliberately mid-surgery
+5. push the current branch to `origin` after the major pass unless the user
+   explicitly says not to publish yet
 
 ## Operating Discipline
 
