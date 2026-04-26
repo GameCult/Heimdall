@@ -38,13 +38,17 @@ In the service-first Heimdall version, the most likely reusable slice is:
 
 - viewer audience profiles
 - creator memberships tied to streamer spaces
-- creator connector credentials
+- creator connector bindings and feature semantics
 - overlay/runtime state
 - audience-facing app data in general
 
 In plain language:
 
 - Heimdall can authenticate and authorize the control plane
+- Heimdall can also own OAuth flow and token custody for creator-side provider
+  connections when that reduces auth duplication
+- StreamPixels still owns which creator a connection belongs to, what
+  subscriptions or sync flows it drives, and how failures are surfaced
 - StreamPixels audience data stays StreamPixels data
 
 ## Capability direction

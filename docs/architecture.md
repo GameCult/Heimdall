@@ -81,11 +81,18 @@ their brand name appears somewhere in an app.
   proves who the user is and can supply one `LinkedIdentity`
 - `Entitlement source`
   answers whether some access-relevant claim is currently true
+- `Managed provider credential`
+  a user- or account-authorized third-party credential whose OAuth dance, token
+  custody, refresh, and revocation Heimdall can own on behalf of an app
 - `Local grant source`
   records app or operator-issued overrides inside Heimdall
-- `App-owned connector OAuth`
-  authenticates an app's operational integration with a third-party platform
-  and does **not** become Heimdall territory just because it uses OAuth
+
+Default rule:
+
+- if a future app needs user-facing or account-linked OAuth, Heimdall should
+  own the ugly parts by default
+- the app should only need to describe what the resulting connection means in
+  its own world
 
 One provider can play different roles in different apps:
 
@@ -93,8 +100,9 @@ One provider can play different roles in different apps:
   sources
 - Bifrost can treat GitHub as identity proof while keeping membership approval,
   roles, and governance state app-local
-- StreamPixels can reuse shared viewer identity patterns while keeping
-  creator-side Twitch/YouTube connector credentials and runtime plumbing
+- StreamPixels can reuse shared viewer identity patterns and even shared
+  OAuth/token custody for creator-side Twitch/YouTube connections while keeping
+  creator bindings, subscriptions, diagnostics, and runtime plumbing
   StreamPixels-owned
 
 ## System shape
@@ -113,11 +121,12 @@ flowchart TD
 The important split:
 
 - Heimdall owns provider OAuth, identity linking, entitlement refresh, signed
-  sessions, claims, grants, and audit surfaces
+  sessions, claims, grants, audit surfaces, and managed provider credential
+  custody
 - the host experiment owns its workload, queue, editor, render path, viewer
   profile model, creator model, or other product-specific machinery
-- app-owned operational connector OAuth stays with the app unless there is a
-  very deliberate reason to centralize it
+- the host experiment also owns which local entity a connection attaches to,
+  what permissions it implies, and what runtime behavior consumes it
 
 Do not smear provider logic directly through every host runtime.
 
@@ -246,13 +255,23 @@ Shared adapters should be boring and reusable:
 - `InviteGrantProvider`
   - reusable invite-issued app or role grants where that pattern makes sense
 
+Shared connection handling can also cover app integrations when the credential
+is user- or account-authorized and worth centralizing:
+
+- Heimdall can own OAuth start/callback, token exchange, encrypted storage,
+  refresh, and revocation
+- the app still owns binding the connection to a local entity such as
+  `creator_id`, `workspace_id`, `project_id`, or `channel_id`
+- the app still owns sync jobs, subscriptions, diagnostics, feature toggles,
+  and the domain-specific consequences of that connection
+
 Important rule:
 
 - a provider being used anywhere in an app does not automatically make all uses
   of that provider Heimdall-owned
-- creator/operational connector OAuth such as StreamPixels broadcaster
-  connectors stays app-owned unless it is deliberately promoted into the shared
-  auth authority
+- provider OAuth and token custody should default to Heimdall when the
+  connection is tied to a user or account rather than a purely app-local secret
+- app-specific binding semantics and runtime behavior still stay app-owned
 
 ## Policy model
 
@@ -332,6 +351,8 @@ Every hosted experiment should integrate through the same seams:
 - mark which routes are public, authenticated, or capability-gated
 - attach `account_id`, `session_id`, and `access_revision` to owned resources
   such as jobs, drafts, uploads, or queue entries
+- if the app uses Heimdall-managed provider connections, bind those connections
+  onto app-local entities and keep the downstream runtime behavior local
 - require resource-owner checks on private read/update/delete paths
 
 If an app has a queue or job system:
@@ -418,8 +439,10 @@ Suggested generic env surface:
 Only configure the providers Heimdall actually owns for a given deployment.
 
 Per-app binding should live in code or profile config, not in cloned provider
-env namespaces. App-owned connector OAuth should stay under the app's own env
-surface even when the upstream provider name overlaps.
+env namespaces. App-local binding and runtime config such as creator
+associations, webhook subscriptions, sync toggles, or workspace/project
+attachment rules should stay under the app's own config/state even when the
+underlying OAuth credential is Heimdall-managed.
 
 ## Audit Result
 
