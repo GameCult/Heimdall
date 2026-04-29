@@ -47,7 +47,7 @@ function createMockDiscordRuntime(): OAuthProviderRuntime {
         accessToken: "discord-access-token",
         refreshToken: "discord-refresh-token",
         tokenType: "Bearer",
-        scope: ["identify", "email", "guilds.members.read"],
+        scope: ["identify", "guilds.members.read"],
         expiresAt: "2026-04-26T13:00:00.000Z",
         raw: { source: "test" },
       };

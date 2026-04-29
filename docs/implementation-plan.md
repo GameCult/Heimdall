@@ -36,6 +36,12 @@ What exists right now is:
 - a local verifier helper that app backends can use against Heimdall JWKS
 - Repixelizer has consumed the direct backend callback flow in its hosted web
   layer and verifies Heimdall Ed25519 access tokens locally
+- Heimdall is deployed on Yggdrasil at `https://heimdall.gamecult.org` with
+  nginx/TLS, Postgres storage, stable file-backed signing, configured token
+  custody, and public health/discovery/JWKS checks passing
+- Repixelizer is deployed on Yggdrasil at
+  `https://repixelizer.gamecult.org` with Heimdall mode enabled, Discord as the
+  only public provider, required access, and queue protection
 - explicit state/doctrine scaffolding so the plan does not immediately turn into
   soup
 
@@ -85,6 +91,15 @@ Goals:
 - run the live browser OAuth flow and confirm Repixelizer receives the backend
   callback, verifies the claim locally, adopts a local session, gates hosted
   access, and stamps queued jobs with `account_id` / `session_id`
+
+Deployment/configuration status:
+
+- the deployment and service wiring are done
+- public health/discovery/JWKS/config checks pass
+- public Repixelizer auth-start returns a Discord authorization URL using the
+  Heimdall callback and Repixelizer backend handoff
+- the Discord authorization URL requests only `identify guilds.members.read`
+- the remaining launch check is the real interactive Discord browser flow
 
 Current Discord policy:
 
