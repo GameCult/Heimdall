@@ -81,6 +81,9 @@ Do not trust this file for the exact live HEAD. Always check git.
 - Heimdall and StreamPixels are deployed on Yggdrasil for the StreamPixels
   migration slice; Twitch callback handling has been patched so provider token
   `scope` can be either a space-delimited string or an array
+- live StreamPixels Twitch sign-in through Heimdall has succeeded on Yggdrasil
+  and Heimdall audit showed callback success, completion creation, and
+  completion redemption
 - the ignored local `secrets/heimdall-service.env` artifact now has
   `GC_ACCESS_PROVIDER_TWITCH_*` and `GC_ACCESS_PROVIDER_YOUTUBE_*` populated
   for the StreamPixels migration slice
@@ -105,6 +108,8 @@ If the user asks to continue on StreamPixels, the current next move is real
 browser verification:
 
 - verify viewer claim/link through `https://streampixels.gamecult.org/auth/connect`
+- Twitch viewer sign-in has already passed once; continue with YouTube and
+  connector attachment verification
 - verify creator connector attach from an admin creator session
 - confirm StreamPixels persists local profile/connector binding state while
   Heimdall retains provider token custody
