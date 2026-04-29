@@ -476,5 +476,5 @@ Deploy and verify the hardened slice in the first real app binding:
 - confirm direct backend callback delivery to Repixelizer
 - confirm Repixelizer verifies the Heimdall access token locally and gates
   hosted routes from the adopted session
-- decide whether Repixelizer launch policy is role-gated Discord access or any
-  guild member access before deployment
+- configure Repixelizer access as role-gated Discord access: the GameCult guild
+  may be public, but the allowed role list should contain the Cultist role id

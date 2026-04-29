@@ -91,16 +91,16 @@ Repixelizer launch path:
 - configure the Discord OAuth app redirect URI as
   `https://heimdall.gamecult.org/v1/oauth/discord/callback`
 - configure Heimdall with Discord client id/secret, Repixelizer guild id,
-  allowed role ids, Postgres storage, token encryption, and stable signing keys
+  the Cultist role id in `GC_ACCESS_APP_REPIXELIZER_DISCORD_ALLOWED_ROLE_IDS`,
+  Postgres storage, token encryption, and stable signing keys
 - configure Repixelizer to use `GC_ACCESS_MODE=heimdall` and
   `GC_ACCESS_ALLOWED_PROVIDERS=discord`
 - run the real browser OAuth flow end to end and confirm Repixelizer receives
   the backend callback, verifies the token, adopts a local session, and gates
   hosted routes
 
-Important wrinkle: Heimdall currently grants Repixelizer access from Discord
-role matches, not bare guild membership. If launch policy is "any GameCult
-Discord member can enter," update the Discord entitlement rule before deploy.
+Launch policy is role-gated on purpose: the GameCult Discord can remain public,
+but Repixelizer access is limited to members with the Cultist role.
 
 ## Immediate Re-entry Instruction
 
