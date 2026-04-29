@@ -85,7 +85,8 @@ Goals:
 - configure the Discord OAuth app redirect URI to
   `https://heimdall.gamecult.org/v1/oauth/discord/callback`
 - configure Heimdall's Discord client credentials, Repixelizer guild id, and
-  the Cultist role id in `GC_ACCESS_APP_REPIXELIZER_DISCORD_ALLOWED_ROLE_IDS`
+  the Repixelizer Discord access role ids in
+  `GC_ACCESS_APP_REPIXELIZER_DISCORD_ALLOWED_ROLE_IDS`
 - configure Repixelizer for `GC_ACCESS_MODE=heimdall` and
   `GC_ACCESS_ALLOWED_PROVIDERS=discord`
 - run the live browser OAuth flow and confirm Repixelizer receives the backend
@@ -106,7 +107,8 @@ Current Discord policy:
 - Heimdall grants Repixelizer `entitlement.app_access` only when the Discord
   member has one of the configured allowed role ids
 - launch policy is intentionally role-gated: the GameCult Discord can remain
-  public, but Repixelizer access is limited to members with the Cultist role
+  public, but Repixelizer access is limited to members with either `KLTST`
+  or the Patreon-synced `Inner Sanctum` role
 
 ### 4. Migrate StreamPixels without flattening its good local seams
 

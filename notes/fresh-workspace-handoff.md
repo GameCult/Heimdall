@@ -96,7 +96,8 @@ If the user asks to continue, the current next move is real browser OAuth
 verification:
 
 - open `https://repixelizer.gamecult.org/app/`
-- start Discord sign-in with an account that has the `KLTST` role
+- start Discord sign-in with an account that has the `KLTST` or
+  Patreon-synced `Inner Sanctum` role
 - confirm Heimdall receives the Discord callback and evaluates guild role
   entitlement
 - confirm Repixelizer receives the backend callback, verifies the Heimdall
@@ -105,7 +106,8 @@ verification:
   guilds.members.read`
 
 Launch policy is role-gated on purpose: the GameCult Discord can remain public,
-but Repixelizer access is limited to members with the Cultist role.
+but Repixelizer access is limited to members with either `KLTST` or the
+Patreon-synced `Inner Sanctum` role.
 
 ## Immediate Re-entry Instruction
 
