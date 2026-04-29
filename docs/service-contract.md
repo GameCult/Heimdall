@@ -160,11 +160,10 @@ Failure mode right now:
 
 Launch note:
 
-- Discord is the only implemented provider runtime today
-- Patreon, GitHub, Twitch, and YouTube are catalogued for start URLs, but their
+- Discord and Patreon are the implemented provider runtimes for Repixelizer
+- GitHub, Twitch, and YouTube are catalogued for start URLs, but their
   callback exchange/identity/entitlement runtimes are not implemented yet
-- Repixelizer launch should therefore configure only Discord on its provider
-  buttons until additional adapters land
+- Repixelizer launch can configure Discord and Patreon on its provider buttons
 
 ### `GET /v1/oauth/{provider}/callback`
 
@@ -472,11 +471,10 @@ The following are not landed yet:
 
 Deploy and verify the hardened slice in the first real app binding:
 
-- run Discord-only Repixelizer auth with real provider credentials
+- run Discord and Patreon Repixelizer auth with real provider credentials
 - confirm direct backend callback delivery to Repixelizer
 - confirm Repixelizer verifies the Heimdall access token locally and gates
   hosted routes from the adopted session
-- configure Repixelizer access as role-gated Discord access in Repixelizer's
-  own runtime env: the GameCult guild may be public, but the caller-owned
-  policy sent to Heimdall should contain the `KLTST` and Patreon-synced
-  `Inner Sanctum` role ids
+- configure Repixelizer access policy in Repixelizer's own runtime env:
+  Discord should accept `KLTST` or the Patreon-synced `Inner Sanctum` role,
+  and Patreon should accept the currently entitled tier title `Inner Sanctum`

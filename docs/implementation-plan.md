@@ -87,7 +87,7 @@ Goals:
 - configure Heimdall's Discord client credentials for the Repixelizer-owned
   Discord OAuth app
 - configure Repixelizer for `GC_ACCESS_MODE=heimdall` and
-  `GC_ACCESS_ALLOWED_PROVIDERS=discord`
+  `GC_ACCESS_ALLOWED_PROVIDERS=discord,patreon`
 - configure Repixelizer's Discord access policy with its GameCult guild id and
   allowed role ids; Repixelizer sends that policy to Heimdall during the
   backend-callback OAuth start
@@ -99,10 +99,11 @@ Deployment/configuration status:
 
 - the deployment and service wiring are done
 - public health/discovery/JWKS/config checks pass
-- public Repixelizer auth-start returns a Discord authorization URL using the
-  Heimdall callback and Repixelizer backend handoff
+- public Repixelizer auth-start returns Discord and Patreon authorization URLs
+  using the Heimdall callback and Repixelizer backend handoff
 - the Discord authorization URL requests only `identify guilds.members.read`
-- the remaining launch check is the real interactive Discord browser flow
+- the Patreon authorization URL requests only `identity identity[email]`
+- the remaining launch check is the real interactive provider browser flow
 
 Current Discord policy:
 
@@ -112,6 +113,12 @@ Current Discord policy:
 - launch policy is intentionally role-gated: the GameCult Discord can remain
   public, but Repixelizer access is limited to members with either `KLTST`
   or the Patreon-synced `Inner Sanctum` role
+
+Current Patreon policy:
+
+- Heimdall grants Repixelizer `entitlement.app_access` only when Patreon returns
+  a currently entitled tier titled `Inner Sanctum`
+- the policy is title-based, not amount-based
 
 ### 4. Migrate StreamPixels without flattening its good local seams
 

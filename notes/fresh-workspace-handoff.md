@@ -66,13 +66,13 @@ Do not trust this file for the exact live HEAD. Always check git.
   behind nginx/TLS with Postgres storage, file-backed signing-key bootstrap,
   configured token custody, and public health/discovery/JWKS checks passing
 - Repixelizer is now deployed on Yggdrasil at
-  `https://repixelizer.gamecult.org` with Heimdall mode enabled, Discord as the
-  only public provider, required access enabled, and queue protection enabled
-- Repixelizer public auth-start returns a Discord authorization URL using the
-  Heimdall callback and Repixelizer backend handoff
-- the first live launch should be Discord-only
-- Patreon, GitHub, Twitch, and YouTube are catalogued providers, but their
-  callback runtime adapters still return "not implemented"
+  `https://repixelizer.gamecult.org` with Heimdall mode enabled, Discord and
+  Patreon as public providers, required access enabled, and queue protection
+  enabled
+- Repixelizer public auth-start returns Discord and Patreon authorization URLs
+  using the Heimdall callback and Repixelizer backend handoff
+- GitHub, Twitch, and YouTube are catalogued providers, but their callback
+  runtime adapters still return "not implemented"
 - StreamPixels is the migration target with useful existing auth seams that
   should not be flattened into mush
 - the intended first deployment shape is a Heimdall service on Yggdrasil behind
@@ -97,11 +97,11 @@ verification:
 
 - open `https://repixelizer.gamecult.org/app/`
 - start Discord sign-in with an account that has the `KLTST` or
-  Patreon-synced `Inner Sanctum` role
-- confirm Repixelizer sends its app-owned Discord guild/role policy in the
+  Patreon-synced `Inner Sanctum` role, or Patreon sign-in with a currently
+  entitled tier titled `Inner Sanctum`
+- confirm Repixelizer sends its app-owned provider policy in the
   backend-callback OAuth start
-- confirm Heimdall receives the Discord callback and evaluates guild role
-  entitlement
+- confirm Heimdall receives the provider callback and evaluates entitlement
 - confirm Repixelizer receives the backend callback, verifies the Heimdall
   token, adopts a local httpOnly session, and gates hosted/queue routes
 - confirm the Discord authorization URL requests only `identify
@@ -113,6 +113,10 @@ Patreon-synced `Inner Sanctum` role. Repixelizer owns that role policy through
 its own runtime env and sends it to Heimdall during backend-callback OAuth
 start; Heimdall owns provider OAuth mechanics and claim issuance, not the
 per-app role list.
+
+Patreon access is title-gated on the currently entitled tier title
+`Inner Sanctum`; do not use currency amount as the durable policy because
+currencies are weird little traps.
 
 ## Immediate Re-entry Instruction
 
