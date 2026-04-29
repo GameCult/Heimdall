@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import cors from "@fastify/cors";
 import Fastify, { type FastifyInstance } from "fastify";
 import { deliverBackendHandoff, type BackendHandoffPayload } from "./backend-handoff.js";
@@ -227,6 +227,21 @@ function normalizeEntitlementPolicy(value: OAuthStartRequest["entitlementPolicy"
   }
 
   throw new Error("Invalid entitlement policy definition.");
+}
+
+function getSharedSecret(request: { headers: Record<string, string | string[] | undefined> }): string | undefined {
+  const header = request.headers["x-heimdall-app-secret"];
+  return Array.isArray(header) ? header[0] : header;
+}
+
+function secretMatches(expected: string | undefined, provided: string | undefined): boolean {
+  if (!expected || !provided) {
+    return false;
+  }
+
+  const expectedBuffer = Buffer.from(expected);
+  const providedBuffer = Buffer.from(provided);
+  return expectedBuffer.length === providedBuffer.length && timingSafeEqual(expectedBuffer, providedBuffer);
 }
 
 function acceptsBackendPolicy(appSlug: AppSlug, handoff: OAuthHandoff): boolean {
@@ -525,6 +540,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
             appSlug: statePayload.app_slug,
             mode: statePayload.mode,
             returnTo: statePayload.return_to,
+            connection: statePayload.connection,
             error: "provider_error",
             errorDescription: request.query.error_description ?? request.query.error,
           });
@@ -569,6 +585,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
             appSlug: statePayload.app_slug,
             mode: statePayload.mode,
             returnTo: statePayload.return_to,
+            connection: statePayload.connection,
             error: "missing_code",
           });
         }
@@ -603,6 +620,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           redirectUri: callbackUrl,
         });
         const identity = await runtime.resolveIdentity({
+          config,
           accessToken: tokenSet.accessToken,
         });
         const nowIso = new Date().toISOString();
@@ -730,6 +748,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           account: accountSummary,
           entitlements: entitlementEvaluation,
           returnTo: statePayload.return_to,
+          connection: statePayload.connection,
           ...issued,
         };
         if (handoff.kind === "backend_callback") {
@@ -743,6 +762,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
             appSlug: statePayload.app_slug,
             mode: statePayload.mode,
             returnTo: statePayload.return_to,
+            connection: statePayload.connection,
             account: accountSummary,
             entitlements: entitlementEvaluation,
             ...issued,
@@ -757,6 +777,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
               provider: request.params.provider,
               mode: statePayload.mode,
               attemptId: handoff.attemptId,
+              connection: statePayload.connection,
               callbackUrl: handoff.callbackUrl,
             },
             createdAt: nowIso,
@@ -868,6 +889,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
               appSlug: statePayload.app_slug,
               mode: statePayload.mode,
               returnTo: statePayload.return_to,
+              connection: statePayload.connection,
               error: "oauth_callback_failed",
               errorDescription: message,
             });
@@ -1006,6 +1028,79 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       });
       reply.code(201);
       return issued;
+    }
+  );
+
+  app.post<{
+    Params: { appSlug: AppSlug };
+    Body: { accountId: string; provider: Provider };
+  }>(
+    "/v1/apps/:appSlug/managed-credentials/resolve",
+    {
+      schema: {
+        params: {
+          type: "object",
+          required: ["appSlug"],
+          additionalProperties: false,
+          properties: {
+            appSlug: { type: "string", enum: [...appSlugs] },
+          },
+        },
+        body: {
+          type: "object",
+          required: ["accountId", "provider"],
+          additionalProperties: false,
+          properties: {
+            accountId: { type: "string", minLength: 1 },
+            provider: { type: "string", enum: [...providers] },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const profile = getAppProfile(request.params.appSlug);
+      const providedSecret = getSharedSecret(request);
+
+      if (!secretMatches(config.appSharedSecrets[profile.slug], providedSecret)) {
+        reply.code(401);
+        return { error: "app_auth_required" };
+      }
+
+      if (!profile.managedConnectionProviders.includes(request.body.provider)) {
+        reply.code(400);
+        return {
+          error: "provider_not_managed_for_app",
+          provider: request.body.provider,
+          appSlug: profile.slug,
+        };
+      }
+
+      const linkedIdentity = await store.findStoredLinkedIdentityForAccount(request.body.accountId, request.body.provider);
+      if (!linkedIdentity?.accessTokenEncrypted) {
+        reply.code(404);
+        return { error: "managed_credential_not_found" };
+      }
+
+      const response: {
+        accountId: string;
+        provider: Provider;
+        providerUserId: string;
+        accessToken: string;
+        tokenExpiresAt?: string;
+        scopes: string[];
+      } = {
+        accountId: linkedIdentity.accountId,
+        provider: linkedIdentity.provider,
+        providerUserId: linkedIdentity.providerUserId,
+        accessToken: tokenCustody.decrypt(linkedIdentity.accessTokenEncrypted),
+        scopes: linkedIdentity.scopes,
+      };
+
+      if (linkedIdentity.tokenExpiresAt) {
+        response.tokenExpiresAt = linkedIdentity.tokenExpiresAt;
+      }
+
+      return response;
     }
   );
 

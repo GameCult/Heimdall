@@ -1,5 +1,5 @@
 import { type IssuedAccessClaimResult } from "./claims.js";
-import { type AppSlug, type OAuthMode, type Provider } from "./contracts.js";
+import { type AppSlug, type OAuthConnectionBinding, type OAuthMode, type Provider } from "./contracts.js";
 import { type EntitlementEvaluation } from "./oauth.js";
 
 interface AccountSummary {
@@ -16,6 +16,7 @@ interface BackendHandoffBase {
   provider: Provider;
   appSlug: AppSlug;
   returnTo: string;
+  connection: OAuthConnectionBinding | null;
 }
 
 export interface BackendHandoffSuccessPayload extends BackendHandoffBase, IssuedAccessClaimResult {

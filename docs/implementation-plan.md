@@ -36,6 +36,13 @@ What exists right now is:
 - a local verifier helper that app backends can use against Heimdall JWKS
 - Repixelizer has consumed the direct backend callback flow in its hosted web
   layer and verifies Heimdall Ed25519 access tokens locally
+- generic Twitch and YouTube OAuth callback runtimes for StreamPixels identity
+  and managed creator connections
+- an app-authenticated managed-credential resolve endpoint so StreamPixels can
+  call provider APIs without storing refresh tokens locally
+- StreamPixels now starts viewer and creator Twitch/YouTube OAuth through
+  Heimdall, redeems one-time completion codes server-side, and keeps local
+  profile/creator connector binding state in StreamPixels
 - Heimdall is deployed on Yggdrasil at `https://heimdall.gamecult.org` with
   nginx/TLS, Postgres storage, stable file-backed signing, configured token
   custody, and public health/discovery/JWKS checks passing
@@ -124,11 +131,28 @@ Current Patreon policy:
 
 Goals:
 
-- move provider/linking authority toward Heimdall
-- keep viewer profiles, creator memberships, connector creds, and audience data
+- move provider/linking authority to Heimdall
+- keep viewer profiles, creator memberships, connector bindings, diagnostics,
+  runtime behavior, and audience data
   in StreamPixels
 - keep creator/operator route authorization local to StreamPixels after claim
   verification
+
+Landed:
+
+- Heimdall handles Twitch/YouTube OAuth exchange and identity resolution
+- Heimdall stores managed provider tokens and exposes current access-token
+  resolution to app backends through an app shared secret
+- StreamPixels delegates viewer claim/link and creator connector OAuth starts
+  to Heimdall
+- StreamPixels redeems completion codes through its service, then owns local
+  viewer profile linking or creator connector binding
+
+Still to verify:
+
+- real browser StreamPixels viewer claim/link
+- real creator connector attach for Twitch and YouTube
+- runtime polling/subscription behavior using Heimdall-resolved credentials
 
 ### 5. Capture the Yggdrasil deployment shape early
 

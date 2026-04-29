@@ -44,6 +44,7 @@ Do not trust this file for the exact live HEAD. Always check git.
   - `/v1/oauth/{provider}/callback`
   - `/v1/apps/{appSlug}/auth-completions/redeem`
   - `/v1/apps/{appSlug}/claims/issue`
+  - `/v1/apps/{appSlug}/managed-credentials/resolve`
 - the Discord callback path now performs real code exchange, identity
   resolution, auth persistence, entitlement evaluation, audit logging, and
   claim issuance for the Repixelizer slice
@@ -71,10 +72,12 @@ Do not trust this file for the exact live HEAD. Always check git.
   enabled
 - Repixelizer public auth-start returns Discord and Patreon authorization URLs
   using the Heimdall callback and Repixelizer backend handoff
-- GitHub, Twitch, and YouTube are catalogued providers, but their callback
-  runtime adapters still return "not implemented"
-- StreamPixels is the migration target with useful existing auth seams that
-  should not be flattened into mush
+- Twitch and YouTube now have generic OAuth exchange and identity runtimes
+- GitHub is still catalogued, but its callback runtime is not implemented
+- StreamPixels now delegates viewer and creator Twitch/YouTube OAuth to
+  Heimdall, redeems Heimdall completion codes server-side, writes its own
+  viewer sessions and connector bindings, and resolves current provider access
+  tokens from Heimdall without storing refresh tokens locally
 - the intended first deployment shape is a Heimdall service on Yggdrasil behind
   nginx, not an embedded cross-runtime shared library fantasy
 
@@ -92,8 +95,19 @@ Do not trust this file for the exact live HEAD. Always check git.
 
 Do not continue implementation automatically from a rehydrate-only request.
 
-If the user asks to continue, the current next move is real browser OAuth
-verification:
+If the user asks to continue on StreamPixels, the current next move is deploy
+and real browser verification:
+
+- configure Heimdall with Twitch/YouTube OAuth credentials and an app shared
+  secret for StreamPixels
+- configure StreamPixels service with `GC_ACCESS_BASE_URL`,
+  `GC_ACCESS_INTERNAL_URL`, and the same `GC_ACCESS_APP_SHARED_SECRET`
+- verify viewer claim/link through `/auth/connect`
+- verify creator connector attach from an admin creator session
+- confirm StreamPixels persists local profile/connector binding state while
+  Heimdall retains provider token custody
+
+Repixelizer still needs its real browser OAuth verification:
 
 - open `https://repixelizer.gamecult.org/app/`
 - start Discord sign-in with an account that has the `KLTST` or

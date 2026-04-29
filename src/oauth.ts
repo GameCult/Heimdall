@@ -46,7 +46,7 @@ export interface OAuthProviderRuntime {
     code: string;
     redirectUri: string;
   }): Promise<OAuthTokenSet>;
-  resolveIdentity(options: { accessToken: string }): Promise<ResolvedIdentity>;
+  resolveIdentity(options: { config: HeimdallConfig; accessToken: string }): Promise<ResolvedIdentity>;
   evaluateEntitlements(options: {
     config: HeimdallConfig;
     callback: OAuthCallbackContext;
@@ -153,6 +153,111 @@ async function exchangePatreonAuthorizationCode(options: {
       body,
     },
     "Patreon token exchange failed"
+  );
+
+  const tokenSet: OAuthTokenSet = {
+    accessToken: tokenResponse.access_token,
+    tokenType: tokenResponse.token_type,
+    scope: tokenResponse.scope?.split(/\s+/).filter(Boolean) ?? [],
+    raw: tokenResponse as unknown as Record<string, unknown>,
+  };
+
+  if (tokenResponse.refresh_token) {
+    tokenSet.refreshToken = tokenResponse.refresh_token;
+  }
+
+  if (tokenResponse.expires_in) {
+    tokenSet.expiresAt = new Date(Date.now() + tokenResponse.expires_in * 1000).toISOString();
+  }
+
+  return tokenSet;
+}
+
+async function exchangeTwitchAuthorizationCode(options: {
+  config: HeimdallConfig;
+  code: string;
+  redirectUri: string;
+}): Promise<OAuthTokenSet> {
+  const providerConfig = options.config.providers.twitch;
+  if (!providerConfig.clientId || !providerConfig.clientSecret) {
+    throw new Error("Twitch OAuth is not fully configured.");
+  }
+
+  const tokenResponse = await fetchJson<{
+    access_token: string;
+    refresh_token?: string;
+    token_type: string;
+    expires_in?: number;
+    scope?: string;
+  }>(
+    "https://id.twitch.tv/oauth2/token",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({
+        client_id: providerConfig.clientId,
+        client_secret: providerConfig.clientSecret,
+        code: options.code,
+        grant_type: "authorization_code",
+        redirect_uri: options.redirectUri,
+      }),
+    },
+    "Twitch token exchange failed"
+  );
+
+  const tokenSet: OAuthTokenSet = {
+    accessToken: tokenResponse.access_token,
+    tokenType: tokenResponse.token_type,
+    scope: tokenResponse.scope?.split(/\s+/).filter(Boolean) ?? [],
+    raw: tokenResponse as unknown as Record<string, unknown>,
+  };
+
+  if (tokenResponse.refresh_token) {
+    tokenSet.refreshToken = tokenResponse.refresh_token;
+  }
+
+  if (tokenResponse.expires_in) {
+    tokenSet.expiresAt = new Date(Date.now() + tokenResponse.expires_in * 1000).toISOString();
+  }
+
+  return tokenSet;
+}
+
+async function exchangeYouTubeAuthorizationCode(options: {
+  config: HeimdallConfig;
+  code: string;
+  redirectUri: string;
+}): Promise<OAuthTokenSet> {
+  const providerConfig = options.config.providers.youtube;
+  if (!providerConfig.clientId || !providerConfig.clientSecret) {
+    throw new Error("YouTube OAuth is not fully configured.");
+  }
+
+  const tokenResponse = await fetchJson<{
+    access_token: string;
+    refresh_token?: string;
+    token_type: string;
+    expires_in?: number;
+    scope?: string;
+    id_token?: string;
+  }>(
+    "https://oauth2.googleapis.com/token",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({
+        client_id: providerConfig.clientId,
+        client_secret: providerConfig.clientSecret,
+        code: options.code,
+        grant_type: "authorization_code",
+        redirect_uri: options.redirectUri,
+      }),
+    },
+    "YouTube token exchange failed"
   );
 
   const tokenSet: OAuthTokenSet = {
@@ -283,6 +388,144 @@ async function resolvePatreonIdentity(options: { accessToken: string }): Promise
 
   if (imageUrl) {
     identity.avatarUrl = imageUrl;
+  }
+
+  return identity;
+}
+
+async function resolveTwitchIdentity(options: {
+  config: HeimdallConfig;
+  accessToken: string;
+}): Promise<ResolvedIdentity> {
+  const providerConfig = options.config.providers.twitch;
+  const payload = await fetchJson<{
+    data?: Array<{
+      id: string;
+      login?: string;
+      display_name?: string;
+      profile_image_url?: string;
+      email?: string;
+    }>;
+  }>(
+    "https://api.twitch.tv/helix/users",
+    {
+      headers: {
+        Authorization: `Bearer ${options.accessToken}`,
+        "Client-Id": providerConfig.clientId ?? "",
+      },
+    },
+    "Twitch identity lookup failed"
+  );
+  const user = payload.data?.[0];
+
+  if (!user?.id) {
+    throw new Error("Twitch identity response did not include a user id.");
+  }
+
+  const identity: ResolvedIdentity = {
+    provider: "twitch",
+    providerUserId: user.id,
+    profile: user as unknown as Record<string, unknown>,
+  };
+
+  if (user.login) {
+    identity.username = user.login;
+  }
+
+  if (user.display_name) {
+    identity.displayName = user.display_name;
+  }
+
+  if (user.email) {
+    identity.primaryEmail = user.email;
+  }
+
+  if (user.profile_image_url) {
+    identity.avatarUrl = user.profile_image_url;
+  }
+
+  return identity;
+}
+
+async function resolveYouTubeIdentity(options: { accessToken: string }): Promise<ResolvedIdentity> {
+  const channelUrl = new URL("https://www.googleapis.com/youtube/v3/channels");
+  channelUrl.searchParams.set("part", "snippet");
+  channelUrl.searchParams.set("mine", "true");
+  const channelResponse = await fetch(channelUrl, {
+    headers: {
+      Authorization: `Bearer ${options.accessToken}`,
+    },
+  });
+
+  if (channelResponse.ok) {
+    const payload = (await channelResponse.json()) as {
+      items?: Array<{
+        id: string;
+        snippet?: {
+          title?: string;
+          customUrl?: string;
+          thumbnails?: {
+            default?: { url?: string };
+            medium?: { url?: string };
+            high?: { url?: string };
+          };
+        };
+      }>;
+    };
+    const channel = payload.items?.[0];
+
+    if (channel?.id) {
+      const identity: ResolvedIdentity = {
+        provider: "youtube",
+        providerUserId: channel.id,
+        username: channel.snippet?.customUrl ?? channel.snippet?.title ?? channel.id,
+        displayName: channel.snippet?.title ?? channel.id,
+        profile: channel as unknown as Record<string, unknown>,
+      };
+      const avatarUrl =
+        channel.snippet?.thumbnails?.high?.url ??
+        channel.snippet?.thumbnails?.medium?.url ??
+        channel.snippet?.thumbnails?.default?.url;
+      if (avatarUrl) {
+        identity.avatarUrl = avatarUrl;
+      }
+      return identity;
+    }
+  }
+
+  const userInfo = await fetchJson<{
+    sub?: string;
+    name?: string;
+    picture?: string;
+    email?: string;
+  }>(
+    "https://openidconnect.googleapis.com/v1/userinfo",
+    {
+      headers: {
+        Authorization: `Bearer ${options.accessToken}`,
+      },
+    },
+    "Google identity lookup failed"
+  );
+
+  if (!userInfo.sub) {
+    throw new Error("Google identity response did not include a subject.");
+  }
+
+  const identity: ResolvedIdentity = {
+    provider: "youtube",
+    providerUserId: userInfo.sub,
+    username: userInfo.email ?? userInfo.name ?? userInfo.sub,
+    displayName: userInfo.name ?? userInfo.email ?? userInfo.sub,
+    profile: userInfo as unknown as Record<string, unknown>,
+  };
+
+  if (userInfo.email) {
+    identity.primaryEmail = userInfo.email;
+  }
+
+  if (userInfo.picture) {
+    identity.avatarUrl = userInfo.picture;
   }
 
   return identity;
@@ -519,6 +762,22 @@ const patreonRuntime: OAuthProviderRuntime = {
   evaluateEntitlements: evaluatePatreonEntitlements,
 };
 
+const twitchRuntime: OAuthProviderRuntime = {
+  exchangeAuthorizationCode: exchangeTwitchAuthorizationCode,
+  resolveIdentity: resolveTwitchIdentity,
+  async evaluateEntitlements() {
+    return { facts: [], snapshots: [] };
+  },
+};
+
+const youtubeRuntime: OAuthProviderRuntime = {
+  exchangeAuthorizationCode: exchangeYouTubeAuthorizationCode,
+  resolveIdentity: resolveYouTubeIdentity,
+  async evaluateEntitlements() {
+    return { facts: [], snapshots: [] };
+  },
+};
+
 const notImplementedRuntime: OAuthProviderRuntime = {
   async exchangeAuthorizationCode() {
     throw new Error("Provider callback exchange is not implemented yet.");
@@ -538,7 +797,7 @@ export function createOAuthRuntimeRegistry(): OAuthRuntimeRegistry {
     discord: discordRuntime,
     patreon: patreonRuntime,
     github: notImplementedRuntime,
-    twitch: notImplementedRuntime,
-    youtube: notImplementedRuntime,
+    twitch: twitchRuntime,
+    youtube: youtubeRuntime,
   };
 }

@@ -31,6 +31,7 @@ In the service-first Heimdall version, the most likely reusable slice is:
 
 - provider OAuth authority
 - identity-linking authority
+- managed Twitch/YouTube credential custody for creator connections
 - entitlement refresh
 - shared claim semantics
 

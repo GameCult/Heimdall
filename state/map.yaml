@@ -1,7 +1,7 @@
 project:
   name: Heimdall
   status: active
-  phase: discord_launch
+  phase: streampixels_migration
   premise: >
     Build Heimdall as one reusable GameCult auth authority service for OAuth,
     linked identities, local sessions, grants, and capability claims without
@@ -12,9 +12,9 @@ objective:
     Create a shared auth authority service that Repixelizer, StreamPixels, and
     future GameCult-hosted experiments can consume.
   current: >
-    Verify the first live Discord-backed Repixelizer auth flow in a real
-    browser session now that Heimdall and Repixelizer are deployed and wired on
-    Yggdrasil.
+    Migrate StreamPixels viewer and creator OAuth onto Heimdall while keeping
+    StreamPixels-owned viewer profiles, creator memberships, connector
+    bindings, runtime state, and audience data local.
 
 constraints:
   - Heimdall owns auth/control-plane authority; app-domain data stays app-owned by default.
@@ -57,7 +57,7 @@ active_subgoals:
   - Preserve the default boundary that app-domain data remains app-owned.
   - Align the plan to Heimdall as a Yggdrasil-hosted authority service.
   - Verify the Discord and Patreon Repixelizer auth paths with real provider credentials, stable signing, persistent storage, and live browser callback verification.
-  - Keep Patreon/GitHub/Twitch/YouTube as catalogued but not implemented until their runtime adapters land.
+  - Wire StreamPixels through Heimdall for Twitch/YouTube viewer identity and managed creator-provider credentials without moving StreamPixels domain state into Heimdall.
 
 accepted_design:
   - `docs/architecture.md` is the canonical shared architecture note.
@@ -74,6 +74,7 @@ accepted_design:
   - Repixelizer has consumed the Heimdall backend-callback flow in its hosted web layer; Heimdall no longer needs to wait on Repixelizer refactoring before live Discord launch work.
   - Heimdall is deployed on Yggdrasil at `https://heimdall.gamecult.org` with nginx/TLS, Postgres storage, file-backed signing-key bootstrap, configured token custody, and passing public health/discovery/JWKS checks.
   - Repixelizer is deployed on Yggdrasil at `https://repixelizer.gamecult.org` with `GC_ACCESS_MODE=heimdall`, `GC_ACCESS_ALLOWED_PROVIDERS=discord,patreon`, required access, queue protection enabled, app-owned Discord guild/role policy, and app-owned Patreon tier-title policy sent to Heimdall during backend-callback OAuth start.
+  - StreamPixels viewer and creator provider OAuth should start through Heimdall; StreamPixels redeems one-time completion codes, owns local profile/connector binding, and resolves current provider access tokens from Heimdall by app-authenticated managed-credential calls.
 
 landed_baseline:
   - Shared architecture extracted into its own repo and renamed to Heimdall.
@@ -85,6 +86,8 @@ landed_baseline:
   - Signing-key persistence/bootstrap, managed token encryption at rest, and a local verifier seam landed for the first real consumer integration pass.
   - Direct backend callback handoff landed as the preferred same-host app-consumer path, with browser completion-code exchange retained as fallback.
   - Repixelizer's hosted web layer now creates Heimdall auth attempts, receives direct backend callbacks, verifies Heimdall Ed25519 access tokens locally, and adopts httpOnly local sessions.
+  - Heimdall now has generic Twitch and YouTube OAuth callback runtimes plus an app-authenticated managed-credential resolve endpoint for app-owned connector runtimes.
+  - StreamPixels now starts viewer and creator Twitch/YouTube OAuth through Heimdall, redeems Heimdall completion codes server-side, writes its own viewer sessions and creator connector bindings, and leaves provider refresh-token custody in Heimdall.
 
 rejected_paths:
   - name: per_app_auth_copy_paste
@@ -95,5 +98,5 @@ rejected_paths:
     reason: reusing auth mechanics does not justify centralizing app-domain audience or product data
 
 current_status:
-  summary: Heimdall has a live Yggdrasil deployment for the Repixelizer auth path: TypeScript/Fastify runtime behind nginx/TLS at `https://heimdall.gamecult.org`, Ed25519 JWT signing with bootstrapped file-backed key support, JWKS/discovery exposure, signed OAuth start-state handling, Postgres-backed auth/control-plane persistence, real Discord and Patreon callback runtimes for Repixelizer, AES-256-GCM token sealing for managed provider credentials at rest, direct backend callback delivery for Repixelizer, and the older one-time completion-code exchange retained as fallback. Repixelizer is deployed at `https://repixelizer.gamecult.org` in Heimdall mode with Discord and Patreon as public providers, required access enabled, queue protection enabled, app-owned Discord guild/role policy, and app-owned Patreon tier-title policy sent to Heimdall in trusted backend-callback OAuth starts. Public health/discovery/JWKS/config checks pass, and public auth-start returns provider authorization URLs using the Heimdall callback plus Repixelizer backend handoff. GitHub, Twitch, and YouTube are catalogued providers but their callback runtimes are still not implemented. The key boundary still holds: Heimdall owns auth/control-plane authority and credential custody; app-domain bindings and runtime behavior remain app-owned.
-  next_action: Run the real browser OAuth flow end to end from `https://repixelizer.gamecult.org/app/` with either Discord access (`KLTST` or the Patreon-synced `Inner Sanctum` role) or Patreon access (currently entitled tier titled `Inner Sanctum`), confirm Repixelizer sends its caller-owned provider policy, Heimdall receives the provider callback, confirms entitlement, delivers the backend callback to Repixelizer, Repixelizer adopts a local httpOnly session, and hosted/queue routes are gated correctly. Public OAuth start URLs should request only the scopes they actually need.
+  summary: Heimdall has a live Yggdrasil deployment for the Repixelizer auth path and now a local StreamPixels integration slice. The service has Ed25519 JWT signing/JWKS, signed OAuth state, Postgres-backed auth/control-plane persistence, encrypted managed provider token custody, real Discord and Patreon callback runtimes for Repixelizer, and generic Twitch/YouTube callback runtimes for StreamPixels identity and managed creator connections. StreamPixels now delegates Twitch/YouTube OAuth to Heimdall, redeems one-time completion codes through its service, writes its own httpOnly viewer session, stores local profile/creator connector binding state, and asks Heimdall for current provider access tokens when runtime code needs them. The key boundary still holds: Heimdall owns provider OAuth and credential custody; StreamPixels owns viewer profiles, creator memberships, connector config, diagnostics, EventSub/live-chat runtime behavior, and audience data.
+  next_action: Deploy/configure the StreamPixels-Heimdall slice with Heimdall Twitch/YouTube provider credentials plus `GC_ACCESS_APP_SHARED_SECRET` on both sides, then run real browser flows for viewer claim/link and creator Twitch/YouTube connector attach. Confirm StreamPixels stores only local binding/runtime state for Heimdall-managed connector credentials and still gates creator/operator routes from local memberships.

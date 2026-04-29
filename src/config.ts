@@ -1,4 +1,4 @@
-import { providers, type Provider } from "./contracts.js";
+import { appSlugs, providers, type AppSlug, type Provider } from "./contracts.js";
 
 export interface ProviderClientConfig {
   clientId?: string;
@@ -25,6 +25,7 @@ export interface HeimdallConfig {
   bootstrapSigningPrivateKeyOnMissing: boolean;
   signingKeyId?: string;
   tokenEncryptionKeyBase64?: string;
+  appSharedSecrets: Partial<Record<AppSlug, string>>;
   storage: StorageConfig;
   providers: Record<Provider, ProviderClientConfig>;
 }
@@ -86,6 +87,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): HeimdallConfig
   const providersConfig = Object.fromEntries(
     providers.map((provider) => [provider, readProviderConfig(env, provider)])
   ) as Record<Provider, ProviderClientConfig>;
+  const appSharedSecrets = Object.fromEntries(
+    appSlugs
+      .map((appSlug) => {
+        const envKey = `GC_ACCESS_APP_${appSlug.toUpperCase()}_SHARED_SECRET`;
+        return [appSlug, env[envKey] ?? env.GC_ACCESS_APP_SHARED_SECRET];
+      })
+      .filter(([, value]) => Boolean(value))
+  ) as Partial<Record<AppSlug, string>>;
 
   const config: HeimdallConfig = {
     serviceName: "heimdall",
@@ -97,6 +106,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): HeimdallConfig
     stateTtlSeconds: readInt(env.GC_ACCESS_STATE_TTL_SECONDS, 600),
     completionTtlSeconds: readInt(env.GC_ACCESS_COMPLETION_TTL_SECONDS, 300),
     bootstrapSigningPrivateKeyOnMissing: readBoolean(env.GC_ACCESS_SIGNING_PRIVATE_KEY_BOOTSTRAP, false),
+    appSharedSecrets,
     storage: {
       backend: storageBackend,
       applySchemaOnStartup: readBoolean(env.GC_ACCESS_APPLY_SCHEMA_ON_STARTUP, true),

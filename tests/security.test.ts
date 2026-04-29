@@ -17,6 +17,7 @@ function createTestConfig(overrides: Partial<HeimdallConfig> = {}): HeimdallConf
     stateTtlSeconds: 600,
     completionTtlSeconds: 300,
     bootstrapSigningPrivateKeyOnMissing: false,
+    appSharedSecrets: {},
     storage: {
       backend: "memory",
       applySchemaOnStartup: true,

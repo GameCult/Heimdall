@@ -161,8 +161,10 @@ Failure mode right now:
 Launch note:
 
 - Discord and Patreon are the implemented provider runtimes for Repixelizer
-- GitHub, Twitch, and YouTube are catalogued for start URLs, but their
-  callback exchange/identity/entitlement runtimes are not implemented yet
+- Twitch and YouTube now have generic OAuth exchange and identity runtimes for
+  StreamPixels viewer auth and managed creator connections
+- GitHub is still catalogued for start URLs, but its callback runtime is not
+  implemented yet
 - Repixelizer launch can configure Discord and Patreon on its provider buttons
 
 ### `GET /v1/oauth/{provider}/callback`
@@ -187,8 +189,8 @@ Current status:
 - if opener handoff is used and fails, the completion page still offers a
   fallback return link carrying only the one-time completion code, not the
   access token
-- other configured providers still return "not implemented" at the runtime
-  adapter layer until their callback paths are added
+- GitHub still returns "not implemented" at the runtime adapter layer until its
+  callback path is added
 
 Success response for backend-callback handoff now includes:
 
@@ -246,6 +248,7 @@ Current payload shape on success:
   "appSlug": "repixelizer",
   "mode": "sign_in",
   "returnTo": "https://repixelizer.gamecult.org/app/",
+  "connection": null,
   "account": {
     "id": "acct_repixelizer_001",
     "displayName": "Meta"
@@ -276,6 +279,7 @@ Current payload shape on failure:
   "appSlug": "repixelizer",
   "mode": "sign_in",
   "returnTo": "https://repixelizer.gamecult.org/app/",
+  "connection": null,
   "error": "oauth_callback_failed",
   "errorDescription": "..."
 }
@@ -347,6 +351,50 @@ Important behavior:
 - completion codes are short-lived
 - app backends should redeem them server-side
 - the browser should not keep the final access token in callback URL fragments
+
+### `POST /v1/apps/{appSlug}/managed-credentials/resolve`
+
+Purpose:
+
+- let an app backend retrieve the current Heimdall-custodied access token for
+  a managed provider connection
+- keep refresh-token custody inside Heimdall instead of app persistence
+
+Authentication:
+
+- requires `x-heimdall-app-secret`
+- the configured secret comes from `GC_ACCESS_APP_{APP_SLUG}_SHARED_SECRET` or
+  the generic `GC_ACCESS_APP_SHARED_SECRET`
+
+Request body:
+
+```json
+{
+  "accountId": "acct_streampixels_001",
+  "provider": "youtube"
+}
+```
+
+Response:
+
+```json
+{
+  "accountId": "acct_streampixels_001",
+  "provider": "youtube",
+  "providerUserId": "channel-123",
+  "accessToken": "<provider-access-token>",
+  "tokenExpiresAt": "2026-04-26T13:00:00.000Z",
+  "scopes": ["openid", "profile", "email"]
+}
+```
+
+Important behavior:
+
+- this endpoint only works for providers listed in the app profile's
+  `managedConnectionProviders`
+- it returns access tokens only; refresh tokens remain in Heimdall custody
+- app-local binding, diagnostics, subscription setup, and runtime behavior stay
+  app-owned
 
 ### Reference local verifier seam
 
@@ -465,7 +513,7 @@ The following are not landed yet:
 
 - refresh/revocation flows
 - admin/grant management surfaces
-- provider callback runtimes beyond Discord
+- GitHub callback runtime
 
 ## Next implementation move
 
