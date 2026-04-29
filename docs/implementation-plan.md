@@ -84,11 +84,13 @@ Goals:
   and persistent Postgres storage
 - configure the Discord OAuth app redirect URI to
   `https://heimdall.gamecult.org/v1/oauth/discord/callback`
-- configure Heimdall's Discord client credentials, Repixelizer guild id, and
-  the Repixelizer Discord access role ids in
-  `GC_ACCESS_APP_REPIXELIZER_DISCORD_ALLOWED_ROLE_IDS`
+- configure Heimdall's Discord client credentials for the Repixelizer-owned
+  Discord OAuth app
 - configure Repixelizer for `GC_ACCESS_MODE=heimdall` and
   `GC_ACCESS_ALLOWED_PROVIDERS=discord`
+- configure Repixelizer's Discord access policy with its GameCult guild id and
+  allowed role ids; Repixelizer sends that policy to Heimdall during the
+  backend-callback OAuth start
 - run the live browser OAuth flow and confirm Repixelizer receives the backend
   callback, verifies the claim locally, adopts a local session, gates hosted
   access, and stamps queued jobs with `account_id` / `session_id`
@@ -105,7 +107,8 @@ Deployment/configuration status:
 Current Discord policy:
 
 - Heimdall grants Repixelizer `entitlement.app_access` only when the Discord
-  member has one of the configured allowed role ids
+  member has one of the role ids Repixelizer sent in its caller-owned
+  entitlement policy
 - launch policy is intentionally role-gated: the GameCult Discord can remain
   public, but Repixelizer access is limited to members with either `KLTST`
   or the Patreon-synced `Inner Sanctum` role

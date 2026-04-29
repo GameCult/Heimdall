@@ -1,5 +1,10 @@
 import { Buffer } from "node:buffer";
-import { type AppSlug, type OAuthConnectionBinding, type Provider } from "./contracts.js";
+import {
+  type AppSlug,
+  type OAuthConnectionBinding,
+  type OAuthEntitlementPolicy,
+  type Provider,
+} from "./contracts.js";
 import { type HeimdallConfig } from "./config.js";
 import { entitlementFacts } from "./facts.js";
 import { type CreateEntitlementSnapshotInput } from "./store/types.js";
@@ -32,6 +37,7 @@ export interface OAuthCallbackContext {
   appSlug: AppSlug;
   accountId: string;
   connection: OAuthConnectionBinding | null;
+  entitlementPolicy: OAuthEntitlementPolicy | null;
 }
 
 export interface OAuthProviderRuntime {
@@ -166,12 +172,12 @@ async function evaluateDiscordEntitlements(options: {
     return { facts: [], snapshots: [] };
   }
 
-  const guildId = options.config.apps.repixelizer.discordGuildId;
-  const allowedRoleIds = options.config.apps.repixelizer.discordAllowedRoleIds;
-
-  if (!guildId) {
+  const policy = options.callback.entitlementPolicy;
+  if (!policy || policy.kind !== "discord_role_access") {
     return { facts: [], snapshots: [] };
   }
+  const guildId = policy.guildId;
+  const allowedRoleIds = policy.allowedRoleIds;
 
   const response = await fetch(
     `https://discord.com/api/v10/users/@me/guilds/${guildId}/member`,
@@ -233,7 +239,7 @@ async function evaluateDiscordEntitlements(options: {
             ? "Matched a configured Repixelizer access role."
             : allowedRoleIds.length
               ? "User is in the guild but lacks the configured Repixelizer access role."
-              : "No Repixelizer Discord role ids are configured.",
+              : "Repixelizer did not supply any Discord role ids in its entitlement policy.",
         rawSummaryJson: {
           guildId,
           roles,

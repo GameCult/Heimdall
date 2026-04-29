@@ -98,6 +98,8 @@ verification:
 - open `https://repixelizer.gamecult.org/app/`
 - start Discord sign-in with an account that has the `KLTST` or
   Patreon-synced `Inner Sanctum` role
+- confirm Repixelizer sends its app-owned Discord guild/role policy in the
+  backend-callback OAuth start
 - confirm Heimdall receives the Discord callback and evaluates guild role
   entitlement
 - confirm Repixelizer receives the backend callback, verifies the Heimdall
@@ -107,7 +109,10 @@ verification:
 
 Launch policy is role-gated on purpose: the GameCult Discord can remain public,
 but Repixelizer access is limited to members with either `KLTST` or the
-Patreon-synced `Inner Sanctum` role.
+Patreon-synced `Inner Sanctum` role. Repixelizer owns that role policy through
+its own runtime env and sends it to Heimdall during backend-callback OAuth
+start; Heimdall owns provider OAuth mechanics and claim issuance, not the
+per-app role list.
 
 ## Immediate Re-entry Instruction
 

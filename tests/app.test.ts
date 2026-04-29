@@ -24,12 +24,6 @@ function createTestConfig(): HeimdallConfig {
       backend: "memory",
       applySchemaOnStartup: true,
     },
-    apps: {
-      repixelizer: {
-        discordGuildId: "gamecult-guild",
-        discordAllowedRoleIds: ["role-repixelizer"],
-      },
-    },
     providers: {
       discord: { clientId: "discord-client", clientSecret: "discord-secret" },
       patreon: { clientId: "patreon-client", clientSecret: "patreon-secret" },
@@ -198,6 +192,76 @@ describe("Heimdall service", () => {
           typ: "heimdall_oauth_state",
           provider: "discord",
           app_slug: "repixelizer",
+          entitlement_policy: null,
+        })
+      );
+    }
+  });
+
+  it("rejects caller-owned entitlement policy for browser completion handoffs", async () => {
+    const app = await buildApp({ config: createTestConfig() });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/oauth/discord/start",
+      payload: {
+        appSlug: "repixelizer",
+        mode: "sign_in",
+        returnTo: "https://repixelizer.gamecult.org/app/",
+        entitlementPolicy: {
+          kind: "discord_role_access",
+          guildId: "gamecult-guild",
+          allowedRoleIds: ["role-repixelizer"],
+        },
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual(expect.objectContaining({ error: "untrusted_entitlement_policy" }));
+  });
+
+  it("accepts caller-owned entitlement policy for trusted backend handoffs", async () => {
+    const app = await buildApp({ config: createTestConfig() });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/oauth/discord/start",
+      payload: {
+        appSlug: "repixelizer",
+        mode: "sign_in",
+        returnTo: "https://repixelizer.gamecult.org/app/",
+        handoff: {
+          kind: "backend_callback",
+          attemptId: "attempt-123",
+          callbackUrl: "https://repixelizer.gamecult.org/api/auth/heimdall/callback",
+        },
+        entitlementPolicy: {
+          kind: "discord_role_access",
+          guildId: "gamecult-guild",
+          allowedRoleIds: ["role-repixelizer"],
+        },
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
+    const payload = response.json();
+    expect(payload.authorizationUrl).toContain("discord.com/oauth2/authorize");
+
+    const verified = verifyJwt(payload.stateToken as string, getPublicKey(app));
+    expect(verified.valid).toBe(true);
+    if (verified.valid) {
+      expect(verified.payload).toEqual(
+        expect.objectContaining({
+          typ: "heimdall_oauth_state",
+          provider: "discord",
+          app_slug: "repixelizer",
+          entitlement_policy: {
+            kind: "discord_role_access",
+            guildId: "gamecult-guild",
+            allowedRoleIds: ["role-repixelizer"],
+          },
         })
       );
     }

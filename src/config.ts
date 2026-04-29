@@ -11,11 +11,6 @@ export interface StorageConfig {
   applySchemaOnStartup: boolean;
 }
 
-export interface RepixelizerBindingConfig {
-  discordGuildId?: string;
-  discordAllowedRoleIds: string[];
-}
-
 export interface HeimdallConfig {
   serviceName: string;
   host: string;
@@ -31,9 +26,6 @@ export interface HeimdallConfig {
   signingKeyId?: string;
   tokenEncryptionKeyBase64?: string;
   storage: StorageConfig;
-  apps: {
-    repixelizer: RepixelizerBindingConfig;
-  };
   providers: Record<Provider, ProviderClientConfig>;
 }
 
@@ -65,17 +57,6 @@ function readBoolean(envValue: string | undefined, fallback: boolean): boolean {
   }
 
   return fallback;
-}
-
-function readCsv(envValue: string | undefined): string[] {
-  if (!envValue) {
-    return [];
-  }
-
-  return envValue
-    .split(",")
-    .map((value) => value.trim())
-    .filter(Boolean);
 }
 
 function readProviderConfig(env: NodeJS.ProcessEnv, provider: Provider): ProviderClientConfig {
@@ -120,11 +101,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): HeimdallConfig
       backend: storageBackend,
       applySchemaOnStartup: readBoolean(env.GC_ACCESS_APPLY_SCHEMA_ON_STARTUP, true),
     },
-    apps: {
-      repixelizer: {
-        discordAllowedRoleIds: readCsv(env.GC_ACCESS_APP_REPIXELIZER_DISCORD_ALLOWED_ROLE_IDS),
-      },
-    },
     providers: providersConfig,
   };
 
@@ -147,10 +123,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): HeimdallConfig
 
   if (env.GC_ACCESS_DATABASE_URL) {
     config.storage.databaseUrl = env.GC_ACCESS_DATABASE_URL;
-  }
-
-  if (env.GC_ACCESS_APP_REPIXELIZER_DISCORD_GUILD_ID) {
-    config.apps.repixelizer.discordGuildId = env.GC_ACCESS_APP_REPIXELIZER_DISCORD_GUILD_ID;
   }
 
   return config;

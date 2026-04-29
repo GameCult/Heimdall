@@ -36,6 +36,14 @@ export interface OAuthBackendCallbackHandoff {
 
 export type OAuthHandoff = OAuthBrowserCompletionHandoff | OAuthBackendCallbackHandoff;
 
+export interface DiscordRoleEntitlementPolicy {
+  kind: "discord_role_access";
+  guildId: string;
+  allowedRoleIds: string[];
+}
+
+export type OAuthEntitlementPolicy = DiscordRoleEntitlementPolicy;
+
 export interface OAuthStartRequest {
   appSlug: AppSlug;
   mode: OAuthMode;
@@ -43,6 +51,7 @@ export interface OAuthStartRequest {
   connection?: OAuthConnectionBinding;
   handoff?: OAuthHandoff;
   requestedScopes?: string[];
+  entitlementPolicy?: OAuthEntitlementPolicy;
 }
 
 export interface OAuthStatePayload {
@@ -60,6 +69,7 @@ export interface OAuthStatePayload {
   return_to: string;
   connection: OAuthConnectionBinding | null;
   handoff: OAuthHandoff | null;
+  entitlement_policy: OAuthEntitlementPolicy | null;
 }
 
 export interface LinkedIdentityInput {

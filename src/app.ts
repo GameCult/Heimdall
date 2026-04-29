@@ -10,6 +10,7 @@ import {
   providers,
   type AppSlug,
   type OAuthHandoff,
+  type OAuthEntitlementPolicy,
   type OAuthMode,
   type OAuthConnectionBinding,
   type RedeemAuthCompletionRequest,
@@ -65,6 +66,7 @@ function buildOAuthStateToken(options: {
   returnTo: string;
   connection: OAuthConnectionBinding | undefined;
   handoff: OAuthHandoff;
+  entitlementPolicy: OAuthEntitlementPolicy | undefined;
   keys: ReturnType<typeof createRuntimeKeyMaterial>;
 }): { token: string; expiresAt: string } {
   const issuedAt = nowEpochSeconds();
@@ -84,6 +86,7 @@ function buildOAuthStateToken(options: {
     return_to: options.returnTo,
     connection: options.connection ?? null,
     handoff: options.handoff,
+    entitlement_policy: options.entitlementPolicy ?? null,
   };
   const token = signJwt(payload as unknown as Record<string, unknown>, options.keys);
 
@@ -104,6 +107,18 @@ function parseOAuthStatePayload(payload: Record<string, unknown>): OAuthStatePay
         ((handoff as Record<string, unknown>).kind === "backend_callback" &&
           typeof (handoff as Record<string, unknown>).attemptId === "string" &&
           typeof (handoff as Record<string, unknown>).callbackUrl === "string")));
+  const entitlementPolicy = payload.entitlement_policy;
+  const entitlementPolicyIsValid =
+    entitlementPolicy === null ||
+    entitlementPolicy === undefined ||
+    (typeof entitlementPolicy === "object" &&
+      entitlementPolicy !== null &&
+      (entitlementPolicy as Record<string, unknown>).kind === "discord_role_access" &&
+      typeof (entitlementPolicy as Record<string, unknown>).guildId === "string" &&
+      Array.isArray((entitlementPolicy as Record<string, unknown>).allowedRoleIds) &&
+      ((entitlementPolicy as Record<string, unknown>).allowedRoleIds as unknown[]).every(
+        (roleId) => typeof roleId === "string"
+      ));
   if (
     payload.typ !== "heimdall_oauth_state" ||
     typeof payload.provider !== "string" ||
@@ -120,7 +135,8 @@ function parseOAuthStatePayload(payload: Record<string, unknown>): OAuthStatePay
     typeof payload.iat !== "number" ||
     typeof payload.nbf !== "number" ||
     typeof payload.exp !== "number" ||
-    !handoffIsValid
+    !handoffIsValid ||
+    !entitlementPolicyIsValid
   ) {
     return null;
   }
@@ -128,6 +144,9 @@ function parseOAuthStatePayload(payload: Record<string, unknown>): OAuthStatePay
   const normalizedPayload = payload as unknown as OAuthStatePayload;
   if (!normalizedPayload.handoff) {
     normalizedPayload.handoff = { kind: "browser_completion" };
+  }
+  if (!normalizedPayload.entitlement_policy) {
+    normalizedPayload.entitlement_policy = null;
   }
 
   return normalizedPayload;
@@ -169,6 +188,42 @@ function normalizeOAuthHandoff(value: OAuthStartRequest["handoff"]): OAuthHandof
   }
 
   throw new Error("Invalid OAuth handoff definition.");
+}
+
+function normalizeEntitlementPolicy(value: OAuthStartRequest["entitlementPolicy"]): OAuthEntitlementPolicy | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  if (
+    value.kind === "discord_role_access" &&
+    typeof value.guildId === "string" &&
+    value.guildId.trim() &&
+    Array.isArray(value.allowedRoleIds)
+  ) {
+    const allowedRoleIds = value.allowedRoleIds.map((roleId) => roleId.trim()).filter(Boolean);
+    if (allowedRoleIds.length) {
+      return {
+        kind: "discord_role_access",
+        guildId: value.guildId.trim(),
+        allowedRoleIds,
+      };
+    }
+  }
+
+  throw new Error("Invalid entitlement policy definition.");
+}
+
+function acceptsBackendPolicy(appSlug: AppSlug, handoff: OAuthHandoff): boolean {
+  if (handoff.kind !== "backend_callback") {
+    return false;
+  }
+
+  if (appSlug === "repixelizer") {
+    return handoff.callbackUrl === "https://repixelizer.gamecult.org/api/auth/heimdall/callback";
+  }
+
+  return false;
 }
 
 async function maybeDeliverBackendHandoff(handoff: OAuthHandoff, payload: BackendHandoffPayload): Promise<void> {
@@ -281,6 +336,21 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
                 callbackUrl: { type: "string", format: "uri" },
               },
             },
+            entitlementPolicy: {
+              type: "object",
+              required: ["kind", "guildId", "allowedRoleIds"],
+              additionalProperties: false,
+              properties: {
+                kind: { type: "string", enum: ["discord_role_access"] },
+                guildId: { type: "string", minLength: 1 },
+                allowedRoleIds: {
+                  type: "array",
+                  minItems: 1,
+                  items: { type: "string", minLength: 1 },
+                  uniqueItems: true,
+                },
+              },
+            },
           },
         },
       },
@@ -308,6 +378,23 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           detail: error instanceof Error ? error.message : "Invalid OAuth handoff definition.",
         };
       }
+      let entitlementPolicy: OAuthEntitlementPolicy | undefined;
+      try {
+        entitlementPolicy = normalizeEntitlementPolicy(request.body.entitlementPolicy);
+      } catch (error) {
+        reply.code(400);
+        return {
+          error: "invalid_entitlement_policy",
+          detail: error instanceof Error ? error.message : "Invalid entitlement policy definition.",
+        };
+      }
+      if (entitlementPolicy && !acceptsBackendPolicy(profile.slug, handoff)) {
+        reply.code(400);
+        return {
+          error: "untrusted_entitlement_policy",
+          detail: "Caller-supplied entitlement policy is only accepted for trusted backend callback handoffs.",
+        };
+      }
 
       const providerConfig = config.providers[provider];
       if (!providerConfig.clientId) {
@@ -328,6 +415,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         returnTo: request.body.returnTo,
         connection: request.body.connection,
         handoff,
+        entitlementPolicy,
         keys,
       });
 
@@ -550,6 +638,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
             appSlug: statePayload.app_slug,
             accountId: account.id,
             connection: statePayload.connection,
+            entitlementPolicy: statePayload.entitlement_policy,
           },
           identity,
           tokenSet,

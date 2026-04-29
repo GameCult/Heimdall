@@ -21,12 +21,6 @@ function createTestConfig(overrides: Partial<HeimdallConfig> = {}): HeimdallConf
       backend: "memory",
       applySchemaOnStartup: true,
     },
-    apps: {
-      repixelizer: {
-        discordGuildId: "gamecult-guild",
-        discordAllowedRoleIds: ["role-repixelizer"],
-      },
-    },
     providers: {
       discord: {},
       patreon: {},
