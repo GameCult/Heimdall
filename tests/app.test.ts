@@ -3,7 +3,7 @@ import { type FastifyInstance } from "fastify";
 import { buildApp } from "../src/app.js";
 import { type HeimdallConfig } from "../src/config.js";
 import { entitlementFacts, grantFacts, identityFacts } from "../src/facts.js";
-import { type OAuthProviderRuntime } from "../src/oauth.js";
+import { createOAuthRuntimeRegistry, type OAuthProviderRuntime } from "../src/oauth.js";
 import { verifyJwt } from "../src/signing.js";
 import { createHeimdallAccessTokenVerifier } from "../src/verifier.js";
 import { InMemoryStore } from "../src/store/index.js";
@@ -654,5 +654,33 @@ describe("Heimdall service", () => {
       })
     );
     expect(credentialResponse.body).not.toContain("twitch-refresh-token");
+  });
+
+  it("accepts Twitch token scopes returned as an array", async () => {
+    globalThis.fetch = async () =>
+      new Response(
+        JSON.stringify({
+          access_token: "twitch-access-token",
+          refresh_token: "twitch-refresh-token",
+          token_type: "bearer",
+          expires_in: 14124,
+          scope: ["user:read:email"],
+        }),
+        {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+          },
+        }
+      );
+
+    const runtimes = createOAuthRuntimeRegistry();
+    const tokenSet = await runtimes.twitch.exchangeAuthorizationCode({
+      config: createTestConfig(),
+      code: "test-code",
+      redirectUri: "https://heimdall.gamecult.org/v1/oauth/twitch/callback",
+    });
+
+    expect(tokenSet.scope).toEqual(["user:read:email"]);
   });
 });

@@ -70,6 +70,14 @@ async function fetchJson<T>(input: string | URL, init: RequestInit, fallbackErro
   return (text ? JSON.parse(text) : {}) as T;
 }
 
+function normalizeScopes(scope: string | string[] | undefined): string[] {
+  if (Array.isArray(scope)) {
+    return scope.map((value) => value.trim()).filter(Boolean);
+  }
+
+  return scope?.split(/\s+/).filter(Boolean) ?? [];
+}
+
 async function exchangeDiscordAuthorizationCode(options: {
   config: HeimdallConfig;
   code: string;
@@ -91,7 +99,7 @@ async function exchangeDiscordAuthorizationCode(options: {
     refresh_token?: string;
     token_type: string;
     expires_in: number;
-    scope: string;
+    scope?: string | string[];
   }>(
     "https://discord.com/api/v10/oauth2/token",
     {
@@ -108,7 +116,7 @@ async function exchangeDiscordAuthorizationCode(options: {
   const tokenSet: OAuthTokenSet = {
     accessToken: tokenResponse.access_token,
     tokenType: tokenResponse.token_type,
-    scope: tokenResponse.scope.split(/\s+/).filter(Boolean),
+    scope: normalizeScopes(tokenResponse.scope),
     expiresAt: new Date(Date.now() + tokenResponse.expires_in * 1000).toISOString(),
     raw: tokenResponse as unknown as Record<string, unknown>,
   };
@@ -142,7 +150,7 @@ async function exchangePatreonAuthorizationCode(options: {
     refresh_token?: string;
     token_type: string;
     expires_in?: number;
-    scope?: string;
+    scope?: string | string[];
   }>(
     "https://www.patreon.com/api/oauth2/token",
     {
@@ -158,7 +166,7 @@ async function exchangePatreonAuthorizationCode(options: {
   const tokenSet: OAuthTokenSet = {
     accessToken: tokenResponse.access_token,
     tokenType: tokenResponse.token_type,
-    scope: tokenResponse.scope?.split(/\s+/).filter(Boolean) ?? [],
+    scope: normalizeScopes(tokenResponse.scope),
     raw: tokenResponse as unknown as Record<string, unknown>,
   };
 
@@ -188,7 +196,7 @@ async function exchangeTwitchAuthorizationCode(options: {
     refresh_token?: string;
     token_type: string;
     expires_in?: number;
-    scope?: string;
+    scope?: string | string[];
   }>(
     "https://id.twitch.tv/oauth2/token",
     {
@@ -210,7 +218,7 @@ async function exchangeTwitchAuthorizationCode(options: {
   const tokenSet: OAuthTokenSet = {
     accessToken: tokenResponse.access_token,
     tokenType: tokenResponse.token_type,
-    scope: tokenResponse.scope?.split(/\s+/).filter(Boolean) ?? [],
+    scope: normalizeScopes(tokenResponse.scope),
     raw: tokenResponse as unknown as Record<string, unknown>,
   };
 
@@ -240,7 +248,7 @@ async function exchangeYouTubeAuthorizationCode(options: {
     refresh_token?: string;
     token_type: string;
     expires_in?: number;
-    scope?: string;
+    scope?: string | string[];
     id_token?: string;
   }>(
     "https://oauth2.googleapis.com/token",
@@ -263,7 +271,7 @@ async function exchangeYouTubeAuthorizationCode(options: {
   const tokenSet: OAuthTokenSet = {
     accessToken: tokenResponse.access_token,
     tokenType: tokenResponse.token_type,
-    scope: tokenResponse.scope?.split(/\s+/).filter(Boolean) ?? [],
+    scope: normalizeScopes(tokenResponse.scope),
     raw: tokenResponse as unknown as Record<string, unknown>,
   };
 
