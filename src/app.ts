@@ -111,14 +111,18 @@ function parseOAuthStatePayload(payload: Record<string, unknown>): OAuthStatePay
   const entitlementPolicyIsValid =
     entitlementPolicy === null ||
     entitlementPolicy === undefined ||
-    (typeof entitlementPolicy === "object" &&
+    ((typeof entitlementPolicy === "object" &&
       entitlementPolicy !== null &&
       (entitlementPolicy as Record<string, unknown>).kind === "discord_role_access" &&
       typeof (entitlementPolicy as Record<string, unknown>).guildId === "string" &&
       Array.isArray((entitlementPolicy as Record<string, unknown>).allowedRoleIds) &&
       ((entitlementPolicy as Record<string, unknown>).allowedRoleIds as unknown[]).every(
         (roleId) => typeof roleId === "string"
-      ));
+      )) ||
+      (typeof entitlementPolicy === "object" &&
+        entitlementPolicy !== null &&
+        (entitlementPolicy as Record<string, unknown>).kind === "patreon_membership_access" &&
+        typeof (entitlementPolicy as Record<string, unknown>).requiredTierTitle === "string"));
   if (
     payload.typ !== "heimdall_oauth_state" ||
     typeof payload.provider !== "string" ||
@@ -209,6 +213,17 @@ function normalizeEntitlementPolicy(value: OAuthStartRequest["entitlementPolicy"
         allowedRoleIds,
       };
     }
+  }
+
+  if (
+    value.kind === "patreon_membership_access" &&
+    typeof value.requiredTierTitle === "string" &&
+    value.requiredTierTitle.trim()
+  ) {
+    return {
+      kind: "patreon_membership_access",
+      requiredTierTitle: value.requiredTierTitle.trim(),
+    };
   }
 
   throw new Error("Invalid entitlement policy definition.");
@@ -337,19 +352,32 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
               },
             },
             entitlementPolicy: {
-              type: "object",
-              required: ["kind", "guildId", "allowedRoleIds"],
-              additionalProperties: false,
-              properties: {
-                kind: { type: "string", enum: ["discord_role_access"] },
-                guildId: { type: "string", minLength: 1 },
-                allowedRoleIds: {
-                  type: "array",
-                  minItems: 1,
-                  items: { type: "string", minLength: 1 },
-                  uniqueItems: true,
+              anyOf: [
+                {
+                  type: "object",
+                  required: ["kind", "guildId", "allowedRoleIds"],
+                  additionalProperties: false,
+                  properties: {
+                    kind: { type: "string", const: "discord_role_access" },
+                    guildId: { type: "string", minLength: 1 },
+                    allowedRoleIds: {
+                      type: "array",
+                      minItems: 1,
+                      items: { type: "string", minLength: 1 },
+                      uniqueItems: true,
+                    },
+                  },
                 },
-              },
+                {
+                  type: "object",
+                  required: ["kind", "requiredTierTitle"],
+                  additionalProperties: false,
+                  properties: {
+                    kind: { type: "string", const: "patreon_membership_access" },
+                    requiredTierTitle: { type: "string", minLength: 1 },
+                  },
+                },
+              ],
             },
           },
         },

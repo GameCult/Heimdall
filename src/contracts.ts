@@ -42,7 +42,12 @@ export interface DiscordRoleEntitlementPolicy {
   allowedRoleIds: string[];
 }
 
-export type OAuthEntitlementPolicy = DiscordRoleEntitlementPolicy;
+export interface PatreonMembershipEntitlementPolicy {
+  kind: "patreon_membership_access";
+  requiredTierTitle: string;
+}
+
+export type OAuthEntitlementPolicy = DiscordRoleEntitlementPolicy | PatreonMembershipEntitlementPolicy;
 
 export interface OAuthStartRequest {
   appSlug: AppSlug;

@@ -120,6 +120,59 @@ async function exchangeDiscordAuthorizationCode(options: {
   return tokenSet;
 }
 
+async function exchangePatreonAuthorizationCode(options: {
+  config: HeimdallConfig;
+  code: string;
+  redirectUri: string;
+}): Promise<OAuthTokenSet> {
+  const providerConfig = options.config.providers.patreon;
+  if (!providerConfig.clientId || !providerConfig.clientSecret) {
+    throw new Error("Patreon OAuth is not fully configured.");
+  }
+
+  const body = new URLSearchParams({
+    grant_type: "authorization_code",
+    code: options.code,
+    client_id: providerConfig.clientId,
+    client_secret: providerConfig.clientSecret,
+    redirect_uri: options.redirectUri,
+  });
+  const tokenResponse = await fetchJson<{
+    access_token: string;
+    refresh_token?: string;
+    token_type: string;
+    expires_in?: number;
+    scope?: string;
+  }>(
+    "https://www.patreon.com/api/oauth2/token",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body,
+    },
+    "Patreon token exchange failed"
+  );
+
+  const tokenSet: OAuthTokenSet = {
+    accessToken: tokenResponse.access_token,
+    tokenType: tokenResponse.token_type,
+    scope: tokenResponse.scope?.split(/\s+/).filter(Boolean) ?? [],
+    raw: tokenResponse as unknown as Record<string, unknown>,
+  };
+
+  if (tokenResponse.refresh_token) {
+    tokenSet.refreshToken = tokenResponse.refresh_token;
+  }
+
+  if (tokenResponse.expires_in) {
+    tokenSet.expiresAt = new Date(Date.now() + tokenResponse.expires_in * 1000).toISOString();
+  }
+
+  return tokenSet;
+}
+
 async function resolveDiscordIdentity(options: { accessToken: string }): Promise<ResolvedIdentity> {
   const user = await fetchJson<{
     id: string;
@@ -158,6 +211,78 @@ async function resolveDiscordIdentity(options: { accessToken: string }): Promise
 
   if (user.avatar) {
     identity.avatarUrl = `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.png`;
+  }
+
+  return identity;
+}
+
+async function fetchPatreonIdentity(accessToken: string): Promise<Record<string, unknown>> {
+  const url = new URL("https://www.patreon.com/api/oauth2/v2/identity");
+  url.searchParams.set("include", "memberships.currently_entitled_tiers,memberships.campaign");
+  url.searchParams.set("fields[user]", "email,full_name,image_url,thumb_url,url,vanity");
+  url.searchParams.set("fields[member]", "last_charge_status,patron_status");
+  url.searchParams.set("fields[tier]", "title");
+  url.searchParams.set("fields[campaign]", "creation_name,url");
+
+  return fetchJson<Record<string, unknown>>(
+    url,
+    {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    },
+    "Patreon identity lookup failed"
+  );
+}
+
+function patreonUserAttributes(payload: Record<string, unknown>): Record<string, unknown> {
+  const data = payload.data;
+  if (typeof data !== "object" || data === null) {
+    return {};
+  }
+
+  const attributes = (data as Record<string, unknown>).attributes;
+  return typeof attributes === "object" && attributes !== null ? attributes as Record<string, unknown> : {};
+}
+
+async function resolvePatreonIdentity(options: { accessToken: string }): Promise<ResolvedIdentity> {
+  const profile = await fetchPatreonIdentity(options.accessToken);
+  const data = profile.data;
+  if (typeof data !== "object" || data === null || typeof (data as Record<string, unknown>).id !== "string") {
+    throw new Error("Patreon identity response did not include a user id.");
+  }
+
+  const attributes = patreonUserAttributes(profile);
+  const displayName = typeof attributes.full_name === "string" ? attributes.full_name : undefined;
+  const vanity = typeof attributes.vanity === "string" ? attributes.vanity : undefined;
+  const email = typeof attributes.email === "string" ? attributes.email : undefined;
+  const imageUrl =
+    typeof attributes.image_url === "string"
+      ? attributes.image_url
+      : typeof attributes.thumb_url === "string"
+        ? attributes.thumb_url
+        : undefined;
+
+  const identity: ResolvedIdentity = {
+    provider: "patreon",
+    providerUserId: (data as Record<string, unknown>).id as string,
+    profile,
+  };
+
+  if (vanity) {
+    identity.username = vanity;
+  }
+
+  if (displayName) {
+    identity.displayName = displayName;
+  }
+
+  if (email) {
+    identity.primaryEmail = email;
+  }
+
+  if (imageUrl) {
+    identity.avatarUrl = imageUrl;
   }
 
   return identity;
@@ -252,10 +377,146 @@ async function evaluateDiscordEntitlements(options: {
   };
 }
 
+function includedPatreonMembers(profile: Record<string, unknown>): Array<Record<string, unknown>> {
+  const included = profile.included;
+  if (!Array.isArray(included)) {
+    return [];
+  }
+
+  return included.filter(
+    (entry): entry is Record<string, unknown> =>
+      typeof entry === "object" &&
+      entry !== null &&
+      (entry as Record<string, unknown>).type === "member"
+  );
+}
+
+function includedPatreonTierById(profile: Record<string, unknown>): Map<string, Record<string, unknown>> {
+  const included = profile.included;
+  const tiers = new Map<string, Record<string, unknown>>();
+  if (!Array.isArray(included)) {
+    return tiers;
+  }
+
+  for (const entry of included) {
+    if (typeof entry !== "object" || entry === null) {
+      continue;
+    }
+    const record = entry as Record<string, unknown>;
+    if (record.type === "tier" && typeof record.id === "string") {
+      tiers.set(record.id, record);
+    }
+  }
+
+  return tiers;
+}
+
+function relatedPatreonTierIds(member: Record<string, unknown>): string[] {
+  const relationships = member.relationships;
+  if (typeof relationships !== "object" || relationships === null) {
+    return [];
+  }
+
+  const tiers = (relationships as Record<string, unknown>).currently_entitled_tiers;
+  if (typeof tiers !== "object" || tiers === null) {
+    return [];
+  }
+
+  const data = (tiers as Record<string, unknown>).data;
+  if (!Array.isArray(data)) {
+    return [];
+  }
+
+  return data
+    .map((entry) => {
+      if (typeof entry !== "object" || entry === null) {
+        return undefined;
+      }
+      const record = entry as Record<string, unknown>;
+      return record.type === "tier" && typeof record.id === "string" ? record.id : undefined;
+    })
+    .filter((id): id is string => id !== undefined);
+}
+
+async function evaluatePatreonEntitlements(options: {
+  callback: OAuthCallbackContext;
+  tokenSet: OAuthTokenSet;
+}): Promise<EntitlementEvaluation> {
+  if (options.callback.appSlug !== "repixelizer") {
+    return { facts: [], snapshots: [] };
+  }
+
+  const policy = options.callback.entitlementPolicy;
+  if (!policy || policy.kind !== "patreon_membership_access") {
+    return { facts: [], snapshots: [] };
+  }
+
+  const profile = await fetchPatreonIdentity(options.tokenSet.accessToken);
+  const members = includedPatreonMembers(profile);
+  const tiersById = includedPatreonTierById(profile);
+  const activeMembers = members.filter((member) => {
+    const attributes = member.attributes;
+    if (typeof attributes !== "object" || attributes === null) {
+      return false;
+    }
+
+    const patronStatus = (attributes as Record<string, unknown>).patron_status;
+    const lastChargeStatus = (attributes as Record<string, unknown>).last_charge_status;
+    const relatedTiers = relatedPatreonTierIds(member)
+      .map((tierId) => tiersById.get(tierId))
+      .filter((tier): tier is Record<string, unknown> => tier !== undefined);
+    const tierTitleMatches = relatedTiers.some((tier) => {
+      const tierAttributes = tier.attributes;
+      return (
+        typeof tierAttributes === "object" &&
+        tierAttributes !== null &&
+        (tierAttributes as Record<string, unknown>).title === policy.requiredTierTitle
+      );
+    });
+    return (
+      tierTitleMatches &&
+      patronStatus === "active_patron" &&
+      (lastChargeStatus === undefined || lastChargeStatus === null || lastChargeStatus === "Paid")
+    );
+  });
+  const isAllowed = activeMembers.length > 0;
+
+  return {
+    facts: isAllowed ? [entitlementFacts.appAccess] : [],
+    snapshots: [
+      {
+        accountId: options.callback.accountId,
+        provider: "patreon",
+        scope: "repixelizer:patreon_membership_access",
+        evaluatedAt: new Date().toISOString(),
+        isAllowed,
+        reasonCode: isAllowed ? "active_membership" : members.length ? "inactive_membership" : "missing_membership",
+        reasonDetail: isAllowed
+          ? "Matched an active Patreon membership for Repixelizer access."
+          : members.length
+            ? "Patreon membership data was present but did not meet the active access policy."
+            : "Patreon did not return a membership matching the Repixelizer access policy.",
+        rawSummaryJson: {
+          requiredTierTitle: policy.requiredTierTitle,
+          memberCount: members.length,
+          entitledTierCount: tiersById.size,
+          matchingMemberCount: activeMembers.length,
+        },
+      },
+    ],
+  };
+}
+
 const discordRuntime: OAuthProviderRuntime = {
   exchangeAuthorizationCode: exchangeDiscordAuthorizationCode,
   resolveIdentity: resolveDiscordIdentity,
   evaluateEntitlements: evaluateDiscordEntitlements,
+};
+
+const patreonRuntime: OAuthProviderRuntime = {
+  exchangeAuthorizationCode: exchangePatreonAuthorizationCode,
+  resolveIdentity: resolvePatreonIdentity,
+  evaluateEntitlements: evaluatePatreonEntitlements,
 };
 
 const notImplementedRuntime: OAuthProviderRuntime = {
@@ -275,7 +536,7 @@ export type OAuthRuntimeRegistry = Record<Provider, OAuthProviderRuntime>;
 export function createOAuthRuntimeRegistry(): OAuthRuntimeRegistry {
   return {
     discord: discordRuntime,
-    patreon: notImplementedRuntime,
+    patreon: patreonRuntime,
     github: notImplementedRuntime,
     twitch: notImplementedRuntime,
     youtube: notImplementedRuntime,

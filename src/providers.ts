@@ -27,7 +27,7 @@ export const providerCatalog: Record<Provider, ProviderDescriptor> = {
     key: "patreon",
     displayName: "Patreon",
     authorizationEndpoint: "https://www.patreon.com/oauth2/authorize",
-    defaultScopes: ["identity", "identity[email]", "campaigns.members"],
+    defaultScopes: ["identity", "identity[email]"],
     roles: ["identity", "entitlement"],
     clientIdEnv: "GC_ACCESS_PROVIDER_PATREON_CLIENT_ID",
     clientSecretEnv: "GC_ACCESS_PROVIDER_PATREON_CLIENT_SECRET",

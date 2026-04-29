@@ -267,6 +267,52 @@ describe("Heimdall service", () => {
     }
   });
 
+  it("builds Patreon OAuth start state with caller-owned membership policy", async () => {
+    const app = await buildApp({ config: createTestConfig() });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/oauth/patreon/start",
+      payload: {
+        appSlug: "repixelizer",
+        mode: "sign_in",
+        returnTo: "https://repixelizer.gamecult.org/app/",
+        handoff: {
+          kind: "backend_callback",
+          attemptId: "attempt-123",
+          callbackUrl: "https://repixelizer.gamecult.org/api/auth/heimdall/callback",
+        },
+        entitlementPolicy: {
+          kind: "patreon_membership_access",
+          requiredTierTitle: "Inner Sanctum",
+        },
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
+    const payload = response.json();
+    const authorizationUrl = new URL(payload.authorizationUrl as string);
+    expect(`${authorizationUrl.origin}${authorizationUrl.pathname}`).toBe("https://www.patreon.com/oauth2/authorize");
+    expect(authorizationUrl.searchParams.get("scope")).toBe("identity identity[email]");
+
+    const verified = verifyJwt(payload.stateToken as string, getPublicKey(app));
+    expect(verified.valid).toBe(true);
+    if (verified.valid) {
+      expect(verified.payload).toEqual(
+        expect.objectContaining({
+          typ: "heimdall_oauth_state",
+          provider: "patreon",
+          app_slug: "repixelizer",
+          entitlement_policy: {
+            kind: "patreon_membership_access",
+            requiredTierTitle: "Inner Sanctum",
+          },
+        })
+      );
+    }
+  });
+
   it("completes a provider callback and issues a verified Repixelizer claim", async () => {
     const store = new InMemoryStore();
     const app = await buildApp({
