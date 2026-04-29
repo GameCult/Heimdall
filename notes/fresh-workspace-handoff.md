@@ -78,6 +78,9 @@ Do not trust this file for the exact live HEAD. Always check git.
   Heimdall, redeems Heimdall completion codes server-side, writes its own
   viewer sessions and connector bindings, and resolves current provider access
   tokens from Heimdall without storing refresh tokens locally
+- the ignored local `secrets/heimdall-service.env` artifact now has
+  `GC_ACCESS_PROVIDER_TWITCH_*` and `GC_ACCESS_PROVIDER_YOUTUBE_*` populated
+  for the StreamPixels migration slice
 - the intended first deployment shape is a Heimdall service on Yggdrasil behind
   nginx, not an embedded cross-runtime shared library fantasy
 
@@ -98,8 +101,8 @@ Do not continue implementation automatically from a rehydrate-only request.
 If the user asks to continue on StreamPixels, the current next move is deploy
 and real browser verification:
 
-- configure Heimdall with Twitch/YouTube OAuth credentials and an app shared
-  secret for StreamPixels
+- deploy Heimdall with the staged Twitch/YouTube OAuth credentials and an app
+  shared secret for StreamPixels
 - configure StreamPixels service with `GC_ACCESS_BASE_URL`,
   `GC_ACCESS_INTERNAL_URL`, and the same `GC_ACCESS_APP_SHARED_SECRET`
 - verify viewer claim/link through `/auth/connect`
