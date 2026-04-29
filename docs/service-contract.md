@@ -393,6 +393,9 @@ Important behavior:
 - this endpoint only works for providers listed in the app profile's
   `managedConnectionProviders`
 - it returns access tokens only; refresh tokens remain in Heimdall custody
+- when a stored managed credential is expired or within the refresh window,
+  Heimdall refreshes it before returning the access token and persists rotated
+  access/refresh tokens
 - app-local binding, diagnostics, subscription setup, and runtime behavior stay
   app-owned
 

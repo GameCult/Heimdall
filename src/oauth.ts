@@ -46,6 +46,10 @@ export interface OAuthProviderRuntime {
     code: string;
     redirectUri: string;
   }): Promise<OAuthTokenSet>;
+  refreshAccessToken?(options: {
+    config: HeimdallConfig;
+    refreshToken: string;
+  }): Promise<OAuthTokenSet>;
   resolveIdentity(options: { config: HeimdallConfig; accessToken: string }): Promise<ResolvedIdentity>;
   evaluateEntitlements(options: {
     config: HeimdallConfig;
@@ -233,6 +237,56 @@ async function exchangeTwitchAuthorizationCode(options: {
   return tokenSet;
 }
 
+async function refreshTwitchAccessToken(options: {
+  config: HeimdallConfig;
+  refreshToken: string;
+}): Promise<OAuthTokenSet> {
+  const providerConfig = options.config.providers.twitch;
+  if (!providerConfig.clientId || !providerConfig.clientSecret) {
+    throw new Error("Twitch OAuth is not fully configured.");
+  }
+
+  const tokenResponse = await fetchJson<{
+    access_token: string;
+    refresh_token?: string;
+    token_type: string;
+    expires_in?: number;
+    scope?: string | string[];
+  }>(
+    "https://id.twitch.tv/oauth2/token",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({
+        client_id: providerConfig.clientId,
+        client_secret: providerConfig.clientSecret,
+        grant_type: "refresh_token",
+        refresh_token: options.refreshToken,
+      }),
+    },
+    "Twitch token refresh failed"
+  );
+
+  const tokenSet: OAuthTokenSet = {
+    accessToken: tokenResponse.access_token,
+    tokenType: tokenResponse.token_type,
+    scope: normalizeScopes(tokenResponse.scope),
+    raw: tokenResponse as unknown as Record<string, unknown>,
+  };
+
+  if (tokenResponse.refresh_token) {
+    tokenSet.refreshToken = tokenResponse.refresh_token;
+  }
+
+  if (tokenResponse.expires_in) {
+    tokenSet.expiresAt = new Date(Date.now() + tokenResponse.expires_in * 1000).toISOString();
+  }
+
+  return tokenSet;
+}
+
 async function exchangeYouTubeAuthorizationCode(options: {
   config: HeimdallConfig;
   code: string;
@@ -266,6 +320,56 @@ async function exchangeYouTubeAuthorizationCode(options: {
       }),
     },
     "YouTube token exchange failed"
+  );
+
+  const tokenSet: OAuthTokenSet = {
+    accessToken: tokenResponse.access_token,
+    tokenType: tokenResponse.token_type,
+    scope: normalizeScopes(tokenResponse.scope),
+    raw: tokenResponse as unknown as Record<string, unknown>,
+  };
+
+  if (tokenResponse.refresh_token) {
+    tokenSet.refreshToken = tokenResponse.refresh_token;
+  }
+
+  if (tokenResponse.expires_in) {
+    tokenSet.expiresAt = new Date(Date.now() + tokenResponse.expires_in * 1000).toISOString();
+  }
+
+  return tokenSet;
+}
+
+async function refreshYouTubeAccessToken(options: {
+  config: HeimdallConfig;
+  refreshToken: string;
+}): Promise<OAuthTokenSet> {
+  const providerConfig = options.config.providers.youtube;
+  if (!providerConfig.clientId || !providerConfig.clientSecret) {
+    throw new Error("YouTube OAuth is not fully configured.");
+  }
+
+  const tokenResponse = await fetchJson<{
+    access_token: string;
+    refresh_token?: string;
+    token_type: string;
+    expires_in?: number;
+    scope?: string | string[];
+  }>(
+    "https://oauth2.googleapis.com/token",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({
+        client_id: providerConfig.clientId,
+        client_secret: providerConfig.clientSecret,
+        grant_type: "refresh_token",
+        refresh_token: options.refreshToken,
+      }),
+    },
+    "YouTube token refresh failed"
   );
 
   const tokenSet: OAuthTokenSet = {
@@ -772,6 +876,7 @@ const patreonRuntime: OAuthProviderRuntime = {
 
 const twitchRuntime: OAuthProviderRuntime = {
   exchangeAuthorizationCode: exchangeTwitchAuthorizationCode,
+  refreshAccessToken: refreshTwitchAccessToken,
   resolveIdentity: resolveTwitchIdentity,
   async evaluateEntitlements() {
     return { facts: [], snapshots: [] };
@@ -780,6 +885,7 @@ const twitchRuntime: OAuthProviderRuntime = {
 
 const youtubeRuntime: OAuthProviderRuntime = {
   exchangeAuthorizationCode: exchangeYouTubeAuthorizationCode,
+  refreshAccessToken: refreshYouTubeAccessToken,
   resolveIdentity: resolveYouTubeIdentity,
   async evaluateEntitlements() {
     return { facts: [], snapshots: [] };

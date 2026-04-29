@@ -28,7 +28,14 @@ import { createOAuthRuntimeRegistry, type OAuthRuntimeRegistry } from "./oauth.j
 import { buildAuthorizationUrl, providerCatalog, providerExpectedEnv } from "./providers.js";
 import { createRuntimeKeyMaterial, signJwt, verifyJwt } from "./signing.js";
 import { createStore, type HeimdallStore } from "./store/index.js";
-import { type CreateAccountInput, type StoredCapabilityGrant, type UpsertLinkedIdentityInput } from "./store/types.js";
+import {
+  type CreateAccountInput,
+  type StoredCapabilityGrant,
+  type StoredLinkedIdentity,
+  type UpsertLinkedIdentityInput,
+} from "./store/types.js";
+
+const MANAGED_CREDENTIAL_REFRESH_SKEW_MS = 5 * 60 * 1000;
 
 interface BuildAppOptions {
   config?: HeimdallConfig;
@@ -242,6 +249,63 @@ function secretMatches(expected: string | undefined, provided: string | undefine
   const expectedBuffer = Buffer.from(expected);
   const providedBuffer = Buffer.from(provided);
   return expectedBuffer.length === providedBuffer.length && timingSafeEqual(expectedBuffer, providedBuffer);
+}
+
+async function refreshLinkedIdentityCredentialIfNeeded(options: {
+  config: HeimdallConfig;
+  store: HeimdallStore;
+  tokenCustody: TokenCustody;
+  oauthRuntimes: OAuthRuntimeRegistry;
+  linkedIdentity: StoredLinkedIdentity;
+  now: string;
+}): Promise<StoredLinkedIdentity> {
+  const expiresAt = options.linkedIdentity.tokenExpiresAt ? Date.parse(options.linkedIdentity.tokenExpiresAt) : undefined;
+  if (
+    !expiresAt ||
+    expiresAt - Date.now() > MANAGED_CREDENTIAL_REFRESH_SKEW_MS ||
+    !options.linkedIdentity.refreshTokenEncrypted
+  ) {
+    return options.linkedIdentity;
+  }
+
+  const runtime = options.oauthRuntimes[options.linkedIdentity.provider];
+  if (!runtime.refreshAccessToken) {
+    return options.linkedIdentity;
+  }
+
+  const refreshToken = options.tokenCustody.decrypt(options.linkedIdentity.refreshTokenEncrypted);
+  const refreshed = await runtime.refreshAccessToken({
+    config: options.config,
+    refreshToken,
+  });
+
+  const upsertInput: UpsertLinkedIdentityInput = {
+    id: options.linkedIdentity.id,
+    accountId: options.linkedIdentity.accountId,
+    provider: options.linkedIdentity.provider,
+    providerUserId: options.linkedIdentity.providerUserId,
+    accessTokenEncrypted: options.tokenCustody.encrypt(refreshed.accessToken),
+    refreshTokenEncrypted: options.tokenCustody.encrypt(refreshed.refreshToken ?? refreshToken),
+    scopes: refreshed.scope.length ? refreshed.scope : options.linkedIdentity.scopes,
+    profileJson: options.linkedIdentity.profileJson,
+    createdAt: options.linkedIdentity.createdAt,
+    updatedAt: options.now,
+  };
+  const tokenExpiresAt = refreshed.expiresAt ?? options.linkedIdentity.tokenExpiresAt;
+  if (tokenExpiresAt !== undefined) {
+    upsertInput.tokenExpiresAt = tokenExpiresAt;
+  }
+  if (options.linkedIdentity.username !== undefined) {
+    upsertInput.username = options.linkedIdentity.username;
+  }
+  if (options.linkedIdentity.displayName !== undefined) {
+    upsertInput.displayName = options.linkedIdentity.displayName;
+  }
+  if (options.linkedIdentity.primaryEmail !== undefined) {
+    upsertInput.primaryEmail = options.linkedIdentity.primaryEmail;
+  }
+
+  return options.store.upsertLinkedIdentity(upsertInput);
 }
 
 function acceptsBackendPolicy(appSlug: AppSlug, handoff: OAuthHandoff): boolean {
@@ -1075,8 +1139,21 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         };
       }
 
-      const linkedIdentity = await store.findStoredLinkedIdentityForAccount(request.body.accountId, request.body.provider);
-      if (!linkedIdentity?.accessTokenEncrypted) {
+      const storedLinkedIdentity = await store.findStoredLinkedIdentityForAccount(request.body.accountId, request.body.provider);
+      if (!storedLinkedIdentity?.accessTokenEncrypted) {
+        reply.code(404);
+        return { error: "managed_credential_not_found" };
+      }
+      const now = new Date().toISOString();
+      const linkedIdentity = await refreshLinkedIdentityCredentialIfNeeded({
+        config,
+        store,
+        tokenCustody,
+        oauthRuntimes,
+        linkedIdentity: storedLinkedIdentity,
+        now,
+      });
+      if (!linkedIdentity.accessTokenEncrypted) {
         reply.code(404);
         return { error: "managed_credential_not_found" };
       }

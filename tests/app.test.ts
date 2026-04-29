@@ -656,6 +656,94 @@ describe("Heimdall service", () => {
     expect(credentialResponse.body).not.toContain("twitch-refresh-token");
   });
 
+  it("refreshes expiring app-managed provider credentials before resolving them", async () => {
+    const store = new InMemoryStore();
+    const app = await buildApp({
+      config: createTestConfig(),
+      store,
+      oauthRuntimes: {
+        twitch: {
+          async exchangeAuthorizationCode() {
+            return {
+              accessToken: "expired-twitch-access-token",
+              refreshToken: "twitch-refresh-token",
+              tokenType: "Bearer",
+              scope: ["user:read:email"],
+              expiresAt: "2026-04-26T13:00:00.000Z",
+              raw: { source: "test" },
+            };
+          },
+          async refreshAccessToken({ refreshToken }) {
+            expect(refreshToken).toBe("twitch-refresh-token");
+            return {
+              accessToken: "fresh-twitch-access-token",
+              refreshToken: "rotated-twitch-refresh-token",
+              tokenType: "Bearer",
+              scope: ["user:read:email", "user:read:chat"],
+              expiresAt: "2999-04-26T13:00:00.000Z",
+              raw: { source: "refresh" },
+            };
+          },
+          async resolveIdentity() {
+            return {
+              provider: "twitch",
+              providerUserId: "twitch-user-123",
+              username: "pixelpaladin",
+              displayName: "PixelPaladin",
+              profile: { id: "twitch-user-123" },
+            };
+          },
+          async evaluateEntitlements() {
+            return { facts: [], snapshots: [] };
+          },
+        },
+      },
+    });
+    apps.push(app);
+
+    const startResponse = await app.inject({
+      method: "POST",
+      url: "/v1/oauth/twitch/start",
+      payload: {
+        appSlug: "streampixels",
+        mode: "connect",
+        returnTo: "https://streampixels.gamecult.org/auth/connect",
+      },
+    });
+    const stateToken = startResponse.json().stateToken as string;
+
+    const callbackResponse = await app.inject({
+      method: "GET",
+      url: `/v1/oauth/twitch/callback?code=test-code&state=${encodeURIComponent(stateToken)}`,
+    });
+    const accountId = callbackResponse.json().account.id as string;
+
+    const credentialResponse = await app.inject({
+      method: "POST",
+      url: "/v1/apps/streampixels/managed-credentials/resolve",
+      headers: {
+        "x-heimdall-app-secret": "streampixels-secret",
+      },
+      payload: {
+        accountId,
+        provider: "twitch",
+      },
+    });
+
+    expect(credentialResponse.statusCode).toBe(200);
+    expect(credentialResponse.json()).toEqual(
+      expect.objectContaining({
+        accountId,
+        provider: "twitch",
+        providerUserId: "twitch-user-123",
+        accessToken: "fresh-twitch-access-token",
+        tokenExpiresAt: "2999-04-26T13:00:00.000Z",
+        scopes: ["user:read:email", "user:read:chat"],
+      })
+    );
+    expect(credentialResponse.body).not.toContain("rotated-twitch-refresh-token");
+  });
+
   it("accepts Twitch token scopes returned as an array", async () => {
     globalThis.fetch = async () =>
       new Response(

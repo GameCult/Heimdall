@@ -40,6 +40,8 @@ What exists right now is:
   and managed creator connections
 - an app-authenticated managed-credential resolve endpoint so StreamPixels can
   call provider APIs without storing refresh tokens locally
+- managed Twitch/YouTube credentials refresh inside Heimdall before resolution
+  when they are expired or near expiry
 - StreamPixels now starts viewer and creator Twitch/YouTube OAuth through
   Heimdall, redeems one-time completion codes server-side, and keeps local
   profile/creator connector binding state in StreamPixels
