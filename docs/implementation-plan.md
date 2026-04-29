@@ -34,6 +34,8 @@ What exists right now is:
 - file-backed signing-key loading/bootstrap for stable service identity
 - AES-256-GCM token sealing for managed provider credentials at rest
 - a local verifier helper that app backends can use against Heimdall JWKS
+- Repixelizer has consumed the direct backend callback flow in its hosted web
+  layer and verifies Heimdall Ed25519 access tokens locally
 - explicit state/doctrine scaffolding so the plan does not immediately turn into
   soup
 
@@ -57,7 +59,7 @@ Goals:
 - keep app-domain data in app-owned stores
 - keep app profiles thin and explicit
 
-### 2. Define the contract before the service grows teeth
+### 2. Keep the contract tight while it goes live
 
 Goals:
 
@@ -65,15 +67,31 @@ Goals:
 - define OAuth start/callback/link surfaces
 - define grant and entitlement persistence boundaries
 - define how app backends verify claims locally
-  This seam now exists in reference form and needs its first real consumer.
+  This now exists in reference form and Repixelizer has a Python consumer in
+  its hosted web layer.
 
-### 3. Make Repixelizer the first auth-blank consumer
+### 3. Launch Repixelizer with Discord first
 
 Goals:
 
-- gate hosted access and queue submission through Heimdall-issued claims
-- attach queue ownership to `account_id` and `session_id`
-- preserve the existing hosted GUI and queue runtime
+- deploy Heimdall on Yggdrasil with stable signing, encrypted token custody,
+  and persistent Postgres storage
+- configure the Discord OAuth app redirect URI to
+  `https://heimdall.gamecult.org/v1/oauth/discord/callback`
+- configure Heimdall's Discord client credentials, Repixelizer guild id, and
+  allowed role ids
+- configure Repixelizer for `GC_ACCESS_MODE=heimdall` and
+  `GC_ACCESS_ALLOWED_PROVIDERS=discord`
+- run the live browser OAuth flow and confirm Repixelizer receives the backend
+  callback, verifies the claim locally, adopts a local session, gates hosted
+  access, and stamps queued jobs with `account_id` / `session_id`
+
+Current Discord policy:
+
+- Heimdall grants Repixelizer `entitlement.app_access` only when the Discord
+  member has one of the configured allowed role ids
+- if launch policy should be "any member of the GameCult Discord," change the
+  Discord entitlement rule before deploying
 
 ### 4. Migrate StreamPixels without flattening its good local seams
 
@@ -125,11 +143,19 @@ Next in this phase:
 
 ### Phase 3: Repixelizer binding
 
-- integrate Heimdall into the hosted demo
-- consume the direct backend callback flow from the Repixelizer frontend/backend
-- gate `POST /api/jobs`
-- gate per-job read/cancel/event routes by local session ownership
-- consume the landed verifier seam so Repixelizer can trust Heimdall JWTs locally
+Landed in Repixelizer:
+
+- Heimdall hosted auth mode
+- direct backend callback receipt
+- local Ed25519 JWT verification against Heimdall JWKS
+- httpOnly local session adoption
+- hosted landing-page provider buttons
+- hosted route and queue/job ownership checks
+
+Still to do for this phase:
+
+- deploy and configure both services
+- verify the real Discord OAuth path end to end
 
 ### Phase 4: StreamPixels authority migration
 

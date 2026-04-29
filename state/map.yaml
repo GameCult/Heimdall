@@ -1,7 +1,7 @@
 project:
   name: Heimdall
   status: active
-  phase: first_provider_persistence
+  phase: discord_launch
   premise: >
     Build Heimdall as one reusable GameCult auth authority service for OAuth,
     linked identities, local sessions, grants, and capability claims without
@@ -12,9 +12,9 @@ objective:
     Create a shared auth authority service that Repixelizer, StreamPixels, and
     future GameCult-hosted experiments can consume.
   current: >
-    Use the new stateful provider slice to land the first consumer verifier
-    seam and harden key/token custody before app integrations start breeding
-    fresh sludge.
+    Ship the first live Discord-backed Repixelizer auth flow by deploying and
+    configuring Heimdall on Yggdrasil, then verifying the real end-to-end OAuth
+    path with Repixelizer's landed backend callback consumer.
 
 constraints:
   - Heimdall owns auth/control-plane authority; app-domain data stays app-owned by default.
@@ -56,7 +56,8 @@ active_subgoals:
   - Keep the shared architecture explicit and separate from app profiles.
   - Preserve the default boundary that app-domain data remains app-owned.
   - Align the plan to Heimdall as a Yggdrasil-hosted authority service.
-  - Define the claim-verification contract that Repixelizer and StreamPixels will consume locally.
+  - Launch the Discord-only Repixelizer auth path with real provider credentials, stable signing, persistent storage, and live callback verification.
+  - Keep Patreon/GitHub/Twitch/YouTube as catalogued but not implemented until their runtime adapters land.
 
 accepted_design:
   - `docs/architecture.md` is the canonical shared architecture note.
@@ -70,6 +71,7 @@ accepted_design:
   - StreamPixels is the migration case that proves shared authority must not imply audience-data centralization.
   - The first service skeleton is a standalone TypeScript/Fastify app with Ed25519 JWT signing, JWKS discovery, signed OAuth `state`, and app-profile-driven shared capability evaluation.
   - The first stateful slice adds durable auth/control-plane storage plus a real Discord callback path for Repixelizer.
+  - Repixelizer has consumed the Heimdall backend-callback flow in its hosted web layer; Heimdall no longer needs to wait on Repixelizer refactoring before live Discord launch work.
 
 landed_baseline:
   - Shared architecture extracted into its own repo and renamed to Heimdall.
@@ -80,6 +82,7 @@ landed_baseline:
   - The first real provider slice landed for Discord callback exchange, identity resolution, entitlement evaluation, and session/claim issuance for Repixelizer.
   - Signing-key persistence/bootstrap, managed token encryption at rest, and a local verifier seam landed for the first real consumer integration pass.
   - Direct backend callback handoff landed as the preferred same-host app-consumer path, with browser completion-code exchange retained as fallback.
+  - Repixelizer's hosted web layer now creates Heimdall auth attempts, receives direct backend callbacks, verifies Heimdall Ed25519 access tokens locally, and adopts httpOnly local sessions.
 
 rejected_paths:
   - name: per_app_auth_copy_paste
@@ -90,5 +93,5 @@ rejected_paths:
     reason: reusing auth mechanics does not justify centralizing app-domain audience or product data
 
 current_status:
-  summary: Heimdall now has a hardened first provider slice plus a direct app-backend handoff path: TypeScript/Fastify runtime, Ed25519 JWT signing with file-backed key support, JWKS/discovery exposure, signed OAuth start-state handling, durable auth/control-plane persistence, a real Discord callback path, AES-256-GCM token sealing for managed provider credentials at rest, a local JWT verifier seam for app backends, direct backend callback delivery for same-host consumers, and the older one-time completion-code exchange retained as fallback. The key boundary still holds: Heimdall owns auth/control-plane authority and credential custody; app-domain bindings and runtime behavior remain app-owned.
-  next_action: Consume the hardened slice in the first real Repixelizer integration: open auth in a new browser context, let Heimdall deliver the result directly to a Repixelizer backend callback endpoint keyed by a local auth attempt, trust Heimdall claims locally through the verifier seam, and add any tiny app-local session bridge or attempt-status surface needed without dragging app-domain data into Heimdall.
+  summary: Heimdall has a hardened first provider slice plus a direct app-backend handoff path: TypeScript/Fastify runtime, Ed25519 JWT signing with file-backed key support, JWKS/discovery exposure, signed OAuth start-state handling, durable auth/control-plane persistence, a real Discord callback path, AES-256-GCM token sealing for managed provider credentials at rest, a local JWT verifier seam for app backends, direct backend callback delivery for same-host consumers, and the older one-time completion-code exchange retained as fallback. Repixelizer has now consumed that flow locally in its hosted web layer, so Heimdall is no longer blocked on Repixelizer refactoring. The live launch path should start Discord-only; Patreon, GitHub, Twitch, and YouTube are catalogued providers but their callback runtimes are still not implemented. The key boundary still holds: Heimdall owns auth/control-plane authority and credential custody; app-domain bindings and runtime behavior remain app-owned.
+  next_action: Prepare and verify the live Discord-only Repixelizer launch on Yggdrasil: configure the Discord OAuth app redirect to `https://heimdall.gamecult.org/v1/oauth/discord/callback`, set Heimdall env for Discord client credentials, Repixelizer guild/allowed role ids, Postgres storage, token encryption, and stable signing keys, set Repixelizer to `GC_ACCESS_ALLOWED_PROVIDERS=discord`, then run the real browser OAuth flow end to end. If access should allow any guild member rather than specific role ids, change Heimdall's Discord entitlement rule before deployment.

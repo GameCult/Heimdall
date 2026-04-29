@@ -158,6 +158,14 @@ Failure mode right now:
 
 - `503 provider_not_configured` when the provider client id is missing
 
+Launch note:
+
+- Discord is the only implemented provider runtime today
+- Patreon, GitHub, Twitch, and YouTube are catalogued for start URLs, but their
+  callback exchange/identity/entitlement runtimes are not implemented yet
+- Repixelizer launch should therefore configure only Discord on its provider
+  buttons until additional adapters land
+
 ### `GET /v1/oauth/{provider}/callback`
 
 Purpose:
@@ -458,12 +466,15 @@ The following are not landed yet:
 
 - refresh/revocation flows
 - admin/grant management surfaces
+- provider callback runtimes beyond Discord
 
 ## Next implementation move
 
-Consume the hardened slice in the first real app binding:
+Deploy and verify the hardened slice in the first real app binding:
 
-- the first Repixelizer consumer binding that trusts Heimdall claims locally
-- the first Repixelizer backend callback endpoint and attempt-status bridge
-- any missing app-local session bridge or verifier middleware sugar that makes
-  that integration less feral
+- run Discord-only Repixelizer auth with real provider credentials
+- confirm direct backend callback delivery to Repixelizer
+- confirm Repixelizer verifies the Heimdall access token locally and gates
+  hosted routes from the adopted session
+- decide whether Repixelizer launch policy is role-gated Discord access or any
+  guild member access before deployment

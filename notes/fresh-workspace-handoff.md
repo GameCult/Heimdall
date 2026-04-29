@@ -37,7 +37,6 @@ Do not trust this file for the exact live HEAD. Always check git.
   - app-domain data stays app-owned by default
   - host apps verify signed claims locally for routine auth instead of calling
     Heimdall on every request
-- the landed skeleton already exposes:
 - the landed service now exposes:
   - `/.well-known/jwks.json`
   - `/.well-known/heimdall-configuration`
@@ -59,7 +58,14 @@ Do not trust this file for the exact live HEAD. Always check git.
   being dumped into "encrypted" columns raw like an insult
 - `src/verifier.ts` now provides a small local JWT verifier seam for app
   backends
-- Repixelizer is the first auth-blank binding target
+- Repixelizer has consumed the backend-callback flow in its hosted web layer:
+  it creates local auth attempts, asks Heimdall to start OAuth, receives the
+  direct backend callback, verifies Heimdall Ed25519 access tokens locally, and
+  adopts httpOnly local sessions
+- Repixelizer is no longer blocking Heimdall on auth refactoring
+- the first live launch should be Discord-only
+- Patreon, GitHub, Twitch, and YouTube are catalogued providers, but their
+  callback runtime adapters still return "not implemented"
 - StreamPixels is the migration target with useful existing auth seams that
   should not be flattened into mush
 - the intended first deployment shape is a Heimdall service on Yggdrasil behind
@@ -79,17 +85,22 @@ Do not trust this file for the exact live HEAD. Always check git.
 
 Do not continue implementation automatically from a rehydrate-only request.
 
-If the user asks to continue, the current next move is to harden and consume
-the landed slice:
+If the user asks to continue, the current next move is the live Discord-only
+Repixelizer launch path:
 
-- the first Repixelizer consumer integration that opens auth in a new browser
-  context, receives direct backend callback delivery from Heimdall, and trusts
-  Heimdall claims locally
-- any small app-facing middleware sugar needed once that integration starts
-  colliding with real routes
+- configure the Discord OAuth app redirect URI as
+  `https://heimdall.gamecult.org/v1/oauth/discord/callback`
+- configure Heimdall with Discord client id/secret, Repixelizer guild id,
+  allowed role ids, Postgres storage, token encryption, and stable signing keys
+- configure Repixelizer to use `GC_ACCESS_MODE=heimdall` and
+  `GC_ACCESS_ALLOWED_PROVIDERS=discord`
+- run the real browser OAuth flow end to end and confirm Repixelizer receives
+  the backend callback, verifies the token, adopts a local session, and gates
+  hosted routes
 
-without dragging app-domain data into the shared layer and without forcing
-per-request auth round-trips.
+Important wrinkle: Heimdall currently grants Repixelizer access from Discord
+role matches, not bare guild membership. If launch policy is "any GameCult
+Discord member can enter," update the Discord entitlement rule before deploy.
 
 ## Immediate Re-entry Instruction
 
