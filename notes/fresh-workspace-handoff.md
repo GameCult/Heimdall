@@ -44,6 +44,7 @@ Do not trust this file for the exact live HEAD. Always check git.
   - `/v1/oauth/{provider}/callback`
   - `/v1/apps/{appSlug}/auth-completions/redeem`
   - `/v1/apps/{appSlug}/claims/issue`
+  - `/v1/apps/{appSlug}/sessions/refresh`
   - `/v1/apps/{appSlug}/managed-credentials/resolve`
 - the Discord callback path now performs real code exchange, identity
   resolution, auth persistence, entitlement evaluation, audit logging, and
@@ -72,6 +73,10 @@ Do not trust this file for the exact live HEAD. Always check git.
   enabled
 - Repixelizer public auth-start returns Discord and Patreon authorization URLs
   using the Heimdall callback and Repixelizer backend handoff
+- Repixelizer auth now has a refresh path: Heimdall issues signed refresh
+  tokens with access claims, `/v1/apps/{appSlug}/sessions/refresh` reissues
+  short-lived access claims, and Discord/Patreon provider tokens refresh inside
+  Heimdall before entitlement re-evaluation
 - Twitch and YouTube now have generic OAuth exchange and identity runtimes
 - GitHub is still catalogued, but its callback runtime is not implemented
 - StreamPixels now delegates viewer and creator Twitch/YouTube OAuth to

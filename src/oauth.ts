@@ -132,6 +132,53 @@ async function exchangeDiscordAuthorizationCode(options: {
   return tokenSet;
 }
 
+async function refreshDiscordAccessToken(options: {
+  config: HeimdallConfig;
+  refreshToken: string;
+}): Promise<OAuthTokenSet> {
+  const providerConfig = options.config.providers.discord;
+  if (!providerConfig.clientId || !providerConfig.clientSecret) {
+    throw new Error("Discord OAuth is not fully configured.");
+  }
+
+  const basicAuth = Buffer.from(`${providerConfig.clientId}:${providerConfig.clientSecret}`).toString("base64");
+  const tokenResponse = await fetchJson<{
+    access_token: string;
+    refresh_token?: string;
+    token_type: string;
+    expires_in: number;
+    scope?: string | string[];
+  }>(
+    "https://discord.com/api/v10/oauth2/token",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${basicAuth}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: options.refreshToken,
+      }),
+    },
+    "Discord token refresh failed"
+  );
+
+  const tokenSet: OAuthTokenSet = {
+    accessToken: tokenResponse.access_token,
+    tokenType: tokenResponse.token_type,
+    scope: normalizeScopes(tokenResponse.scope),
+    expiresAt: new Date(Date.now() + tokenResponse.expires_in * 1000).toISOString(),
+    raw: tokenResponse as unknown as Record<string, unknown>,
+  };
+
+  if (tokenResponse.refresh_token) {
+    tokenSet.refreshToken = tokenResponse.refresh_token;
+  }
+
+  return tokenSet;
+}
+
 async function exchangePatreonAuthorizationCode(options: {
   config: HeimdallConfig;
   code: string;
@@ -165,6 +212,56 @@ async function exchangePatreonAuthorizationCode(options: {
       body,
     },
     "Patreon token exchange failed"
+  );
+
+  const tokenSet: OAuthTokenSet = {
+    accessToken: tokenResponse.access_token,
+    tokenType: tokenResponse.token_type,
+    scope: normalizeScopes(tokenResponse.scope),
+    raw: tokenResponse as unknown as Record<string, unknown>,
+  };
+
+  if (tokenResponse.refresh_token) {
+    tokenSet.refreshToken = tokenResponse.refresh_token;
+  }
+
+  if (tokenResponse.expires_in) {
+    tokenSet.expiresAt = new Date(Date.now() + tokenResponse.expires_in * 1000).toISOString();
+  }
+
+  return tokenSet;
+}
+
+async function refreshPatreonAccessToken(options: {
+  config: HeimdallConfig;
+  refreshToken: string;
+}): Promise<OAuthTokenSet> {
+  const providerConfig = options.config.providers.patreon;
+  if (!providerConfig.clientId || !providerConfig.clientSecret) {
+    throw new Error("Patreon OAuth is not fully configured.");
+  }
+
+  const tokenResponse = await fetchJson<{
+    access_token: string;
+    refresh_token?: string;
+    token_type: string;
+    expires_in?: number;
+    scope?: string | string[];
+  }>(
+    "https://www.patreon.com/api/oauth2/token",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: options.refreshToken,
+        client_id: providerConfig.clientId,
+        client_secret: providerConfig.clientSecret,
+      }),
+    },
+    "Patreon token refresh failed"
   );
 
   const tokenSet: OAuthTokenSet = {
@@ -864,12 +961,14 @@ async function evaluatePatreonEntitlements(options: {
 
 const discordRuntime: OAuthProviderRuntime = {
   exchangeAuthorizationCode: exchangeDiscordAuthorizationCode,
+  refreshAccessToken: refreshDiscordAccessToken,
   resolveIdentity: resolveDiscordIdentity,
   evaluateEntitlements: evaluateDiscordEntitlements,
 };
 
 const patreonRuntime: OAuthProviderRuntime = {
   exchangeAuthorizationCode: exchangePatreonAuthorizationCode,
+  refreshAccessToken: refreshPatreonAccessToken,
   resolveIdentity: resolvePatreonIdentity,
   evaluateEntitlements: evaluatePatreonEntitlements,
 };

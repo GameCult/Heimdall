@@ -211,7 +211,12 @@ Success response for backend-callback handoff now includes:
     "sessionId": "uuid",
     "appSlug": "repixelizer",
     "accessRevision": 1,
-    "expiresAt": "2026-04-26T13:00:00.000Z"
+    "expiresAt": "2026-05-26T12:00:00.000Z"
+  },
+  "accessToken": "<short-lived-signed-jwt>",
+  "refreshToken": "<longer-lived-signed-jwt>",
+  "refresh": {
+    "expiresAt": "2026-05-26T12:00:00.000Z"
   }
 }
 ```
@@ -255,6 +260,10 @@ Current payload shape on success:
   },
   "session": {},
   "accessToken": "<signed-jwt>",
+  "refreshToken": "<signed-refresh-jwt>",
+  "refresh": {
+    "expiresAt": "2026-05-26T12:00:00.000Z"
+  },
   "claimSet": {},
   "verification": {},
   "sharedCapabilities": ["app_access", "queue_submit"],
@@ -330,9 +339,13 @@ Response:
     "sessionId": "uuid",
     "appSlug": "repixelizer",
     "accessRevision": 1,
-    "expiresAt": "2026-04-26T13:00:00.000Z"
+    "expiresAt": "2026-05-26T12:00:00.000Z"
   },
   "accessToken": "<signed-jwt>",
+  "refreshToken": "<signed-refresh-jwt>",
+  "refresh": {
+    "expiresAt": "2026-05-26T12:00:00.000Z"
+  },
   "claimSet": {},
   "verification": {
     "issuer": "https://heimdall.gamecult.org",
@@ -351,6 +364,68 @@ Important behavior:
 - completion codes are short-lived
 - app backends should redeem them server-side
 - the browser should not keep the final access token in callback URL fragments
+
+### `POST /v1/apps/{appSlug}/sessions/refresh`
+
+Purpose:
+
+- reissue a short-lived app access claim from a longer-lived Heimdall refresh
+  token
+- let app backends recover from an expired local access cookie without sending
+  the user through provider OAuth again
+- keep provider access/refresh custody and entitlement refresh inside Heimdall
+
+Request body for Repixelizer:
+
+```json
+{
+  "refreshToken": "<signed-refresh-jwt>",
+  "entitlementPolicies": [
+    {
+      "kind": "discord_role_access",
+      "guildId": "gamecult-guild",
+      "allowedRoleIds": ["role-repixelizer"]
+    },
+    {
+      "kind": "patreon_membership_access",
+      "requiredTierTitle": "Inner Sanctum"
+    }
+  ]
+}
+```
+
+Response:
+
+```json
+{
+  "session": {
+    "accountId": "acct_repixelizer_001",
+    "sessionId": "uuid",
+    "appSlug": "repixelizer",
+    "accessRevision": 1,
+    "expiresAt": "2026-05-26T12:00:00.000Z"
+  },
+  "accessToken": "<fresh-signed-access-jwt>",
+  "refreshToken": "<fresh-signed-refresh-jwt>",
+  "refresh": {
+    "expiresAt": "2026-05-26T12:00:00.000Z"
+  },
+  "sharedCapabilities": ["app_access", "queue_submit"],
+  "hybridCapabilities": []
+}
+```
+
+Important behavior:
+
+- the refresh token is signed by Heimdall and scoped to one app session
+- the access token remains short-lived; app backends still verify it locally
+- if a stored provider access token is expired or near expiry, Heimdall uses
+  the stored provider refresh token and persists any rotation before
+  evaluating entitlements
+- Repixelizer may send all of its app-owned provider policies; Heimdall matches
+  each stored identity to the policy for that provider
+- the endpoint is not a provider OAuth start path and should not produce a
+  provider authorization URL
 
 ### `POST /v1/apps/{appSlug}/managed-credentials/resolve`
 
@@ -458,9 +533,13 @@ Response:
     "sessionId": "uuid",
     "appSlug": "repixelizer",
     "accessRevision": 1,
-    "expiresAt": "2026-04-26T13:00:00.000Z"
+    "expiresAt": "2026-05-26T12:00:00.000Z"
   },
   "accessToken": "<signed-jwt>",
+  "refreshToken": "<signed-refresh-jwt>",
+  "refresh": {
+    "expiresAt": "2026-05-26T12:00:00.000Z"
+  },
   "claimSet": {},
   "verification": {
     "issuer": "https://heimdall.gamecult.org",
@@ -514,7 +593,7 @@ Examples:
 
 The following are not landed yet:
 
-- refresh/revocation flows
+- revocation flows
 - admin/grant management surfaces
 - GitHub callback runtime
 

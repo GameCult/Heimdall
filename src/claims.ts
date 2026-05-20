@@ -4,6 +4,7 @@ import {
   type AppSlug,
   type IssueClaimRequest,
   type LinkedIdentityInput,
+  type RefreshTokenPayload,
 } from "./contracts.js";
 import { getAppProfile } from "./app-profiles.js";
 import { type HeimdallConfig } from "./config.js";
@@ -53,6 +54,10 @@ export interface IssuedAccessClaimResult {
     expiresAt: string;
   };
   accessToken: string;
+  refreshToken: string;
+  refresh: {
+    expiresAt: string;
+  };
   claimSet: AccessClaimPayload;
   verification: {
     issuer: string;
@@ -85,6 +90,8 @@ export async function issueAccessClaim(options: {
     options.config.sessionTtlSeconds
   );
   const expiresAtEpoch = issuedAt + ttlSeconds;
+  const refreshTtlSeconds = Math.max(ttlSeconds, Math.trunc(options.config.refreshTtlSeconds));
+  const refreshExpiresAtEpoch = issuedAt + refreshTtlSeconds;
   const sessionId = options.input.sessionId ?? randomUUID();
   const accessRevision = options.input.accessRevision ?? 1;
 
@@ -114,13 +121,31 @@ export async function issueAccessClaim(options: {
   }
 
   const accessToken = signJwt(claimSet as unknown as Record<string, unknown>, options.keys);
+  const refreshClaimSet: RefreshTokenPayload = {
+    iss: options.config.issuer,
+    aud: profile.slug,
+    sub: options.input.accountId,
+    sid: sessionId,
+    jti: randomUUID(),
+    iat: issuedAt,
+    nbf: issuedAt,
+    exp: refreshExpiresAtEpoch,
+    typ: "heimdall_refresh",
+    account_id: options.input.accountId,
+    access_revision: accessRevision,
+    app: {
+      slug: profile.slug,
+      profile_version: profile.profileVersion,
+    },
+  };
+  const refreshToken = signJwt(refreshClaimSet as unknown as Record<string, unknown>, options.keys);
   const sessionRecord: CreateSessionInput = {
     id: sessionId,
     accountId: options.input.accountId,
     appSlug: profile.slug,
     createdAt: new Date(issuedAt * 1000).toISOString(),
     lastSeenAt: new Date(issuedAt * 1000).toISOString(),
-    expiresAt: new Date(expiresAtEpoch * 1000).toISOString(),
+    expiresAt: new Date(refreshExpiresAtEpoch * 1000).toISOString(),
     accessRevision,
     claimsJson: claimSet as unknown as Record<string, unknown>,
   };
@@ -135,6 +160,10 @@ export async function issueAccessClaim(options: {
       expiresAt: sessionRecord.expiresAt,
     },
     accessToken,
+    refreshToken,
+    refresh: {
+      expiresAt: sessionRecord.expiresAt,
+    },
     claimSet,
     verification: {
       issuer: options.config.issuer,

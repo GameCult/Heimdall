@@ -16,6 +16,7 @@ function createTestConfig(): HeimdallConfig {
     publicBaseUrl: "https://heimdall.gamecult.org",
     issuer: "https://heimdall.gamecult.org",
     sessionTtlSeconds: 3600,
+    refreshTtlSeconds: 60 * 60 * 24 * 30,
     stateTtlSeconds: 600,
     completionTtlSeconds: 300,
     bootstrapSigningPrivateKeyOnMissing: false,
@@ -420,6 +421,107 @@ describe("Heimdall service", () => {
     });
 
     expect(secondRedeemResponse.statusCode).toBe(410);
+  });
+
+  it("refreshes a Repixelizer app claim from a Heimdall refresh token without provider OAuth", async () => {
+    const store = new InMemoryStore();
+    let exchangeCalls = 0;
+    let refreshCalls = 0;
+    const app = await buildApp({
+      config: createTestConfig(),
+      store,
+      oauthRuntimes: {
+        discord: {
+          async exchangeAuthorizationCode() {
+            exchangeCalls += 1;
+            return {
+              accessToken: "expired-discord-access-token",
+              refreshToken: "discord-refresh-token",
+              tokenType: "Bearer",
+              scope: ["identify", "guilds.members.read"],
+              expiresAt: "2026-04-26T13:00:00.000Z",
+              raw: { source: "test" },
+            };
+          },
+          async refreshAccessToken({ refreshToken }) {
+            refreshCalls += 1;
+            expect(refreshToken).toBe("discord-refresh-token");
+            return {
+              accessToken: "fresh-discord-access-token",
+              refreshToken: "rotated-discord-refresh-token",
+              tokenType: "Bearer",
+              scope: ["identify", "guilds.members.read"],
+              expiresAt: "2999-04-26T13:00:00.000Z",
+              raw: { source: "refresh" },
+            };
+          },
+          async resolveIdentity() {
+            return {
+              provider: "discord",
+              providerUserId: "discord-user-123",
+              username: "meta",
+              displayName: "Meta",
+              primaryEmail: "meta@gamecult.org",
+              profile: { id: "discord-user-123", username: "meta" },
+            };
+          },
+          async evaluateEntitlements({ callback, tokenSet }) {
+            expect(tokenSet.accessToken).toBe(refreshCalls ? "fresh-discord-access-token" : "expired-discord-access-token");
+            return {
+              facts: [entitlementFacts.appAccess],
+              snapshots: [
+                {
+                  accountId: callback.accountId,
+                  provider: "discord",
+                  scope: "repixelizer:discord_role_access:gamecult-guild",
+                  evaluatedAt: "2026-04-26T12:00:00.000Z",
+                  isAllowed: true,
+                  reasonCode: "matched_role",
+                  rawSummaryJson: {},
+                },
+              ],
+            };
+          },
+        },
+      },
+    });
+    apps.push(app);
+
+    const stateToken = await startDiscordSignIn(app);
+    const callbackResponse = await app.inject({
+      method: "GET",
+      url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(stateToken)}`,
+    });
+    expect(callbackResponse.statusCode).toBe(201);
+    const refreshToken = callbackResponse.json().refreshToken as string;
+
+    const refreshResponse = await app.inject({
+      method: "POST",
+      url: "/v1/apps/repixelizer/sessions/refresh",
+      payload: {
+        refreshToken,
+        entitlementPolicies: [
+          {
+            kind: "discord_role_access",
+            guildId: "gamecult-guild",
+            allowedRoleIds: ["role-repixelizer"],
+          },
+        ],
+      },
+    });
+
+    expect(refreshResponse.statusCode).toBe(201);
+    expect(exchangeCalls).toBe(1);
+    expect(refreshCalls).toBe(1);
+    const payload = refreshResponse.json();
+    expect(payload.sharedCapabilities).toEqual(expect.arrayContaining(["app_access", "queue_submit"]));
+    expect(payload.refreshToken).toEqual(expect.any(String));
+    const verified = verifyJwt(payload.accessToken as string, getPublicKey(app));
+    expect(verified.valid).toBe(true);
+    if (verified.valid) {
+      expect(verified.payload.sid).toBe(callbackResponse.json().session.sessionId);
+      expect(verified.payload.capabilities).toEqual(expect.arrayContaining(["app_access", "queue_submit"]));
+    }
   });
 
   it("renders a browser handoff page that posts a completion code instead of a token", async () => {

@@ -258,6 +258,20 @@ export class PostgresStore implements HeimdallStore {
     );
   }
 
+  async findAccountById(accountId: string): Promise<StoredAccount | null> {
+    const result = await this.pool.query<AccountRow>(
+      `
+      SELECT *
+      FROM accounts
+      WHERE id = $1
+      LIMIT 1
+      `,
+      [accountId]
+    );
+
+    return result.rowCount ? mapAccountRow(expectRow(result.rows[0], "findAccountById")) : null;
+  }
+
   async findAccountByLinkedIdentity(provider: Provider, providerUserId: string): Promise<StoredAccount | null> {
     const result = await this.pool.query<AccountRow>(
       `
@@ -303,6 +317,20 @@ export class PostgresStore implements HeimdallStore {
     );
 
     return result.rowCount ? mapLinkedIdentityRow(expectRow(result.rows[0], "findStoredLinkedIdentityForAccount")) : null;
+  }
+
+  async listStoredLinkedIdentitiesForAccount(accountId: string): Promise<StoredLinkedIdentity[]> {
+    const result = await this.pool.query<LinkedIdentityRow>(
+      `
+      SELECT *
+      FROM linked_identities
+      WHERE account_id = $1
+      ORDER BY created_at ASC
+      `,
+      [accountId]
+    );
+
+    return result.rows.map(mapLinkedIdentityRow);
   }
 
   async upsertLinkedIdentity(input: UpsertLinkedIdentityInput): Promise<StoredLinkedIdentity> {
@@ -450,6 +478,12 @@ export class PostgresStore implements HeimdallStore {
         expires_at, claims_json, access_revision
       )
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      ON CONFLICT (id)
+      DO UPDATE SET
+        last_seen_at = EXCLUDED.last_seen_at,
+        expires_at = EXCLUDED.expires_at,
+        claims_json = EXCLUDED.claims_json,
+        access_revision = EXCLUDED.access_revision
       RETURNING *
       `,
       [

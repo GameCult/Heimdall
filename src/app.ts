@@ -14,6 +14,8 @@ import {
   type OAuthMode,
   type OAuthConnectionBinding,
   type RedeemAuthCompletionRequest,
+  type RefreshSessionRequest,
+  type RefreshTokenPayload,
   type OAuthStatePayload,
   type OAuthStartRequest,
   type Provider,
@@ -167,6 +169,55 @@ function buildGrantFacts(grants: StoredCapabilityGrant[]): string[] {
   return grants.map((grant) => grantFact(grant.capability));
 }
 
+function parseRefreshTokenPayload(payload: Record<string, unknown>): RefreshTokenPayload | null {
+  if (
+    payload.typ !== "heimdall_refresh" ||
+    typeof payload.iss !== "string" ||
+    typeof payload.aud !== "string" ||
+    !appSlugs.includes(payload.aud as AppSlug) ||
+    typeof payload.sub !== "string" ||
+    typeof payload.sid !== "string" ||
+    typeof payload.jti !== "string" ||
+    typeof payload.iat !== "number" ||
+    typeof payload.nbf !== "number" ||
+    typeof payload.exp !== "number" ||
+    typeof payload.account_id !== "string" ||
+    typeof payload.access_revision !== "number" ||
+    !payload.app ||
+    typeof payload.app !== "object" ||
+    (payload.app as Record<string, unknown>).slug !== payload.aud ||
+    typeof (payload.app as Record<string, unknown>).profile_version !== "string"
+  ) {
+    return null;
+  }
+
+  return payload as unknown as RefreshTokenPayload;
+}
+
+function verifyRefreshToken(
+  token: string,
+  appSlug: AppSlug,
+  config: HeimdallConfig,
+  keys: ReturnType<typeof createRuntimeKeyMaterial>
+): RefreshTokenPayload | null {
+  const verification = verifyJwt(token, keys.publicKey);
+  if (!verification.valid) {
+    return null;
+  }
+
+  const payload = parseRefreshTokenPayload(verification.payload);
+  if (!payload || payload.iss !== config.issuer || payload.aud !== appSlug || payload.app.slug !== appSlug) {
+    return null;
+  }
+
+  const now = nowEpochSeconds();
+  if (payload.nbf > now + 30 || payload.exp <= now - 30) {
+    return null;
+  }
+
+  return payload;
+}
+
 function prefersHtml(acceptHeader: string | undefined): boolean {
   if (!acceptHeader) {
     return false;
@@ -234,6 +285,24 @@ function normalizeEntitlementPolicy(value: OAuthStartRequest["entitlementPolicy"
   }
 
   throw new Error("Invalid entitlement policy definition.");
+}
+
+function normalizeEntitlementPolicies(value: RefreshSessionRequest["entitlementPolicies"]): OAuthEntitlementPolicy[] {
+  if (!value) {
+    return [];
+  }
+
+  return value.map((entry) => {
+    const policy = normalizeEntitlementPolicy(entry);
+    if (!policy) {
+      throw new Error("Invalid entitlement policy definition.");
+    }
+    return policy;
+  });
+}
+
+function entitlementPolicyProvider(policy: OAuthEntitlementPolicy): Provider {
+  return policy.kind === "discord_role_access" ? "discord" : "patreon";
 }
 
 function getSharedSecret(request: { headers: Record<string, string | string[] | undefined> }): string | undefined {
@@ -306,6 +375,87 @@ async function refreshLinkedIdentityCredentialIfNeeded(options: {
   }
 
   return options.store.upsertLinkedIdentity(upsertInput);
+}
+
+function storedIdentityToResolvedIdentity(identity: StoredLinkedIdentity) {
+  const resolved = {
+    provider: identity.provider,
+    providerUserId: identity.providerUserId,
+    profile: identity.profileJson,
+  };
+  if (identity.username !== undefined) {
+    Object.assign(resolved, { username: identity.username });
+  }
+  if (identity.displayName !== undefined) {
+    Object.assign(resolved, { displayName: identity.displayName });
+  }
+  if (identity.primaryEmail !== undefined) {
+    Object.assign(resolved, { primaryEmail: identity.primaryEmail });
+  }
+  return resolved;
+}
+
+async function evaluateStoredEntitlements(options: {
+  config: HeimdallConfig;
+  store: HeimdallStore;
+  tokenCustody: TokenCustody;
+  oauthRuntimes: OAuthRuntimeRegistry;
+  appSlug: AppSlug;
+  accountId: string;
+  entitlementPolicies: OAuthEntitlementPolicy[];
+  now: string;
+}): Promise<string[]> {
+  const profile = getAppProfile(options.appSlug);
+  const linkedIdentities = await options.store.listStoredLinkedIdentitiesForAccount(options.accountId);
+  const facts: string[] = [];
+
+  for (const storedIdentity of linkedIdentities) {
+    if (!profile.entitlementSources.includes(storedIdentity.provider) || !storedIdentity.accessTokenEncrypted) {
+      continue;
+    }
+
+    const linkedIdentity = await refreshLinkedIdentityCredentialIfNeeded({
+      config: options.config,
+      store: options.store,
+      tokenCustody: options.tokenCustody,
+      oauthRuntimes: options.oauthRuntimes,
+      linkedIdentity: storedIdentity,
+      now: options.now,
+    });
+    if (!linkedIdentity.accessTokenEncrypted) {
+      continue;
+    }
+
+    const runtime = options.oauthRuntimes[linkedIdentity.provider];
+    const entitlementPolicy =
+      options.entitlementPolicies.find((policy) => entitlementPolicyProvider(policy) === linkedIdentity.provider) ?? null;
+    const tokenSet = {
+      accessToken: options.tokenCustody.decrypt(linkedIdentity.accessTokenEncrypted),
+      tokenType: "Bearer",
+      scope: linkedIdentity.scopes,
+      raw: {},
+    };
+    if (linkedIdentity.tokenExpiresAt !== undefined) {
+      Object.assign(tokenSet, { expiresAt: linkedIdentity.tokenExpiresAt });
+    }
+    const evaluation = await runtime.evaluateEntitlements({
+      config: options.config,
+      callback: {
+        appSlug: options.appSlug,
+        accountId: options.accountId,
+        connection: null,
+        entitlementPolicy,
+      },
+      identity: storedIdentityToResolvedIdentity(linkedIdentity),
+      tokenSet,
+    });
+    for (const snapshot of evaluation.snapshots) {
+      await options.store.upsertEntitlementSnapshot(snapshot);
+    }
+    facts.push(...evaluation.facts);
+  }
+
+  return [...new Set(facts)];
 }
 
 function acceptsBackendPolicy(appSlug: AppSlug, handoff: OAuthHandoff): boolean {
@@ -1090,6 +1240,166 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         store,
         input: mapIssueClaimRequest(request.params.appSlug, request.body),
       });
+      reply.code(201);
+      return issued;
+    }
+  );
+
+  app.post<{ Params: { appSlug: AppSlug }; Body: RefreshSessionRequest }>(
+    "/v1/apps/:appSlug/sessions/refresh",
+    {
+      schema: {
+        params: {
+          type: "object",
+          required: ["appSlug"],
+          additionalProperties: false,
+          properties: {
+            appSlug: { type: "string", enum: [...appSlugs] },
+          },
+        },
+        body: {
+          type: "object",
+          required: ["refreshToken"],
+          additionalProperties: false,
+          properties: {
+            refreshToken: { type: "string", minLength: 1 },
+            entitlementPolicy: {
+              anyOf: [
+                {
+                  type: "object",
+                  required: ["kind", "guildId", "allowedRoleIds"],
+                  additionalProperties: false,
+                  properties: {
+                    kind: { type: "string", const: "discord_role_access" },
+                    guildId: { type: "string", minLength: 1 },
+                    allowedRoleIds: {
+                      type: "array",
+                      minItems: 1,
+                      items: { type: "string", minLength: 1 },
+                      uniqueItems: true,
+                    },
+                  },
+                },
+                {
+                  type: "object",
+                  required: ["kind", "requiredTierTitle"],
+                  additionalProperties: false,
+                  properties: {
+                    kind: { type: "string", const: "patreon_membership_access" },
+                    requiredTierTitle: { type: "string", minLength: 1 },
+                  },
+                },
+              ],
+            },
+            entitlementPolicies: {
+              type: "array",
+              items: {
+                anyOf: [
+                  {
+                    type: "object",
+                    required: ["kind", "guildId", "allowedRoleIds"],
+                    additionalProperties: false,
+                    properties: {
+                      kind: { type: "string", const: "discord_role_access" },
+                      guildId: { type: "string", minLength: 1 },
+                      allowedRoleIds: {
+                        type: "array",
+                        minItems: 1,
+                        items: { type: "string", minLength: 1 },
+                        uniqueItems: true,
+                      },
+                    },
+                  },
+                  {
+                    type: "object",
+                    required: ["kind", "requiredTierTitle"],
+                    additionalProperties: false,
+                    properties: {
+                      kind: { type: "string", const: "patreon_membership_access" },
+                      requiredTierTitle: { type: "string", minLength: 1 },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      let entitlementPolicies: OAuthEntitlementPolicy[];
+      try {
+        entitlementPolicies = normalizeEntitlementPolicies(request.body.entitlementPolicies);
+        const legacyPolicy = normalizeEntitlementPolicy(request.body.entitlementPolicy);
+        if (legacyPolicy) {
+          entitlementPolicies.push(legacyPolicy);
+        }
+      } catch (error) {
+        reply.code(400);
+        return {
+          error: "invalid_entitlement_policy",
+          detail: error instanceof Error ? error.message : "Invalid entitlement policy definition.",
+        };
+      }
+      if (entitlementPolicies.length > 0 && request.params.appSlug !== "repixelizer") {
+        reply.code(400);
+        return {
+          error: "untrusted_entitlement_policy",
+          detail: "Caller-supplied entitlement policy is only accepted for Repixelizer session refresh.",
+        };
+      }
+
+      const refreshClaim = verifyRefreshToken(request.body.refreshToken, request.params.appSlug, config, keys);
+      if (!refreshClaim) {
+        reply.code(401);
+        return { error: "invalid_or_expired_refresh_token" };
+      }
+
+      const nowIso = new Date().toISOString();
+      const account = await store.findAccountById(refreshClaim.account_id);
+      const linkedIdentities = await store.listLinkedIdentitiesForAccount(refreshClaim.account_id);
+      const grants = await store.listActiveGrants(refreshClaim.account_id, request.params.appSlug, nowIso);
+      const entitlementFactList = await evaluateStoredEntitlements({
+        config,
+        store,
+        tokenCustody,
+        oauthRuntimes,
+        appSlug: request.params.appSlug,
+        accountId: refreshClaim.account_id,
+        entitlementPolicies,
+        now: nowIso,
+      });
+      const issueInput: IssueAccessClaimInput = {
+        appSlug: request.params.appSlug,
+        accountId: refreshClaim.account_id,
+        sessionId: refreshClaim.sid,
+        accessRevision: refreshClaim.access_revision,
+        linkedIdentities,
+        facts: [...entitlementFactList, ...buildGrantFacts(grants)],
+      };
+      if (account?.displayName !== undefined) {
+        issueInput.displayName = account.displayName;
+      }
+
+      const issued = await issueAccessClaim({
+        config,
+        keys,
+        store,
+        input: issueInput,
+      });
+
+      await store.createAuditEvent({
+        accountId: refreshClaim.account_id,
+        sessionId: refreshClaim.sid,
+        appSlug: request.params.appSlug,
+        eventType: "session_refreshed",
+        eventPayloadJson: {
+          grantedFacts: issued.claimSet.facts,
+          sharedCapabilities: issued.sharedCapabilities,
+        },
+        createdAt: nowIso,
+      });
+
       reply.code(201);
       return issued;
     }

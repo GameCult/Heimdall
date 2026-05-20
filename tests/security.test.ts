@@ -14,6 +14,7 @@ function createTestConfig(overrides: Partial<HeimdallConfig> = {}): HeimdallConf
     publicBaseUrl: "https://heimdall.gamecult.org",
     issuer: "https://heimdall.gamecult.org",
     sessionTtlSeconds: 3600,
+    refreshTtlSeconds: 60 * 60 * 24 * 30,
     stateTtlSeconds: 600,
     completionTtlSeconds: 300,
     bootstrapSigningPrivateKeyOnMissing: false,

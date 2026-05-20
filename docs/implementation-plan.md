@@ -36,6 +36,10 @@ What exists right now is:
 - a local verifier helper that app backends can use against Heimdall JWKS
 - Repixelizer has consumed the direct backend callback flow in its hosted web
   layer and verifies Heimdall Ed25519 access tokens locally
+- signed refresh tokens and `/v1/apps/{appSlug}/sessions/refresh` let app
+  backends reissue short-lived app claims without restarting provider OAuth
+- Discord and Patreon access-token refresh landed for Repixelizer entitlement
+  re-evaluation
 - generic Twitch and YouTube OAuth callback runtimes for StreamPixels identity
   and managed creator connections
 - an app-authenticated managed-credential resolve endpoint so StreamPixels can
@@ -191,7 +195,7 @@ Landed in the first pass:
 
 Next in this phase:
 
-- provider refresh/revocation flows
+- revocation flows
 - connection lifecycle and token-rotation work
 
 ### Phase 3: Repixelizer binding

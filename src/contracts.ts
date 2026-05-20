@@ -98,6 +98,12 @@ export interface RedeemAuthCompletionRequest {
   completionCode: string;
 }
 
+export interface RefreshSessionRequest {
+  refreshToken: string;
+  entitlementPolicy?: OAuthEntitlementPolicy;
+  entitlementPolicies?: OAuthEntitlementPolicy[];
+}
+
 export interface AccessClaimPayload {
   iss: string;
   aud: AppSlug;
@@ -118,4 +124,22 @@ export interface AccessClaimPayload {
   facts: string[];
   capabilities: string[];
   identities: LinkedIdentityInput[];
+}
+
+export interface RefreshTokenPayload {
+  iss: string;
+  aud: AppSlug;
+  sub: string;
+  sid: string;
+  jti: string;
+  iat: number;
+  nbf: number;
+  exp: number;
+  typ: "heimdall_refresh";
+  account_id: string;
+  access_revision: number;
+  app: {
+    slug: AppSlug;
+    profile_version: string;
+  };
 }

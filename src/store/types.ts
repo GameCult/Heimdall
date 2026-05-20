@@ -153,9 +153,11 @@ export interface HeimdallStore {
   close(): Promise<void>;
   createAccount(input: CreateAccountInput): Promise<StoredAccount>;
   touchAccount(accountId: string, at: string, updates?: { displayName?: string; primaryEmail?: string }): Promise<void>;
+  findAccountById(accountId: string): Promise<StoredAccount | null>;
   findAccountByLinkedIdentity(provider: Provider, providerUserId: string): Promise<StoredAccount | null>;
   findStoredLinkedIdentity(provider: Provider, providerUserId: string): Promise<StoredLinkedIdentity | null>;
   findStoredLinkedIdentityForAccount(accountId: string, provider: Provider): Promise<StoredLinkedIdentity | null>;
+  listStoredLinkedIdentitiesForAccount(accountId: string): Promise<StoredLinkedIdentity[]>;
   upsertLinkedIdentity(input: UpsertLinkedIdentityInput): Promise<StoredLinkedIdentity>;
   listLinkedIdentitiesForAccount(accountId: string): Promise<LinkedIdentityInput[]>;
   createCapabilityGrant(input: CreateCapabilityGrantInput): Promise<StoredCapabilityGrant>;

@@ -83,6 +83,10 @@ export class InMemoryStore implements HeimdallStore {
     }
   }
 
+  async findAccountById(accountId: string): Promise<StoredAccount | null> {
+    return clone(this.accounts.get(accountId) ?? null);
+  }
+
   async findAccountByLinkedIdentity(provider: Provider, providerUserId: string): Promise<StoredAccount | null> {
     for (const linkedIdentity of this.linkedIdentities.values()) {
       if (linkedIdentity.provider === provider && linkedIdentity.providerUserId === providerUserId) {
@@ -111,6 +115,12 @@ export class InMemoryStore implements HeimdallStore {
     }
 
     return null;
+  }
+
+  async listStoredLinkedIdentitiesForAccount(accountId: string): Promise<StoredLinkedIdentity[]> {
+    return [...this.linkedIdentities.values()]
+      .filter((identity) => identity.accountId === accountId)
+      .map((identity) => clone(identity));
   }
 
   async upsertLinkedIdentity(input: UpsertLinkedIdentityInput): Promise<StoredLinkedIdentity> {
