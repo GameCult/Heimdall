@@ -88,6 +88,10 @@ Do not trust this file for the exact live HEAD. Always check git.
   local Heimdall account binding and resolves current Spotify access through
   `/v1/apps/spotiverse/managed-credentials/resolve` without storing provider
   refresh tokens.
+- Public Yggdrasil Heimdall has been deployed with the Spotiverse/Spotify code
+  path, Spotify provider credentials, a Spotiverse shared secret, and an
+  allowlisted loopback portal callback at
+  `http://127.0.0.1:18796/auth/heimdall/callback`.
 - Heimdall and StreamPixels are deployed on Yggdrasil for the StreamPixels
   migration slice; Twitch callback handling has been patched so provider token
   `scope` can be either a space-delimited string or an array
@@ -114,13 +118,13 @@ Do not trust this file for the exact live HEAD. Always check git.
 
 Do not continue implementation automatically from a rehydrate-only request.
 
-If the user asks to continue on Spotiverse, configure Heimdall with
-`GC_ACCESS_PROVIDER_SPOTIFY_CLIENT_ID`,
-`GC_ACCESS_PROVIDER_SPOTIFY_CLIENT_SECRET`, and
-`GC_ACCESS_APP_SPOTIVERSE_SHARED_SECRET`, configure Spotiverse with the matching
-`HEIMDALL_APP_SECRET`, then run a real browser `/auth/login` and verify
-managed credential resolution. Spotiverse should not regain local Spotify
-OAuth token storage.
+If the user asks to continue on Spotiverse, the current next move is the real
+browser `/auth/login` flow through public Heimdall. The Yggdrasil SSH tunnel
+must include reverse forward
+`spotiverse-callback:18796:127.0.0.1:8796`, and local Spotiverse must point at
+`https://heimdall.gamecult.org` with the matching `HEIMDALL_APP_SECRET`. Verify
+managed credential resolution after login. Spotiverse should not regain local
+Spotify OAuth token storage.
 
 If the user asks to continue on StreamPixels, the current next move is real
 browser verification:
