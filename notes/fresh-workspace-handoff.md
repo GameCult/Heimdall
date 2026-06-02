@@ -83,6 +83,11 @@ Do not trust this file for the exact live HEAD. Always check git.
   Heimdall, redeems Heimdall completion codes server-side, writes its own
   viewer sessions and connector bindings, and resolves current provider access
   tokens from Heimdall without storing refresh tokens locally
+- Spotiverse now delegates Spotify OAuth to Heimdall. Heimdall has a
+  `spotiverse` app profile and `spotify` provider runtime; Spotiverse stores a
+  local Heimdall account binding and resolves current Spotify access through
+  `/v1/apps/spotiverse/managed-credentials/resolve` without storing provider
+  refresh tokens.
 - Heimdall and StreamPixels are deployed on Yggdrasil for the StreamPixels
   migration slice; Twitch callback handling has been patched so provider token
   `scope` can be either a space-delimited string or an array
@@ -108,6 +113,14 @@ Do not trust this file for the exact live HEAD. Always check git.
 ## Next Real Move
 
 Do not continue implementation automatically from a rehydrate-only request.
+
+If the user asks to continue on Spotiverse, configure Heimdall with
+`GC_ACCESS_PROVIDER_SPOTIFY_CLIENT_ID`,
+`GC_ACCESS_PROVIDER_SPOTIFY_CLIENT_SECRET`, and
+`GC_ACCESS_APP_SPOTIVERSE_SHARED_SECRET`, configure Spotiverse with the matching
+`HEIMDALL_APP_SECRET`, then run a real browser `/auth/login` and verify
+managed credential resolution. Spotiverse should not regain local Spotify
+OAuth token storage.
 
 If the user asks to continue on StreamPixels, the current next move is real
 browser verification:

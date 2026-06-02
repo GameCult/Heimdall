@@ -487,6 +487,108 @@ async function refreshYouTubeAccessToken(options: {
   return tokenSet;
 }
 
+async function exchangeSpotifyAuthorizationCode(options: {
+  config: HeimdallConfig;
+  code: string;
+  redirectUri: string;
+}): Promise<OAuthTokenSet> {
+  const providerConfig = options.config.providers.spotify;
+  if (!providerConfig.clientId || !providerConfig.clientSecret) {
+    throw new Error("Spotify OAuth is not fully configured.");
+  }
+
+  const basicAuth = Buffer.from(`${providerConfig.clientId}:${providerConfig.clientSecret}`).toString("base64");
+  const tokenResponse = await fetchJson<{
+    access_token: string;
+    refresh_token?: string;
+    token_type: string;
+    expires_in?: number;
+    scope?: string | string[];
+  }>(
+    "https://accounts.spotify.com/api/token",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${basicAuth}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        code: options.code,
+        redirect_uri: options.redirectUri,
+      }),
+    },
+    "Spotify token exchange failed"
+  );
+
+  const tokenSet: OAuthTokenSet = {
+    accessToken: tokenResponse.access_token,
+    tokenType: tokenResponse.token_type,
+    scope: normalizeScopes(tokenResponse.scope),
+    raw: tokenResponse as unknown as Record<string, unknown>,
+  };
+
+  if (tokenResponse.refresh_token) {
+    tokenSet.refreshToken = tokenResponse.refresh_token;
+  }
+
+  if (tokenResponse.expires_in) {
+    tokenSet.expiresAt = new Date(Date.now() + tokenResponse.expires_in * 1000).toISOString();
+  }
+
+  return tokenSet;
+}
+
+async function refreshSpotifyAccessToken(options: {
+  config: HeimdallConfig;
+  refreshToken: string;
+}): Promise<OAuthTokenSet> {
+  const providerConfig = options.config.providers.spotify;
+  if (!providerConfig.clientId || !providerConfig.clientSecret) {
+    throw new Error("Spotify OAuth is not fully configured.");
+  }
+
+  const basicAuth = Buffer.from(`${providerConfig.clientId}:${providerConfig.clientSecret}`).toString("base64");
+  const tokenResponse = await fetchJson<{
+    access_token: string;
+    refresh_token?: string;
+    token_type: string;
+    expires_in?: number;
+    scope?: string | string[];
+  }>(
+    "https://accounts.spotify.com/api/token",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Basic ${basicAuth}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: options.refreshToken,
+      }),
+    },
+    "Spotify token refresh failed"
+  );
+
+  const tokenSet: OAuthTokenSet = {
+    accessToken: tokenResponse.access_token,
+    tokenType: tokenResponse.token_type,
+    scope: normalizeScopes(tokenResponse.scope),
+    raw: tokenResponse as unknown as Record<string, unknown>,
+  };
+
+  if (tokenResponse.refresh_token) {
+    tokenSet.refreshToken = tokenResponse.refresh_token;
+  }
+
+  if (tokenResponse.expires_in) {
+    tokenSet.expiresAt = new Date(Date.now() + tokenResponse.expires_in * 1000).toISOString();
+  }
+
+  return tokenSet;
+}
+
 async function resolveDiscordIdentity(options: { accessToken: string }): Promise<ResolvedIdentity> {
   const user = await fetchJson<{
     id: string;
@@ -735,6 +837,47 @@ async function resolveYouTubeIdentity(options: { accessToken: string }): Promise
 
   if (userInfo.picture) {
     identity.avatarUrl = userInfo.picture;
+  }
+
+  return identity;
+}
+
+async function resolveSpotifyIdentity(options: { accessToken: string }): Promise<ResolvedIdentity> {
+  const profile = await fetchJson<{
+    id?: string;
+    display_name?: string;
+    email?: string;
+    images?: Array<{ url?: string }>;
+    uri?: string;
+  }>(
+    "https://api.spotify.com/v1/me",
+    {
+      headers: {
+        Authorization: `Bearer ${options.accessToken}`,
+      },
+    },
+    "Spotify identity lookup failed"
+  );
+
+  if (!profile.id) {
+    throw new Error("Spotify identity response did not include a user id.");
+  }
+
+  const identity: ResolvedIdentity = {
+    provider: "spotify",
+    providerUserId: profile.id,
+    username: profile.id,
+    displayName: profile.display_name ?? profile.id,
+    profile: profile as unknown as Record<string, unknown>,
+  };
+
+  if (profile.email) {
+    identity.primaryEmail = profile.email;
+  }
+
+  const avatarUrl = profile.images?.find((image) => image.url)?.url;
+  if (avatarUrl) {
+    identity.avatarUrl = avatarUrl;
   }
 
   return identity;
@@ -991,6 +1134,15 @@ const youtubeRuntime: OAuthProviderRuntime = {
   },
 };
 
+const spotifyRuntime: OAuthProviderRuntime = {
+  exchangeAuthorizationCode: exchangeSpotifyAuthorizationCode,
+  refreshAccessToken: refreshSpotifyAccessToken,
+  resolveIdentity: resolveSpotifyIdentity,
+  async evaluateEntitlements() {
+    return { facts: [], snapshots: [] };
+  },
+};
+
 const notImplementedRuntime: OAuthProviderRuntime = {
   async exchangeAuthorizationCode() {
     throw new Error("Provider callback exchange is not implemented yet.");
@@ -1012,5 +1164,6 @@ export function createOAuthRuntimeRegistry(): OAuthRuntimeRegistry {
     github: notImplementedRuntime,
     twitch: twitchRuntime,
     youtube: youtubeRuntime,
+    spotify: spotifyRuntime,
   };
 }

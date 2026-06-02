@@ -29,6 +29,7 @@ function createTestConfig(overrides: Partial<HeimdallConfig> = {}): HeimdallConf
       github: {},
       twitch: {},
       youtube: {},
+      spotify: {},
     },
     ...overrides,
   };

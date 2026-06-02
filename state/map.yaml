@@ -31,6 +31,7 @@ invariants:
   - App-domain data stays with the host app unless there is a deliberate, source-grounded reason to share it.
   - Host apps verify signed claims locally and keep resource ownership checks local.
   - StreamPixels can reuse shared auth authority without centralizing streamer-audience data.
+  - Spotiverse consumes Spotify as a Heimdall-managed credential; Spotiverse does not own Spotify refresh-token custody.
   - Persistent state cruft is the same failure class as architecture cruft.
 
 data_flow:
@@ -91,6 +92,7 @@ landed_baseline:
   - Repixelizer's hosted web layer now creates Heimdall auth attempts, receives direct backend callbacks, verifies Heimdall Ed25519 access tokens locally, and adopts httpOnly local sessions.
   - Heimdall now has generic Twitch and YouTube OAuth callback runtimes plus an app-authenticated managed-credential resolve endpoint for app-owned connector runtimes.
   - StreamPixels now starts viewer and creator Twitch/YouTube OAuth through Heimdall, redeems Heimdall completion codes server-side, writes its own viewer sessions and creator connector bindings, and leaves provider refresh-token custody in Heimdall.
+  - Spotiverse now has a Heimdall app profile and Spotify provider runtime for managed credential custody.
 
 rejected_paths:
   - name: per_app_auth_copy_paste
@@ -101,5 +103,5 @@ rejected_paths:
     reason: reusing auth mechanics does not justify centralizing app-domain audience or product data
 
 current_status:
-  summary: Heimdall and StreamPixels are deployed on Yggdrasil for the StreamPixels auth migration slice. Heimdall has Twitch/YouTube provider credentials, the shared StreamPixels app secret, generic Twitch/YouTube identity and managed-credential custody runtimes, and a live fix for Twitch token responses that return scopes as arrays. Live StreamPixels Twitch sign-in through Heimdall has succeeded and redeemed a completion code. StreamPixels delegates Twitch/YouTube OAuth to Heimdall, redeems one-time completion codes through its service, writes its own httpOnly viewer session, stores local profile/creator connector binding state, and asks Heimdall for current provider access tokens when runtime code needs them. Repixelizer access now has a signed Heimdall refresh-token path: apps can exchange the refresh token for a fresh short-lived access claim, while Heimdall refreshes Discord/Patreon provider tokens and re-evaluates app-owned entitlement policies without restarting provider OAuth. The key boundary still holds: Heimdall owns provider OAuth and credential custody; host apps own local sessions, route/resource checks, and app-domain data.
-  next_action: Complete the remaining real browser verification for StreamPixels: YouTube sign-in/link, creator Twitch/YouTube connector attach from an admin creator session, and local StreamPixels persistence checks. If a provider callback fails, inspect Heimdall audit events and StreamPixels service logs first; do not move provider-specific app state into Heimdall while debugging.
+  summary: Heimdall and StreamPixels are deployed on Yggdrasil for the StreamPixels auth migration slice. Heimdall has Twitch/YouTube provider credentials, the shared StreamPixels app secret, generic Twitch/YouTube identity and managed-credential custody runtimes, and a live fix for Twitch token responses that return scopes as arrays. Live StreamPixels Twitch sign-in through Heimdall has succeeded and redeemed a completion code. StreamPixels delegates Twitch/YouTube OAuth to Heimdall, redeems one-time completion codes server-side, writes its own httpOnly viewer session, stores local profile/creator connector binding state, and asks Heimdall for current provider access tokens when runtime code needs them. Spotiverse is now added as a Heimdall app profile with Spotify as a managed credential provider; Spotiverse should resolve access tokens from Heimdall and must not own Spotify refresh-token custody. Repixelizer access has a signed Heimdall refresh-token path. The key boundary still holds: Heimdall owns provider OAuth and credential custody; host apps own local sessions, route/resource checks, runtime behavior, and app-domain data.
+  next_action: Configure Heimdall with Spotify OAuth credentials and `GC_ACCESS_APP_SPOTIVERSE_SHARED_SECRET`, then run a real browser Spotiverse `/auth/login` flow and verify `/v1/apps/spotiverse/managed-credentials/resolve` returns only an access-token projection. After that, return to the remaining StreamPixels browser verification.

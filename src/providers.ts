@@ -69,6 +69,19 @@ export const providerCatalog: Record<Provider, ProviderDescriptor> = {
       prompt: "consent",
     },
   },
+  spotify: {
+    key: "spotify",
+    displayName: "Spotify",
+    authorizationEndpoint: "https://accounts.spotify.com/authorize",
+    defaultScopes: [
+      "user-read-currently-playing",
+      "user-read-playback-state",
+      "user-modify-playback-state",
+    ],
+    roles: ["identity", "managed_credential"],
+    clientIdEnv: "GC_ACCESS_PROVIDER_SPOTIFY_CLIENT_ID",
+    clientSecretEnv: "GC_ACCESS_PROVIDER_SPOTIFY_CLIENT_SECRET",
+  },
 };
 
 export function buildAuthorizationUrl(options: {

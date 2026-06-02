@@ -36,7 +36,8 @@ The planned non-shared-by-default layer is:
 - Treat `docs/implementation-plan.md` as the forward plan.
 - Treat `docs/app-profiles/repixelizer.md` and
   `docs/app-profiles/streampixels.md` as thin app bindings, not the whole
-  shared architecture.
+  shared architecture. Add new app-profile notes when a new app binding needs
+  durable context.
 
 ## Important Paths
 
@@ -45,6 +46,7 @@ The planned non-shared-by-default layer is:
 - Implementation plan: `E:\Projects\Heimdall\docs\implementation-plan.md`
 - Repixelizer profile: `E:\Projects\Heimdall\docs\app-profiles\repixelizer.md`
 - StreamPixels profile: `E:\Projects\Heimdall\docs\app-profiles\streampixels.md`
+- Spotiverse profile: `E:\Projects\Heimdall\docs\app-profiles\spotiverse.md`
 - Handoff summary: `E:\Projects\Heimdall\notes\fresh-workspace-handoff.md`
 - State CLI: `E:\Projects\Heimdall\tools\heimdall_state.py`
 - Pre-compaction helper: `E:\Projects\Heimdall\tools\heimdall_prepare_compaction.py`

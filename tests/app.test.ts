@@ -23,6 +23,7 @@ function createTestConfig(): HeimdallConfig {
     tokenEncryptionKeyBase64: Buffer.alloc(32, 7).toString("base64"),
     appSharedSecrets: {
       streampixels: "streampixels-secret",
+      spotiverse: "spotiverse-secret",
     },
     storage: {
       backend: "memory",
@@ -34,6 +35,7 @@ function createTestConfig(): HeimdallConfig {
       github: { clientId: "github-client", clientSecret: "github-secret" },
       twitch: { clientId: "twitch-client", clientSecret: "twitch-secret" },
       youtube: { clientId: "youtube-client", clientSecret: "youtube-secret" },
+      spotify: { clientId: "spotify-client", clientSecret: "spotify-secret" },
     },
   };
 }
@@ -680,6 +682,101 @@ describe("Heimdall service", () => {
         managedConnectionProviders: ["twitch", "youtube"],
       })
     );
+  });
+
+  it("exposes Spotiverse as a Spotify managed-credential app", async () => {
+    const app = await buildApp({ config: createTestConfig() });
+    apps.push(app);
+
+    const profileResponse = await app.inject({
+      method: "GET",
+      url: "/v1/apps/spotiverse",
+    });
+
+    expect(profileResponse.statusCode).toBe(200);
+    expect(profileResponse.json()).toEqual(
+      expect.objectContaining({
+        slug: "spotiverse",
+        identityProviders: ["spotify"],
+        managedConnectionProviders: ["spotify"],
+      })
+    );
+  });
+
+  it("resolves Spotiverse Spotify credentials without exposing refresh custody", async () => {
+    const store = new InMemoryStore();
+    const app = await buildApp({
+      config: createTestConfig(),
+      store,
+      oauthRuntimes: {
+        spotify: {
+          async exchangeAuthorizationCode() {
+            return {
+              accessToken: "spotify-access-token",
+              refreshToken: "spotify-refresh-token",
+              tokenType: "Bearer",
+              scope: ["user-read-playback-state", "user-modify-playback-state"],
+              expiresAt: "2026-06-02T13:00:00.000Z",
+              raw: { source: "test" },
+            };
+          },
+          async resolveIdentity() {
+            return {
+              provider: "spotify",
+              providerUserId: "spotify-user-123",
+              username: "spotify-user-123",
+              displayName: "Spotiverse Operator",
+              profile: { id: "spotify-user-123" },
+            };
+          },
+          async evaluateEntitlements() {
+            return { facts: [], snapshots: [] };
+          },
+        },
+      },
+    });
+    apps.push(app);
+
+    const startResponse = await app.inject({
+      method: "POST",
+      url: "/v1/oauth/spotify/start",
+      payload: {
+        appSlug: "spotiverse",
+        mode: "connect",
+        returnTo: "http://127.0.0.1:8796/auth/complete",
+      },
+    });
+    const stateToken = startResponse.json().stateToken as string;
+
+    const callbackResponse = await app.inject({
+      method: "GET",
+      url: `/v1/oauth/spotify/callback?code=test-code&state=${encodeURIComponent(stateToken)}`,
+    });
+    const accountId = callbackResponse.json().account.id as string;
+
+    const credentialResponse = await app.inject({
+      method: "POST",
+      url: "/v1/apps/spotiverse/managed-credentials/resolve",
+      headers: {
+        "x-heimdall-app-secret": "spotiverse-secret",
+      },
+      payload: {
+        accountId,
+        provider: "spotify",
+      },
+    });
+
+    expect(credentialResponse.statusCode).toBe(200);
+    expect(credentialResponse.json()).toEqual(
+      expect.objectContaining({
+        accountId,
+        provider: "spotify",
+        providerUserId: "spotify-user-123",
+        accessToken: "spotify-access-token",
+        scopes: ["user-read-playback-state", "user-modify-playback-state"],
+      })
+    );
+    expect(credentialResponse.body).not.toContain("spotify-refresh-token");
   });
 
   it("resolves app-managed provider credentials without exposing refresh custody", async () => {

@@ -141,9 +141,40 @@ const streampixelsProfile: AppProfile = {
   },
 };
 
+const spotiverseProfile: AppProfile = {
+  slug: "spotiverse",
+  displayName: "Spotiverse",
+  profileVersion: "2026-06-02",
+  identityProviders: ["spotify"],
+  entitlementSources: [],
+  managedConnectionProviders: ["spotify"],
+  capabilities: [
+    {
+      key: "spotify_player_read",
+      mode: "shared",
+      summary: "May read the linked Spotify account playback, queue, and device state.",
+      sharedRule: identityFacts.authenticated,
+    },
+    {
+      key: "spotify_queue_add",
+      mode: "shared",
+      summary: "May request add-to-queue through the Spotiverse command boundary.",
+      sharedRule: identityFacts.authenticated,
+    },
+  ],
+  evaluateSharedCapabilities(context) {
+    if (!context.facts.has(identityFacts.authenticated)) {
+      return [];
+    }
+
+    return ["spotify_player_read", "spotify_queue_add"];
+  },
+};
+
 export const appProfiles: Record<AppSlug, AppProfile> = {
   repixelizer: repixelizerProfile,
   streampixels: streampixelsProfile,
+  spotiverse: spotiverseProfile,
 };
 
 export function getAppProfile(appSlug: AppSlug): AppProfile {

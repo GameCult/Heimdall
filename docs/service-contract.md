@@ -118,6 +118,7 @@ Supported providers in the skeleton:
 - `github`
 - `twitch`
 - `youtube`
+- `spotify`
 
 Request body:
 
@@ -445,8 +446,8 @@ Request body:
 
 ```json
 {
-  "accountId": "acct_streampixels_001",
-  "provider": "youtube"
+  "accountId": "acct_spotiverse_001",
+  "provider": "spotify"
 }
 ```
 
@@ -454,12 +455,12 @@ Response:
 
 ```json
 {
-  "accountId": "acct_streampixels_001",
-  "provider": "youtube",
-  "providerUserId": "channel-123",
+  "accountId": "acct_spotiverse_001",
+  "provider": "spotify",
+  "providerUserId": "spotify-user-123",
   "accessToken": "<provider-access-token>",
-  "tokenExpiresAt": "2026-04-26T13:00:00.000Z",
-  "scopes": ["openid", "profile", "email"]
+  "tokenExpiresAt": "2026-06-02T13:00:00.000Z",
+  "scopes": ["user-read-playback-state", "user-modify-playback-state"]
 }
 ```
 

@@ -467,6 +467,10 @@ function acceptsBackendPolicy(appSlug: AppSlug, handoff: OAuthHandoff): boolean 
     return handoff.callbackUrl === "https://repixelizer.gamecult.org/api/auth/heimdall/callback";
   }
 
+  if (appSlug === "spotiverse") {
+    return handoff.callbackUrl === "http://127.0.0.1:8796/auth/heimdall/callback";
+  }
+
   return false;
 }
 
