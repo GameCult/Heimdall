@@ -27,6 +27,7 @@ export interface HeimdallConfig {
   signingKeyId?: string;
   tokenEncryptionKeyBase64?: string;
   appSharedSecrets: Partial<Record<AppSlug, string>>;
+  appBackendCallbacks: Partial<Record<AppSlug, string[]>>;
   storage: StorageConfig;
   providers: Record<Provider, ProviderClientConfig>;
 }
@@ -78,6 +79,10 @@ function readProviderConfig(env: NodeJS.ProcessEnv, provider: Provider): Provide
   return config;
 }
 
+function readList(envValue: string | undefined): string[] {
+  return envValue?.split(",").map((entry) => entry.trim()).filter(Boolean) ?? [];
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): HeimdallConfig {
   const host = env.HOST ?? "127.0.0.1";
   const port = readInt(env.PORT, 4100);
@@ -96,6 +101,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): HeimdallConfig
       })
       .filter(([, value]) => Boolean(value))
   ) as Partial<Record<AppSlug, string>>;
+  const appBackendCallbacks = Object.fromEntries(
+    appSlugs
+      .map((appSlug) => {
+        const envKey = `GC_ACCESS_APP_${appSlug.toUpperCase()}_BACKEND_CALLBACK_URLS`;
+        return [appSlug, readList(env[envKey])];
+      })
+      .filter(([, value]) => Array.isArray(value) && value.length > 0)
+  ) as Partial<Record<AppSlug, string[]>>;
 
   const config: HeimdallConfig = {
     serviceName: "heimdall",
@@ -109,6 +122,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): HeimdallConfig
     completionTtlSeconds: readInt(env.GC_ACCESS_COMPLETION_TTL_SECONDS, 300),
     bootstrapSigningPrivateKeyOnMissing: readBoolean(env.GC_ACCESS_SIGNING_PRIVATE_KEY_BOOTSTRAP, false),
     appSharedSecrets,
+    appBackendCallbacks,
     storage: {
       backend: storageBackend,
       applySchemaOnStartup: readBoolean(env.GC_ACCESS_APPLY_SCHEMA_ON_STARTUP, true),

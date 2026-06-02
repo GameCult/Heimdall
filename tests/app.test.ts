@@ -25,6 +25,9 @@ function createTestConfig(): HeimdallConfig {
       streampixels: "streampixels-secret",
       spotiverse: "spotiverse-secret",
     },
+    appBackendCallbacks: {
+      spotiverse: ["https://spotiverse-portal.gamecult.org/auth/heimdall/callback"],
+    },
     storage: {
       backend: "memory",
       applySchemaOnStartup: true,
@@ -777,6 +780,61 @@ describe("Heimdall service", () => {
       })
     );
     expect(credentialResponse.body).not.toContain("spotify-refresh-token");
+  });
+
+  it("accepts configured Spotiverse portal backend callbacks", async () => {
+    const app = await buildApp({ config: createTestConfig() });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/oauth/spotify/start",
+      payload: {
+        appSlug: "spotiverse",
+        mode: "connect",
+        returnTo: "https://spotiverse-portal.gamecult.org/auth/complete",
+        handoff: {
+          kind: "backend_callback",
+          attemptId: "spotiverse-portal-attempt",
+          callbackUrl: "https://spotiverse-portal.gamecult.org/auth/heimdall/callback",
+        },
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toEqual(
+      expect.objectContaining({
+        provider: "spotify",
+        appSlug: "spotiverse",
+      })
+    );
+  });
+
+  it("rejects unconfigured backend callback URLs", async () => {
+    const app = await buildApp({ config: createTestConfig() });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/oauth/spotify/start",
+      payload: {
+        appSlug: "spotiverse",
+        mode: "connect",
+        returnTo: "https://spotiverse-portal.gamecult.org/auth/complete",
+        handoff: {
+          kind: "backend_callback",
+          attemptId: "spotiverse-bad-attempt",
+          callbackUrl: "https://not-spotiverse.example/auth/heimdall/callback",
+        },
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual(
+      expect.objectContaining({
+        error: "untrusted_backend_callback",
+      })
+    );
   });
 
   it("resolves app-managed provider credentials without exposing refresh custody", async () => {

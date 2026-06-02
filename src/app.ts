@@ -458,17 +458,23 @@ async function evaluateStoredEntitlements(options: {
   return [...new Set(facts)];
 }
 
-function acceptsBackendPolicy(appSlug: AppSlug, handoff: OAuthHandoff): boolean {
+function acceptsBackendCallback(config: HeimdallConfig, appSlug: AppSlug, handoff: OAuthHandoff): boolean {
   if (handoff.kind !== "backend_callback") {
     return false;
   }
 
   if (appSlug === "repixelizer") {
-    return handoff.callbackUrl === "https://repixelizer.gamecult.org/api/auth/heimdall/callback";
+    return (
+      handoff.callbackUrl === "https://repixelizer.gamecult.org/api/auth/heimdall/callback" ||
+      (config.appBackendCallbacks.repixelizer ?? []).includes(handoff.callbackUrl)
+    );
   }
 
   if (appSlug === "spotiverse") {
-    return handoff.callbackUrl === "http://127.0.0.1:8796/auth/heimdall/callback";
+    return (
+      handoff.callbackUrl === "http://127.0.0.1:8796/auth/heimdall/callback" ||
+      (config.appBackendCallbacks.spotiverse ?? []).includes(handoff.callbackUrl)
+    );
   }
 
   return false;
@@ -649,7 +655,14 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           detail: error instanceof Error ? error.message : "Invalid entitlement policy definition.",
         };
       }
-      if (entitlementPolicy && !acceptsBackendPolicy(profile.slug, handoff)) {
+      if (handoff.kind === "backend_callback" && !acceptsBackendCallback(config, profile.slug, handoff)) {
+        reply.code(400);
+        return {
+          error: "untrusted_backend_callback",
+          detail: "Backend callback handoffs are only accepted for configured app callback URLs.",
+        };
+      }
+      if (entitlementPolicy && handoff.kind !== "backend_callback") {
         reply.code(400);
         return {
           error: "untrusted_entitlement_policy",
