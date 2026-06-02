@@ -48,6 +48,7 @@ Canonical docs:
 - `docs/architecture.md`
 - `docs/implementation-plan.md`
 - `docs/service-contract.md`
+- `docs/verse-service-contract.md`
 - `docs/app-profiles/repixelizer.md`
 - `docs/app-profiles/streampixels.md`
 - `state/map.yaml`
