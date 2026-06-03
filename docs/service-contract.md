@@ -85,6 +85,7 @@ Current app slugs:
 
 - `repixelizer`
 - `streampixels`
+- `spotiverse`
 
 Profile fields:
 
@@ -597,6 +598,42 @@ The following are not landed yet:
 - revocation flows
 - admin/grant management surfaces
 - GitHub callback runtime
+- runtime CultCache `.cc` witness writing or CultMesh publication
+
+## Odin/Eve provider advertisement
+
+Purpose:
+
+- advertise Heimdall as a read-only Eve provider surface for Odin discovery
+- name the redacted CultCache witness document schemas and future `.cc` paths
+- avoid touching provider secrets, token custody, store migrations, or runtime
+  mutation paths
+
+Command:
+
+```powershell
+pnpm export:provider-advertisement
+```
+
+Current output shape:
+
+- `schemaVersion`: `gamecult.eve.provider_advertisement.v1`
+- `providerId`: `heimdall`
+- `status`: `read_only_witness_planned`
+- provider catalog entries for Discord, Patreon, GitHub, Twitch, YouTube, and
+  Spotify
+- app profile projections for Repixelizer, StreamPixels, and Spotiverse
+- redacted witness descriptors for accounts, linked identities, grants,
+  sessions, entitlement snapshots, auth completions, audit events, app profiles,
+  and managed credential projections
+
+Important behavior:
+
+- this is a projection/export command, not a writer
+- advertised witness paths are future CultCache targets, not proof that a live
+  `.cc` exporter is already running
+- exported descriptors forbid raw provider tokens, encrypted token blobs,
+  completion codes, callback secrets, and app-domain state
 
 ## Next implementation move
 

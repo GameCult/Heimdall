@@ -99,3 +99,44 @@ refreshing an entitlement snapshot. Heimdall accepts or denies those actions.
 The invariant: Heimdall owns shared auth truth, not app-domain truth. CultCache
 and CultMesh make Heimdall inspectable; they do not leak secrets or move product
 state into the auth authority.
+
+## Read-Only Witness First Cut
+
+The current repo cut defines the read-only witness/ad surface without wiring a
+runtime writer or migrating live state.
+
+Authority map:
+
+- Owner: Heimdall remains the only owner of auth/control-plane mutation.
+- Inputs: static provider catalog, static app profiles, and the redacted witness
+  descriptor table in `src/verse-witness.ts`.
+- Outputs: `gamecult.eve.provider_advertisement.v1` JSON printed by
+  `pnpm export:provider-advertisement`.
+- Derived state: advertised CultCache paths and schema IDs are witness/export
+  targets. They do not prove that a live `.cc` writer exists yet.
+- Forbidden writers: Odin probes, Eve renderers, dashboards, and this export
+  command cannot mutate accounts, linked identities, grants, sessions, tokens,
+  completions, entitlements, audit events, or app profiles.
+- Shared paths: future CultCache export, CultMesh publication, and Eve lowering
+  should reuse the same document IDs and redaction doctrine.
+- Deletion line: if a future writer needs app-domain fields or provider tokens
+  to make the surface useful, the design is wrong; keep those fields out or move
+  the concern back to the owning app/service.
+
+The advertised witness descriptors currently name these redacted `.cc` targets:
+
+- `heimdall.account.v0` at `cultcache/heimdall/accounts/{accountId}.cc`
+- `heimdall.linked_identity.v0` at
+  `cultcache/heimdall/linked-identities/{provider}/{providerUserId}.cc`
+- `heimdall.capability_grant.v0` at
+  `cultcache/heimdall/grants/{grantId}.cc`
+- `heimdall.session.v0` at `cultcache/heimdall/sessions/{sessionId}.cc`
+- `heimdall.entitlement_snapshot.v0` at
+  `cultcache/heimdall/entitlements/{accountId}/{provider}/{scope}.cc`
+- `heimdall.auth_completion.v0` at
+  `cultcache/heimdall/auth-completions/{completionCodeHash}.cc`
+- `heimdall.audit_event.v0` at `cultcache/heimdall/audit/{eventId}.cc`
+- `heimdall.app_profile.v0` at
+  `cultcache/heimdall/app-profiles/{appSlug}.cc`
+- `heimdall.managed_credential_projection.v0` at
+  `cultcache/heimdall/managed-credentials/{appSlug}/{accountId}/{provider}.cc`

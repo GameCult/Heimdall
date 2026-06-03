@@ -32,6 +32,7 @@ invariants:
   - Host apps verify signed claims locally and keep resource ownership checks local.
   - StreamPixels can reuse shared auth authority without centralizing streamer-audience data.
   - Spotiverse consumes Spotify as a Heimdall-managed credential; Spotiverse does not own Spotify refresh-token custody.
+  - Heimdall's first Odin/Eve provider advertisement is read-only: it names redacted CultCache witness document shapes and paths, but does not write `.cc` state or mutate auth truth.
   - Persistent state cruft is the same failure class as architecture cruft.
 
 data_flow:
@@ -93,6 +94,7 @@ landed_baseline:
   - Heimdall now has generic Twitch and YouTube OAuth callback runtimes plus an app-authenticated managed-credential resolve endpoint for app-owned connector runtimes.
   - StreamPixels now starts viewer and creator Twitch/YouTube OAuth through Heimdall, redeems Heimdall completion codes server-side, writes its own viewer sessions and creator connector bindings, and leaves provider refresh-token custody in Heimdall.
   - Spotiverse now has a Heimdall app profile and Spotify provider runtime for managed credential custody.
+  - A read-only `gamecult.eve.provider_advertisement.v1` export now advertises Heimdall provider/app surfaces plus redacted CultCache witness document paths for Odin/Eve discovery.
 
 rejected_paths:
   - name: per_app_auth_copy_paste

@@ -23,7 +23,7 @@ Landed right now:
 - file-backed signing-key loading/bootstrap so restart does not vaporize the
   service identity when you configure a real key path
 - signed OAuth start-state scaffolding for Discord, Patreon, GitHub, Twitch,
-  and YouTube
+  YouTube, and Spotify
 - durable auth/control-plane storage with in-memory and Postgres backends
 - account, linked-identity, session, grant, entitlement snapshot, and audit
   persistence
@@ -33,15 +33,18 @@ Landed right now:
 - AES-256-GCM sealing for managed provider tokens at rest
 - a one-time browser completion exchange kept as fallback for opener
   `postMessage` handoff
-- app profile surfaces for Repixelizer and StreamPixels
+- app profile surfaces for Repixelizer, StreamPixels, and Spotiverse
 - signed claim issuance for app-local verification experiments
 - a local verifier helper in `src/verifier.ts` so app backends can validate
   Heimdall JWTs without phoning home on every guarded request
+- a read-only Odin/Eve provider advertisement export that names redacted
+  CultCache witness document shapes and paths without touching live secrets
 
 Still not landed:
 
 - end-to-end app integrations in consumer repos
 - refresh/revocation flows and admin surfaces
+- runtime CultCache `.cc` witness writing or CultMesh publication
 
 Canonical docs:
 
@@ -51,6 +54,7 @@ Canonical docs:
 - `docs/verse-service-contract.md`
 - `docs/app-profiles/repixelizer.md`
 - `docs/app-profiles/streampixels.md`
+- `docs/app-profiles/spotiverse.md`
 - `state/map.yaml`
 - `notes/fresh-workspace-handoff.md`
 
@@ -61,6 +65,7 @@ pnpm install
 pnpm dev
 pnpm test
 pnpm build
+pnpm export:provider-advertisement
 ```
 
 ## Working Loop
