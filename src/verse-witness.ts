@@ -126,6 +126,10 @@ export interface EveProviderAdvertisementDocument {
   schemaVersion: "gamecult.eve.provider_advertisement.v1";
   providerId: "heimdall";
   verseId: "gamecult";
+  rootVerse: "asgard";
+  canonicalService: "asgard.heimdall";
+  locatedService: "asgard.starfire.heimdall";
+  cultMeshAddress: "asgard.starfire.heimdall/eve/tui";
   title: "Heimdall";
   description: string;
   version: string;
@@ -148,6 +152,11 @@ export interface EveProviderAdvertisementDocument {
     };
   };
   endpoints: string[];
+  routes: Array<{
+    kind: string;
+    address: string;
+    note: string;
+  }>;
   providers: HeimdallAdvertisedProvider[];
   appProfiles: HeimdallAdvertisedAppProfile[];
   documents: HeimdallWitnessDocumentDescriptor[];
@@ -158,6 +167,10 @@ export function buildHeimdallProviderAdvertisement(options: { updatedAt: string 
     schemaVersion: "gamecult.eve.provider_advertisement.v1",
     providerId: "heimdall",
     verseId: "gamecult",
+    rootVerse: "asgard",
+    canonicalService: "asgard.heimdall",
+    locatedService: "asgard.starfire.heimdall",
+    cultMeshAddress: "asgard.starfire.heimdall/eve/tui",
     title: "Heimdall",
     description: "Shared GameCult auth/control-plane authority with redacted CultCache witness projections.",
     version: "read-only-witness-v0",
@@ -180,7 +193,7 @@ export function buildHeimdallProviderAdvertisement(options: { updatedAt: string 
       transport: "CultMesh provider advertisement; first cut is a read-only fixture/export.",
     },
     controlSurface: {
-      primary: "cultmesh://gamecult/heimdall/provider-advertisement",
+      primary: "asgard.starfire.heimdall/eve/tui",
       controls: {
         mode: "read-only",
         writes: false,
@@ -188,8 +201,21 @@ export function buildHeimdallProviderAdvertisement(options: { updatedAt: string 
       },
     },
     endpoints: [
-      "cultmesh://gamecult/heimdall/provider-advertisement",
-      "cultmesh://gamecult/heimdall/witness",
+      "asgard.starfire.heimdall/eve/tui",
+      "asgard.starfire.heimdall/eve/gui",
+      "asgard.starfire.heimdall/witness",
+    ],
+    routes: [
+      {
+        kind: "cultmesh-legacy-uri",
+        address: "cultmesh://gamecult/heimdall/provider-advertisement",
+        note: "Legacy document route; not service identity.",
+      },
+      {
+        kind: "cultmesh-legacy-uri",
+        address: "cultmesh://gamecult/heimdall/witness",
+        note: "Legacy witness route; not service identity.",
+      },
     ],
     providers: providers.map((provider) => {
       const descriptor = providerCatalog[provider];
