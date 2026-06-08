@@ -26,6 +26,7 @@ function createTestConfig(): HeimdallConfig {
       spotiverse: "spotiverse-secret",
     },
     appBackendCallbacks: {
+      bifrost: ["https://bifrost.gamecult.org/auth/heimdall/callback"],
       spotiverse: ["https://spotiverse-portal.gamecult.org/auth/heimdall/callback"],
     },
     storage: {
@@ -313,6 +314,97 @@ describe("Heimdall service", () => {
           typ: "heimdall_oauth_state",
           provider: "patreon",
           app_slug: "repixelizer",
+          entitlement_policy: {
+            kind: "patreon_membership_access",
+            requiredTierTitle: "Inner Sanctum",
+          },
+        })
+      );
+    }
+  });
+
+  it("builds Bifrost Discord OAuth start state with caller-owned cult member role policy", async () => {
+    const app = await buildApp({ config: createTestConfig() });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/oauth/discord/start",
+      payload: {
+        appSlug: "bifrost",
+        mode: "sign_in",
+        returnTo: "https://bifrost.gamecult.org/auth/heimdall/wait?attemptId=bifrost-attempt-123&returnTo=%2FApp",
+        handoff: {
+          kind: "backend_callback",
+          attemptId: "bifrost-attempt-123",
+          callbackUrl: "https://bifrost.gamecult.org/auth/heimdall/callback",
+        },
+        entitlementPolicy: {
+          kind: "discord_role_access",
+          guildId: "gamecult-guild",
+          allowedRoleIds: ["role-ktlst"],
+        },
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
+    const payload = response.json();
+    expect(payload.authorizationUrl).toContain("discord.com/oauth2/authorize");
+
+    const verified = verifyJwt(payload.stateToken as string, getPublicKey(app));
+    expect(verified.valid).toBe(true);
+    if (verified.valid) {
+      expect(verified.payload).toEqual(
+        expect.objectContaining({
+          typ: "heimdall_oauth_state",
+          provider: "discord",
+          app_slug: "bifrost",
+          entitlement_policy: {
+            kind: "discord_role_access",
+            guildId: "gamecult-guild",
+            allowedRoleIds: ["role-ktlst"],
+          },
+        })
+      );
+    }
+  });
+
+  it("builds Bifrost Patreon OAuth start state with caller-owned tier policy", async () => {
+    const app = await buildApp({ config: createTestConfig() });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/oauth/patreon/start",
+      payload: {
+        appSlug: "bifrost",
+        mode: "sign_in",
+        returnTo: "https://bifrost.gamecult.org/auth/heimdall/wait?attemptId=bifrost-attempt-123&returnTo=%2FApp",
+        handoff: {
+          kind: "backend_callback",
+          attemptId: "bifrost-attempt-123",
+          callbackUrl: "https://bifrost.gamecult.org/auth/heimdall/callback",
+        },
+        entitlementPolicy: {
+          kind: "patreon_membership_access",
+          requiredTierTitle: "Inner Sanctum",
+        },
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
+    const payload = response.json();
+    const authorizationUrl = new URL(payload.authorizationUrl as string);
+    expect(`${authorizationUrl.origin}${authorizationUrl.pathname}`).toBe("https://www.patreon.com/oauth2/authorize");
+
+    const verified = verifyJwt(payload.stateToken as string, getPublicKey(app));
+    expect(verified.valid).toBe(true);
+    if (verified.valid) {
+      expect(verified.payload).toEqual(
+        expect.objectContaining({
+          typ: "heimdall_oauth_state",
+          provider: "patreon",
+          app_slug: "bifrost",
           entitlement_policy: {
             kind: "patreon_membership_access",
             requiredTierTitle: "Inner Sanctum",

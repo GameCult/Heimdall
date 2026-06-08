@@ -171,10 +171,37 @@ const spotiverseProfile: AppProfile = {
   },
 };
 
+const bifrostProfile: AppProfile = {
+  slug: "bifrost",
+  displayName: "Bifrost",
+  profileVersion: "2026-06-08",
+  identityProviders: ["discord", "patreon"],
+  entitlementSources: ["discord", "patreon"],
+  managedConnectionProviders: [],
+  capabilities: [
+    {
+      key: "member_access",
+      mode: "shared",
+      summary: "May enter the Bifrost member alpha through a Heimdall-verified GameCult membership signal.",
+      sharedRule: "entitlement.app_access || grant.global_member || grant.app_access",
+    },
+  ],
+  evaluateSharedCapabilities(context) {
+    return hasAnyFact(context.facts, [
+      entitlementFacts.appAccess,
+      grantFacts.globalMember,
+      grantFacts.appAccess,
+    ])
+      ? ["member_access"]
+      : [];
+  },
+};
+
 export const appProfiles: Record<AppSlug, AppProfile> = {
   repixelizer: repixelizerProfile,
   streampixels: streampixelsProfile,
   spotiverse: spotiverseProfile,
+  bifrost: bifrostProfile,
 };
 
 export function getAppProfile(appSlug: AppSlug): AppProfile {

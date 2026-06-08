@@ -2,7 +2,7 @@ export const providers = ["discord", "patreon", "github", "twitch", "youtube", "
 
 export type Provider = (typeof providers)[number];
 
-export const appSlugs = ["repixelizer", "streampixels", "spotiverse"] as const;
+export const appSlugs = ["repixelizer", "streampixels", "spotiverse", "bifrost"] as const;
 
 export type AppSlug = (typeof appSlugs)[number];
 

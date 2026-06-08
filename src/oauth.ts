@@ -888,14 +888,11 @@ async function evaluateDiscordEntitlements(options: {
   callback: OAuthCallbackContext;
   tokenSet: OAuthTokenSet;
 }): Promise<EntitlementEvaluation> {
-  if (options.callback.appSlug !== "repixelizer") {
-    return { facts: [], snapshots: [] };
-  }
-
   const policy = options.callback.entitlementPolicy;
   if (!policy || policy.kind !== "discord_role_access") {
     return { facts: [], snapshots: [] };
   }
+  const appSlug = options.callback.appSlug;
   const guildId = policy.guildId;
   const allowedRoleIds = policy.allowedRoleIds;
 
@@ -915,7 +912,7 @@ async function evaluateDiscordEntitlements(options: {
         {
           accountId: options.callback.accountId,
           provider: "discord",
-          scope: `repixelizer:discord_member:${guildId}`,
+          scope: `${appSlug}:discord_member:${guildId}`,
           evaluatedAt: new Date().toISOString(),
           isAllowed: false,
           reasonCode: "not_in_guild",
@@ -950,16 +947,16 @@ async function evaluateDiscordEntitlements(options: {
       {
         accountId: options.callback.accountId,
         provider: "discord",
-        scope: `repixelizer:discord_role_access:${guildId}`,
+        scope: `${appSlug}:discord_role_access:${guildId}`,
         evaluatedAt: new Date().toISOString(),
         isAllowed: matchedRoles.length > 0,
         reasonCode: matchedRoles.length > 0 ? "matched_role" : "missing_role",
         reasonDetail:
           matchedRoles.length > 0
-            ? "Matched a configured Repixelizer access role."
+            ? `Matched a configured ${appSlug} access role.`
             : allowedRoleIds.length
-              ? "User is in the guild but lacks the configured Repixelizer access role."
-              : "Repixelizer did not supply any Discord role ids in its entitlement policy.",
+              ? `User is in the guild but lacks the configured ${appSlug} access role.`
+              : `${appSlug} did not supply any Discord role ids in its entitlement policy.`,
         rawSummaryJson: {
           guildId,
           roles,
@@ -1037,14 +1034,11 @@ async function evaluatePatreonEntitlements(options: {
   callback: OAuthCallbackContext;
   tokenSet: OAuthTokenSet;
 }): Promise<EntitlementEvaluation> {
-  if (options.callback.appSlug !== "repixelizer") {
-    return { facts: [], snapshots: [] };
-  }
-
   const policy = options.callback.entitlementPolicy;
   if (!policy || policy.kind !== "patreon_membership_access") {
     return { facts: [], snapshots: [] };
   }
+  const appSlug = options.callback.appSlug;
 
   const profile = await fetchPatreonIdentity(options.tokenSet.accessToken);
   const members = includedPatreonMembers(profile);
@@ -1082,15 +1076,15 @@ async function evaluatePatreonEntitlements(options: {
       {
         accountId: options.callback.accountId,
         provider: "patreon",
-        scope: "repixelizer:patreon_membership_access",
+        scope: `${appSlug}:patreon_membership_access`,
         evaluatedAt: new Date().toISOString(),
         isAllowed,
         reasonCode: isAllowed ? "active_membership" : members.length ? "inactive_membership" : "missing_membership",
         reasonDetail: isAllowed
-          ? "Matched an active Patreon membership for Repixelizer access."
+          ? `Matched an active Patreon membership for ${appSlug} access.`
           : members.length
             ? "Patreon membership data was present but did not meet the active access policy."
-            : "Patreon did not return a membership matching the Repixelizer access policy.",
+            : `Patreon did not return a membership matching the ${appSlug} access policy.`,
         rawSummaryJson: {
           requiredTierTitle: policy.requiredTierTitle,
           memberCount: members.length,

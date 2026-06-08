@@ -463,18 +463,16 @@ function acceptsBackendCallback(config: HeimdallConfig, appSlug: AppSlug, handof
     return false;
   }
 
+  if ((config.appBackendCallbacks[appSlug] ?? []).includes(handoff.callbackUrl)) {
+    return true;
+  }
+
   if (appSlug === "repixelizer") {
-    return (
-      handoff.callbackUrl === "https://repixelizer.gamecult.org/api/auth/heimdall/callback" ||
-      (config.appBackendCallbacks.repixelizer ?? []).includes(handoff.callbackUrl)
-    );
+    return handoff.callbackUrl === "https://repixelizer.gamecult.org/api/auth/heimdall/callback";
   }
 
   if (appSlug === "spotiverse") {
-    return (
-      handoff.callbackUrl === "http://127.0.0.1:8796/auth/heimdall/callback" ||
-      (config.appBackendCallbacks.spotiverse ?? []).includes(handoff.callbackUrl)
-    );
+    return handoff.callbackUrl === "http://127.0.0.1:8796/auth/heimdall/callback";
   }
 
   return false;

@@ -88,6 +88,10 @@ Do not trust this file for the exact live HEAD. Always check git.
   local Heimdall account binding and resolves current Spotify access through
   `/v1/apps/spotiverse/managed-credentials/resolve` without storing provider
   refresh tokens.
+- Bifrost now has a `bifrost` app profile for Discord/Patreon member access.
+  Bifrost sends caller-owned KTLST Discord role and Patreon tier policies
+  through trusted backend-callback OAuth starts; Heimdall owns provider
+  OAuth/token custody and configured backend callback allowlisting.
 - Public Yggdrasil Heimdall has been deployed with the Spotiverse/Spotify code
   path, Spotify provider credentials, a Spotiverse shared secret, and an
   allowlisted loopback portal callback at
@@ -162,6 +166,19 @@ per-app role list.
 Patreon access is title-gated on the currently entitled tier title
 `Inner Sanctum`; do not use currency amount as the durable policy because
 currencies are weird little traps.
+
+Bifrost needs browser verification after deployment:
+
+- configure Heimdall with
+  `GC_ACCESS_APP_BIFROST_BACKEND_CALLBACK_URLS=https://bifrost.gamecult.org/auth/heimdall/callback`
+- configure Bifrost with `Heimdall__DiscordGuildId`,
+  `Heimdall__DiscordAllowedRoleIds__0=<KTLST-role-id>`, and
+  `Heimdall__PatreonTierTitle=Inner Sanctum`
+- start Discord sign-in from `https://bifrost.gamecult.org/` with a user that
+  has the KTLST cult-member role
+- start Patreon sign-in with a user that has the configured active tier
+- confirm Bifrost creates/updates a local account and active standard
+  membership while Heimdall keeps provider token custody
 
 ## Immediate Re-entry Instruction
 
