@@ -28,6 +28,8 @@ export interface HeimdallConfig {
   tokenEncryptionKeyBase64?: string;
   appSharedSecrets: Partial<Record<AppSlug, string>>;
   appBackendCallbacks: Partial<Record<AppSlug, string[]>>;
+  bifrostPatronSupportEndpoint?: string;
+  bifrostPatronSupportSecret?: string;
   storage: StorageConfig;
   providers: Record<Provider, ProviderClientConfig>;
 }
@@ -145,6 +147,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): HeimdallConfig
 
   if (env.GC_ACCESS_TOKEN_ENCRYPTION_KEY_BASE64) {
     config.tokenEncryptionKeyBase64 = env.GC_ACCESS_TOKEN_ENCRYPTION_KEY_BASE64;
+  }
+
+  if (env.GC_ACCESS_BIFROST_PATRON_SUPPORT_ENDPOINT) {
+    config.bifrostPatronSupportEndpoint = env.GC_ACCESS_BIFROST_PATRON_SUPPORT_ENDPOINT;
+  }
+
+  if (env.GC_ACCESS_BIFROST_PATRON_SUPPORT_SECRET) {
+    config.bifrostPatronSupportSecret = env.GC_ACCESS_BIFROST_PATRON_SUPPORT_SECRET;
   }
 
   if (env.GC_ACCESS_DATABASE_URL) {

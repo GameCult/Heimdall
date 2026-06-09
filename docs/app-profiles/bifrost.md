@@ -11,6 +11,8 @@ Heimdall owns:
 - provider token custody and refresh
 - Discord role entitlement evaluation
 - Patreon tier entitlement evaluation
+- Patreon membership profile reads used for Bifrost support sync
+- signed delivery of normalized patron support facts to Bifrost
 - signed app claims and backend handoff delivery
 
 Bifrost owns:
@@ -46,3 +48,31 @@ policies because a browser caller could forge the policy.
 
 Heimdall does not own Bifrost ledgers, patron points, votes, payout proposals,
 or work routing.
+
+## Patron Support Sync
+
+Bifrost patronage uses the same linked Patreon identity and membership reader as
+the Repixelizer entitlement path. There is not a second Patreon parser in
+Bifrost.
+
+`POST /v1/apps/bifrost/patron-support/sync` is an app-authenticated Heimdall
+backend route. Bifrost or an operator job calls it with:
+
+- `accountId`: the Heimdall account already linked through Patreon OAuth
+- `requiredTierTitle`: the Bifrost support tier title, usually `Inner Sanctum`
+- optional `currencyCode` and `supportedAtUtc` fallback values
+
+Heimdall refreshes the stored Patreon credential if needed, fetches the Patreon
+identity profile with memberships and currently entitled tiers, finds an active
+paid membership for the requested tier title, and POSTs a signed
+`RecurringSupportSnapshot` fact to Bifrost's
+`/heimdall/patron-support/events` endpoint.
+
+The outbound fact uses `X-Heimdall-Signature-256` with the shared
+`GC_ACCESS_BIFROST_PATRON_SUPPORT_SECRET`. Bifrost verifies that HMAC, resolves
+the Heimdall account id to its local user account, deduplicates by provider
+event id, records the support event, and derives patron points locally.
+
+This route is a bridge from auth-owned Patreon evidence to Bifrost-owned
+governance meaning. Heimdall still does not own points, votes, tiers, ledger
+history, or payout policy.

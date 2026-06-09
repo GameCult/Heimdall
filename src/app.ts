@@ -1,4 +1,4 @@
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import cors from "@fastify/cors";
 import Fastify, { type FastifyInstance } from "fastify";
 import { deliverBackendHandoff, type BackendHandoffPayload } from "./backend-handoff.js";
@@ -26,7 +26,12 @@ import { renderBrowserHandoffPage } from "./browser-handoff.js";
 import { type HeimdallConfig, loadConfig } from "./config.js";
 import { createTokenCustody, type TokenCustody } from "./custody.js";
 import { grantFact } from "./facts.js";
-import { createOAuthRuntimeRegistry, type OAuthRuntimeRegistry } from "./oauth.js";
+import {
+  createOAuthRuntimeRegistry,
+  fetchPatreonIdentity,
+  summarizePatreonMemberships,
+  type OAuthRuntimeRegistry,
+} from "./oauth.js";
 import { buildAuthorizationUrl, providerCatalog, providerExpectedEnv } from "./providers.js";
 import { createRuntimeKeyMaterial, signJwt, verifyJwt } from "./signing.js";
 import { createStore, type HeimdallStore } from "./store/index.js";
@@ -318,6 +323,15 @@ function secretMatches(expected: string | undefined, provided: string | undefine
   const expectedBuffer = Buffer.from(expected);
   const providedBuffer = Buffer.from(provided);
   return expectedBuffer.length === providedBuffer.length && timingSafeEqual(expectedBuffer, providedBuffer);
+}
+
+function signBifrostPatronSupportPayload(secret: string, body: string): string {
+  const signature = createHmac("sha256", secret).update(body).digest("hex");
+  return `sha256=${signature}`;
+}
+
+function centsToDecimalString(cents: number): string {
+  return (cents / 100).toFixed(2);
 }
 
 async function refreshLinkedIdentityCredentialIfNeeded(options: {
@@ -1417,6 +1431,162 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
       reply.code(201);
       return issued;
+    }
+  );
+
+  app.post<{
+    Params: { appSlug: AppSlug };
+    Body: {
+      accountId: string;
+      requiredTierTitle: string;
+      currencyCode?: string;
+      supportedAtUtc?: string;
+    };
+  }>(
+    "/v1/apps/:appSlug/patron-support/sync",
+    {
+      schema: {
+        params: {
+          type: "object",
+          required: ["appSlug"],
+          additionalProperties: false,
+          properties: {
+            appSlug: { type: "string", enum: [...appSlugs] },
+          },
+        },
+        body: {
+          type: "object",
+          required: ["accountId", "requiredTierTitle"],
+          additionalProperties: false,
+          properties: {
+            accountId: { type: "string", minLength: 1 },
+            requiredTierTitle: { type: "string", minLength: 1 },
+            currencyCode: { type: "string", minLength: 3, maxLength: 3 },
+            supportedAtUtc: { type: "string", minLength: 1 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const profile = getAppProfile(request.params.appSlug);
+      const providedSecret = getSharedSecret(request);
+
+      if (!secretMatches(config.appSharedSecrets[profile.slug], providedSecret)) {
+        reply.code(401);
+        return { error: "app_auth_required" };
+      }
+
+      if (profile.slug !== "bifrost") {
+        reply.code(400);
+        return { error: "patron_support_sync_only_available_for_bifrost", appSlug: profile.slug };
+      }
+
+      if (!config.bifrostPatronSupportEndpoint || !config.bifrostPatronSupportSecret) {
+        reply.code(503);
+        return { error: "bifrost_patron_support_not_configured" };
+      }
+
+      const storedLinkedIdentity = await store.findStoredLinkedIdentityForAccount(request.body.accountId, "patreon");
+      if (!storedLinkedIdentity?.accessTokenEncrypted) {
+        reply.code(404);
+        return { error: "patreon_identity_not_linked" };
+      }
+
+      const now = new Date().toISOString();
+      const linkedIdentity = await refreshLinkedIdentityCredentialIfNeeded({
+        config,
+        store,
+        tokenCustody,
+        oauthRuntimes,
+        linkedIdentity: storedLinkedIdentity,
+        now,
+      });
+      if (!linkedIdentity.accessTokenEncrypted) {
+        reply.code(404);
+        return { error: "patreon_identity_not_linked" };
+      }
+
+      const patreonProfile = await fetchPatreonIdentity(tokenCustody.decrypt(linkedIdentity.accessTokenEncrypted));
+      const memberships = summarizePatreonMemberships(patreonProfile);
+      const activeMembership = memberships.find(
+        (membership) =>
+          membership.isActivePaid &&
+          membership.currentlyEntitledAmountCents > 0 &&
+          membership.tierTitles.includes(request.body.requiredTierTitle)
+      );
+
+      if (!activeMembership) {
+        reply.code(404);
+        return {
+          error: "active_patreon_membership_not_found",
+          accountId: request.body.accountId,
+          requiredTierTitle: request.body.requiredTierTitle,
+          membershipCount: memberships.length,
+        };
+      }
+
+      const supportedAtUtc = request.body.supportedAtUtc ?? now;
+      const supportedDay = supportedAtUtc.slice(0, 10);
+      const currencyCode = activeMembership.campaignCurrency ?? request.body.currencyCode ?? "USD";
+      const supportFact = {
+        heimdallAccountId: request.body.accountId,
+        provider: "Patreon",
+        providerEventId: [
+          "patreon-membership-snapshot",
+          linkedIdentity.providerUserId,
+          activeMembership.memberId,
+          supportedDay,
+          activeMembership.currentlyEntitledAmountCents,
+        ].join(":"),
+        kind: "RecurringSupportSnapshot",
+        amount: Number(centsToDecimalString(activeMembership.currentlyEntitledAmountCents)),
+        currencyCode,
+        externalSupportId: `patreon-member:${activeMembership.memberId}`,
+        supportedAtUtc,
+        isCurrentRecurringSupport: true,
+        providerPayerId: linkedIdentity.providerUserId,
+        providerSubscriptionId: activeMembership.memberId,
+        notes: `Verified active Patreon membership for tier ${request.body.requiredTierTitle}.`,
+      };
+      const body = JSON.stringify(supportFact);
+      const bifrostResponse = await fetch(config.bifrostPatronSupportEndpoint, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-heimdall-signature-256": signBifrostPatronSupportPayload(config.bifrostPatronSupportSecret, body),
+        },
+        body,
+      });
+      const bifrostBody = await bifrostResponse.text();
+
+      await store.createAuditEvent({
+        accountId: request.body.accountId,
+        appSlug: "bifrost",
+        eventType: bifrostResponse.ok ? "bifrost_patron_support_synced" : "bifrost_patron_support_sync_failed",
+        eventPayloadJson: {
+          provider: "patreon",
+          requiredTierTitle: request.body.requiredTierTitle,
+          providerEventId: supportFact.providerEventId,
+          bifrostStatus: bifrostResponse.status,
+          bifrostResponse: bifrostBody,
+        },
+        createdAt: now,
+      });
+
+      if (!bifrostResponse.ok) {
+        reply.code(502);
+        return {
+          error: "bifrost_patron_support_rejected",
+          statusCode: bifrostResponse.status,
+          detail: bifrostBody,
+        };
+      }
+
+      return {
+        status: "synced",
+        supportFact,
+        bifrostResponse: bifrostBody,
+      };
     }
   );
 

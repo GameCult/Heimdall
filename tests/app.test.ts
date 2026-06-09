@@ -112,6 +112,7 @@ function getHeimdallContext(app: FastifyInstance) {
         publicJwk: { alg: "EdDSA"; kid: string; use: "sig"; [key: string]: unknown };
       };
       tokenCustody: {
+        encrypt(plaintext: string): string;
         decrypt(ciphertext: string): string;
       };
       store: InMemoryStore;
@@ -474,6 +475,120 @@ describe("Heimdall service", () => {
       );
       expect(verified.payload.capabilities).toEqual(expect.arrayContaining(["app_access", "queue_submit"]));
     }
+  });
+
+  it("syncs a linked Patreon membership into a signed Bifrost support fact", async () => {
+    const baseConfig = createTestConfig();
+    const config = {
+      ...baseConfig,
+      appSharedSecrets: {
+        ...baseConfig.appSharedSecrets,
+        bifrost: "bifrost-secret",
+      },
+      bifrostPatronSupportEndpoint: "https://bifrost.gamecult.org/heimdall/patron-support/events",
+      bifrostPatronSupportSecret: "bifrost-support-secret",
+    };
+    const store = new InMemoryStore();
+    const app = await buildApp({ config, store });
+    apps.push(app);
+
+    const context = getHeimdallContext(app);
+    const now = "2026-06-09T17:00:00.000Z";
+    await store.createAccount({
+      id: "heimdall-account-123",
+      createdAt: now,
+      lastSeenAt: now,
+      displayName: "Patron",
+    });
+    await store.upsertLinkedIdentity({
+      accountId: "heimdall-account-123",
+      provider: "patreon",
+      providerUserId: "patreon-user-456",
+      accessTokenEncrypted: context.tokenCustody.encrypt("patreon-access-token"),
+      refreshTokenEncrypted: context.tokenCustody.encrypt("patreon-refresh-token"),
+      tokenExpiresAt: "2099-06-09T18:00:00.000Z",
+      scopes: ["identity", "identity[email]"],
+      profileJson: { id: "patreon-user-456" },
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    let bifrostBody = "";
+    let bifrostSignature = "";
+    globalThis.fetch = async (input, init) => {
+      const url = String(input);
+      if (url.startsWith("https://www.patreon.com/api/oauth2/v2/identity")) {
+        expect(init?.headers).toEqual(expect.objectContaining({ Authorization: "Bearer patreon-access-token" }));
+        return new Response(
+          JSON.stringify({
+            data: { id: "patreon-user-456", type: "user", attributes: { full_name: "Patron" } },
+            included: [
+              {
+                id: "member-789",
+                type: "member",
+                attributes: {
+                  currently_entitled_amount_cents: 1500,
+                  last_charge_status: "Paid",
+                  patron_status: "active_patron",
+                },
+                relationships: {
+                  currently_entitled_tiers: { data: [{ id: "tier-inner", type: "tier" }] },
+                  campaign: { data: { id: "campaign-1", type: "campaign" } },
+                },
+              },
+              { id: "tier-inner", type: "tier", attributes: { title: "Inner Sanctum" } },
+              { id: "campaign-1", type: "campaign", attributes: { currency: "USD" } },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      }
+
+      if (url === "https://bifrost.gamecult.org/heimdall/patron-support/events") {
+        bifrostBody = String(init?.body ?? "");
+        const headers = init?.headers as Record<string, string>;
+        bifrostSignature = headers["x-heimdall-signature-256"] ?? "";
+        return new Response("processed", { status: 200 });
+      }
+
+      return new Response("unexpected request", { status: 500 });
+    };
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/apps/bifrost/patron-support/sync",
+      headers: {
+        "x-heimdall-app-secret": "bifrost-secret",
+      },
+      payload: {
+        accountId: "heimdall-account-123",
+        requiredTierTitle: "Inner Sanctum",
+        supportedAtUtc: now,
+      },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(bifrostSignature).toMatch(/^sha256=[0-9a-f]{64}$/);
+    expect(JSON.parse(bifrostBody)).toEqual({
+      heimdallAccountId: "heimdall-account-123",
+      provider: "Patreon",
+      providerEventId: "patreon-membership-snapshot:patreon-user-456:member-789:2026-06-09:1500",
+      kind: "RecurringSupportSnapshot",
+      amount: 15,
+      currencyCode: "USD",
+      externalSupportId: "patreon-member:member-789",
+      supportedAtUtc: now,
+      isCurrentRecurringSupport: true,
+      providerPayerId: "patreon-user-456",
+      providerSubscriptionId: "member-789",
+      notes: "Verified active Patreon membership for tier Inner Sanctum.",
+    });
+    expect(response.json()).toEqual(
+      expect.objectContaining({
+        status: "synced",
+        bifrostResponse: "processed",
+      })
+    );
   });
 
   it("redeems a completion code exactly once", async () => {

@@ -92,6 +92,12 @@ Do not trust this file for the exact live HEAD. Always check git.
   Bifrost sends caller-owned KTLST Discord role and Patreon tier policies
   through trusted backend-callback OAuth starts; Heimdall owns provider
   OAuth/token custody and configured backend callback allowlisting.
+- Bifrost patron support sync now reuses Heimdall's existing linked Patreon
+  identity and membership reader. `POST /v1/apps/bifrost/patron-support/sync`
+  is app-authenticated, refreshes the stored Patreon credential if needed,
+  reads active paid Patreon tier evidence, and emits a signed
+  `RecurringSupportSnapshot` to Bifrost's
+  `/heimdall/patron-support/events` intake.
 - Public Yggdrasil Heimdall has been deployed with the Spotiverse/Spotify code
   path, Spotify provider credentials, a Spotiverse shared secret, and an
   allowlisted loopback portal callback at
@@ -171,14 +177,21 @@ Bifrost needs browser verification after deployment:
 
 - configure Heimdall with
   `GC_ACCESS_APP_BIFROST_BACKEND_CALLBACK_URLS=https://bifrost.gamecult.org/auth/heimdall/callback`
+- configure Heimdall with `GC_ACCESS_APP_BIFROST_SHARED_SECRET`,
+  `GC_ACCESS_BIFROST_PATRON_SUPPORT_ENDPOINT=https://bifrost.gamecult.org/heimdall/patron-support/events`,
+  and `GC_ACCESS_BIFROST_PATRON_SUPPORT_SECRET`
 - configure Bifrost with `Heimdall__DiscordGuildId`,
   `Heimdall__DiscordAllowedRoleIds__0=<KTLST-role-id>`, and
   `Heimdall__PatreonTierTitle=Inner Sanctum`
+- configure Bifrost with the matching `Heimdall__PatronSupportIntakeSecret`
 - start Discord sign-in from `https://bifrost.gamecult.org/` with a user that
   has the KTLST cult-member role
 - start Patreon sign-in with a user that has the configured active tier
 - confirm Bifrost creates/updates a local account and active standard
   membership while Heimdall keeps provider token custody
+- trigger `/v1/apps/bifrost/patron-support/sync` for that linked Heimdall
+  account and confirm Bifrost records a Patreon recurring-support snapshot
+  without owning Patreon webhook or token custody
 
 ## Immediate Re-entry Instruction
 

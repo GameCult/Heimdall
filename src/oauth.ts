@@ -632,13 +632,16 @@ async function resolveDiscordIdentity(options: { accessToken: string }): Promise
   return identity;
 }
 
-async function fetchPatreonIdentity(accessToken: string): Promise<Record<string, unknown>> {
+export async function fetchPatreonIdentity(accessToken: string): Promise<Record<string, unknown>> {
   const url = new URL("https://www.patreon.com/api/oauth2/v2/identity");
   url.searchParams.set("include", "memberships.currently_entitled_tiers,memberships.campaign");
   url.searchParams.set("fields[user]", "email,full_name,image_url,thumb_url,url,vanity");
-  url.searchParams.set("fields[member]", "last_charge_status,patron_status");
+  url.searchParams.set(
+    "fields[member]",
+    "currently_entitled_amount_cents,last_charge_date,last_charge_status,patron_status,pledge_relationship_start"
+  );
   url.searchParams.set("fields[tier]", "title");
-  url.searchParams.set("fields[campaign]", "creation_name,url");
+  url.searchParams.set("fields[campaign]", "creation_name,currency,url");
 
   return fetchJson<Record<string, unknown>>(
     url,
@@ -1030,6 +1033,127 @@ function relatedPatreonTierIds(member: Record<string, unknown>): string[] {
     .filter((id): id is string => id !== undefined);
 }
 
+function relatedPatreonCampaignId(member: Record<string, unknown>): string | undefined {
+  const relationships = member.relationships;
+  if (typeof relationships !== "object" || relationships === null) {
+    return undefined;
+  }
+
+  const campaign = (relationships as Record<string, unknown>).campaign;
+  if (typeof campaign !== "object" || campaign === null) {
+    return undefined;
+  }
+
+  const data = (campaign as Record<string, unknown>).data;
+  if (typeof data !== "object" || data === null) {
+    return undefined;
+  }
+
+  const record = data as Record<string, unknown>;
+  return record.type === "campaign" && typeof record.id === "string" ? record.id : undefined;
+}
+
+function includedPatreonCampaignById(profile: Record<string, unknown>): Map<string, Record<string, unknown>> {
+  const included = profile.included;
+  const campaigns = new Map<string, Record<string, unknown>>();
+  if (!Array.isArray(included)) {
+    return campaigns;
+  }
+
+  for (const entry of included) {
+    if (typeof entry !== "object" || entry === null) {
+      continue;
+    }
+    const record = entry as Record<string, unknown>;
+    if (record.type === "campaign" && typeof record.id === "string") {
+      campaigns.set(record.id, record);
+    }
+  }
+
+  return campaigns;
+}
+
+function patreonTierTitle(tier: Record<string, unknown>): string | undefined {
+  const attributes = tier.attributes;
+  if (typeof attributes !== "object" || attributes === null) {
+    return undefined;
+  }
+
+  const title = (attributes as Record<string, unknown>).title;
+  return typeof title === "string" ? title : undefined;
+}
+
+function patreonMemberAttributes(member: Record<string, unknown>): Record<string, unknown> {
+  const attributes = member.attributes;
+  return typeof attributes === "object" && attributes !== null ? attributes as Record<string, unknown> : {};
+}
+
+function patreonMemberIsActivePaid(attributes: Record<string, unknown>): boolean {
+  const patronStatus = attributes.patron_status;
+  const lastChargeStatus = attributes.last_charge_status;
+  return patronStatus === "active_patron" && (lastChargeStatus === undefined || lastChargeStatus === null || lastChargeStatus === "Paid");
+}
+
+export interface PatreonMembershipSummary {
+  memberId: string;
+  campaignId?: string;
+  campaignCurrency?: string;
+  tierTitles: string[];
+  patronStatus?: string;
+  lastChargeStatus?: string;
+  currentlyEntitledAmountCents: number;
+  lastChargeDate?: string;
+  pledgeRelationshipStart?: string;
+  isActivePaid: boolean;
+}
+
+export function summarizePatreonMemberships(profile: Record<string, unknown>): PatreonMembershipSummary[] {
+  const tiersById = includedPatreonTierById(profile);
+  const campaignsById = includedPatreonCampaignById(profile);
+
+  return includedPatreonMembers(profile)
+    .filter((member) => typeof member.id === "string")
+    .map((member) => {
+      const attributes = patreonMemberAttributes(member);
+      const campaignId = relatedPatreonCampaignId(member);
+      const campaign = campaignId ? campaignsById.get(campaignId) : undefined;
+      const campaignAttributes =
+        campaign && typeof campaign.attributes === "object" && campaign.attributes !== null
+          ? campaign.attributes as Record<string, unknown>
+          : {};
+      const campaignCurrency =
+        typeof campaignAttributes.currency === "string"
+          ? campaignAttributes.currency
+          : undefined;
+      const currentlyEntitledAmountCents =
+        typeof attributes.currently_entitled_amount_cents === "number" ? attributes.currently_entitled_amount_cents : 0;
+      const patronStatus = typeof attributes.patron_status === "string" ? attributes.patron_status : undefined;
+      const lastChargeStatus =
+        typeof attributes.last_charge_status === "string" ? attributes.last_charge_status : undefined;
+      const lastChargeDate = typeof attributes.last_charge_date === "string" ? attributes.last_charge_date : undefined;
+      const pledgeRelationshipStart =
+        typeof attributes.pledge_relationship_start === "string" ? attributes.pledge_relationship_start : undefined;
+      const tierTitles = relatedPatreonTierIds(member)
+        .map((tierId) => tiersById.get(tierId))
+        .filter((tier): tier is Record<string, unknown> => tier !== undefined)
+        .map((tier) => patreonTierTitle(tier))
+        .filter((title): title is string => title !== undefined);
+
+      return {
+        memberId: member.id as string,
+        ...(campaignId !== undefined ? { campaignId } : {}),
+        ...(campaignCurrency !== undefined ? { campaignCurrency } : {}),
+        tierTitles,
+        ...(patronStatus !== undefined ? { patronStatus } : {}),
+        ...(lastChargeStatus !== undefined ? { lastChargeStatus } : {}),
+        currentlyEntitledAmountCents,
+        ...(lastChargeDate !== undefined ? { lastChargeDate } : {}),
+        ...(pledgeRelationshipStart !== undefined ? { pledgeRelationshipStart } : {}),
+        isActivePaid: patreonMemberIsActivePaid(attributes),
+      };
+    });
+}
+
 async function evaluatePatreonEntitlements(options: {
   callback: OAuthCallbackContext;
   tokenSet: OAuthTokenSet;
@@ -1041,33 +1165,10 @@ async function evaluatePatreonEntitlements(options: {
   const appSlug = options.callback.appSlug;
 
   const profile = await fetchPatreonIdentity(options.tokenSet.accessToken);
-  const members = includedPatreonMembers(profile);
-  const tiersById = includedPatreonTierById(profile);
-  const activeMembers = members.filter((member) => {
-    const attributes = member.attributes;
-    if (typeof attributes !== "object" || attributes === null) {
-      return false;
-    }
-
-    const patronStatus = (attributes as Record<string, unknown>).patron_status;
-    const lastChargeStatus = (attributes as Record<string, unknown>).last_charge_status;
-    const relatedTiers = relatedPatreonTierIds(member)
-      .map((tierId) => tiersById.get(tierId))
-      .filter((tier): tier is Record<string, unknown> => tier !== undefined);
-    const tierTitleMatches = relatedTiers.some((tier) => {
-      const tierAttributes = tier.attributes;
-      return (
-        typeof tierAttributes === "object" &&
-        tierAttributes !== null &&
-        (tierAttributes as Record<string, unknown>).title === policy.requiredTierTitle
-      );
-    });
-    return (
-      tierTitleMatches &&
-      patronStatus === "active_patron" &&
-      (lastChargeStatus === undefined || lastChargeStatus === null || lastChargeStatus === "Paid")
-    );
-  });
+  const members = summarizePatreonMemberships(profile);
+  const activeMembers = members.filter(
+    (member) => member.isActivePaid && member.tierTitles.includes(policy.requiredTierTitle)
+  );
   const isAllowed = activeMembers.length > 0;
 
   return {
@@ -1088,7 +1189,7 @@ async function evaluatePatreonEntitlements(options: {
         rawSummaryJson: {
           requiredTierTitle: policy.requiredTierTitle,
           memberCount: members.length,
-          entitledTierCount: tiersById.size,
+          entitledTierCount: new Set(members.flatMap((member) => member.tierTitles)).size,
           matchingMemberCount: activeMembers.length,
         },
       },
