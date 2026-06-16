@@ -39,12 +39,17 @@ Landed right now:
   Heimdall JWTs without phoning home on every guarded request
 - a read-only Odin/Eve provider advertisement export that names redacted
   CultCache witness document shapes and paths without touching live secrets
+- a daemon-owned CultCache boundary witness at `GC_ACCESS_CULTCACHE_PATH`
+  containing the Heimdall provider advertisement, command boundary, transport
+  profile, and Idunn daemon-health summary
+- optional Idunn daemon-health publication over `cultnet.transport.rudp.v0`
+  when `GC_ACCESS_IDUNN_RUDP_HEALTH` is configured
 
 Still not landed:
 
 - end-to-end app integrations in consumer repos
 - refresh/revocation flows and admin surfaces
-- runtime CultCache `.cc` witness writing or CultMesh publication
+- full redacted per-document Heimdall auth witness export or CultMesh publication
 
 Canonical docs:
 

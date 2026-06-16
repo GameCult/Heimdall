@@ -1,3 +1,5 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { appSlugs, providers, type AppSlug, type Provider } from "./contracts.js";
 
 export interface ProviderClientConfig {
@@ -15,8 +17,14 @@ export interface HeimdallConfig {
   serviceName: string;
   host: string;
   port: number;
+  workspaceRoot: string;
+  dataRoot: string;
+  cultCachePath: string;
   publicBaseUrl: string;
   issuer: string;
+  daemonId: string;
+  idunnRudpHealth: string | undefined;
+  idunnHealthContract: string;
   sessionTtlSeconds: number;
   refreshTtlSeconds: number;
   stateTtlSeconds: number;
@@ -85,11 +93,19 @@ function readList(envValue: string | undefined): string[] {
   return envValue?.split(",").map((entry) => entry.trim()).filter(Boolean) ?? [];
 }
 
+function readOptionalString(envValue: string | undefined): string | undefined {
+  const value = envValue?.trim();
+  return value ? value : undefined;
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): HeimdallConfig {
+  const sourceRoot = fileURLToPath(new URL("../", import.meta.url));
+  const workspaceRoot = path.resolve(sourceRoot, "..");
   const host = env.HOST ?? "127.0.0.1";
   const port = readInt(env.PORT, 4100);
   const publicBaseUrl = trimTrailingSlash(env.GC_ACCESS_BASE_URL ?? `http://${host}:${port}`);
   const issuer = trimTrailingSlash(env.GC_ACCESS_ISSUER ?? publicBaseUrl);
+  const dataRoot = env.GC_ACCESS_DATA_ROOT ?? path.join(workspaceRoot, ".heimdall-data");
   const storageBackend =
     env.GC_ACCESS_STORAGE_BACKEND === "postgres" || env.GC_ACCESS_DATABASE_URL ? "postgres" : "memory";
   const providersConfig = Object.fromEntries(
@@ -116,8 +132,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): HeimdallConfig
     serviceName: "heimdall",
     host,
     port,
+    workspaceRoot,
+    dataRoot,
+    cultCachePath: env.GC_ACCESS_CULTCACHE_PATH ?? path.join(dataRoot, "cultcache", "heimdall.service.cc"),
     publicBaseUrl,
     issuer,
+    daemonId: env.GC_ACCESS_IDUNN_DAEMON ?? "yggdrasil-heimdall",
+    idunnRudpHealth: readOptionalString(env.GC_ACCESS_IDUNN_RUDP_HEALTH),
+    idunnHealthContract: env.GC_ACCESS_IDUNN_HEALTH_CONTRACT ?? "heimdall.cultnet-rudp-provider-health",
     sessionTtlSeconds: readInt(env.GC_ACCESS_SESSION_TTL_SECONDS, 3600),
     refreshTtlSeconds: readInt(env.GC_ACCESS_REFRESH_TTL_SECONDS, 60 * 60 * 24 * 30),
     stateTtlSeconds: readInt(env.GC_ACCESS_STATE_TTL_SECONDS, 600),

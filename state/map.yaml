@@ -32,7 +32,7 @@ invariants:
   - Host apps verify signed claims locally and keep resource ownership checks local.
   - StreamPixels can reuse shared auth authority without centralizing streamer-audience data.
   - Spotiverse consumes Spotify as a Heimdall-managed credential; Spotiverse does not own Spotify refresh-token custody.
-  - Heimdall's first Odin/Eve provider advertisement is read-only: it names redacted CultCache witness document shapes and paths, but does not write `.cc` state or mutate auth truth.
+  - Heimdall's first Odin/Eve daemon boundary publication remains secret-safe: it writes only provider advertisement, command boundary, transport profile, and daemon-health summary state, not per-account auth truth.
   - Persistent state cruft is the same failure class as architecture cruft.
 
 data_flow:
@@ -58,6 +58,7 @@ active_subgoals:
   - Keep the shared architecture explicit and separate from app profiles.
   - Preserve the default boundary that app-domain data remains app-owned.
   - Align the plan to Heimdall as a Yggdrasil-hosted authority service.
+  - Publish Heimdall daemon health and boundary state for Idunn/Odin without moving auth truth out of Heimdall.
   - Verify the Discord and Patreon Repixelizer auth paths with real provider credentials, stable signing, persistent storage, and live browser callback verification.
   - Wire StreamPixels through Heimdall for Twitch/YouTube viewer identity and managed creator-provider credentials without moving StreamPixels domain state into Heimdall.
 
@@ -81,6 +82,7 @@ accepted_design:
   - StreamPixels viewer and creator provider OAuth should start through Heimdall; StreamPixels redeems one-time completion codes, owns local profile/connector binding, and resolves current provider access tokens from Heimdall by app-authenticated managed-credential calls.
   - Bifrost is a Heimdall app profile for Discord/Patreon member access. Bifrost owns the KTLST Discord role policy and Patreon tier policy; Heimdall owns provider OAuth, token custody, entitlement evaluation, and configured backend callback trust.
   - Bifrost patron support sync reuses Heimdall's existing linked Patreon identity and membership reader. Heimdall turns active paid Patreon tier evidence into signed support facts; Bifrost owns point/tier/vote derivation.
+  - Heimdall's first runtime Verse cut publishes a service-owned CultCache boundary store and optional Idunn RUDP health pulse; full redacted auth-document witness export remains a later pass.
 
 landed_baseline:
   - Shared architecture extracted into its own repo and renamed to Heimdall.
@@ -99,6 +101,7 @@ landed_baseline:
   - Bifrost now has a Heimdall app profile for Discord/Patreon member access, and backend callback trust is checked through configured app callback allowlists before legacy app-specific defaults.
   - Heimdall exposes `POST /v1/apps/bifrost/patron-support/sync` as an app-authenticated bridge from linked Patreon membership evidence to Bifrost's signed patron support intake endpoint.
   - A read-only `gamecult.eve.provider_advertisement.v1` export now advertises Heimdall provider/app surfaces plus redacted CultCache witness document paths for Odin/Eve discovery.
+  - Heimdall now writes a daemon-owned `GC_ACCESS_CULTCACHE_PATH` boundary store containing provider advertisement, command boundary, transport profile, and daemon-health summary state, and it can publish `heimdall.cultnet-rudp-provider-health` to Idunn over `cultnet.transport.rudp.v0` when configured.
 
 rejected_paths:
   - name: per_app_auth_copy_paste
@@ -109,5 +112,5 @@ rejected_paths:
     reason: reusing auth mechanics does not justify centralizing app-domain audience or product data
 
 current_status:
-  summary: Heimdall and StreamPixels are deployed on Yggdrasil for the StreamPixels auth migration slice. Heimdall has Twitch/YouTube provider credentials, the shared StreamPixels app secret, generic Twitch/YouTube identity and managed-credential custody runtimes, and a live fix for Twitch token responses that return scopes as arrays. Live StreamPixels Twitch sign-in through Heimdall has succeeded and redeemed a completion code. StreamPixels delegates Twitch/YouTube OAuth to Heimdall, redeems one-time completion codes server-side, writes its own httpOnly viewer session, stores local profile/creator binding state, and asks Heimdall for current provider access tokens when runtime code needs them. Spotiverse is added as a Heimdall app profile with Spotify as a managed credential provider. Bifrost is added as a Heimdall app profile for Discord/Patreon member access through backend-callback handoff, with Bifrost owning KTLST role and Patreon tier policies while Heimdall owns provider OAuth/token custody and callback allowlist enforcement. Bifrost patron support sync now reuses Heimdall's linked Patreon identity and membership reader to emit signed recurring-support facts to Bifrost; Bifrost still owns ledgers, patron points, voting weight, and audit meaning. The key boundary still holds: Heimdall owns provider OAuth and credential custody; host apps own local sessions, route/resource checks, runtime behavior, and app-domain data.
-  next_action: Deploy Heimdall with `GC_ACCESS_APP_BIFROST_SHARED_SECRET`, `GC_ACCESS_BIFROST_PATRON_SUPPORT_ENDPOINT`, and `GC_ACCESS_BIFROST_PATRON_SUPPORT_SECRET`, then trigger `/v1/apps/bifrost/patron-support/sync` for a linked Patreon account and verify Bifrost records the recurring support snapshot. After that, return to Spotiverse and StreamPixels browser verification.
+  summary: Heimdall and StreamPixels are deployed on Yggdrasil for the StreamPixels auth migration slice. Heimdall has Twitch/YouTube provider credentials, the shared StreamPixels app secret, generic Twitch/YouTube identity and managed-credential custody runtimes, and a live fix for Twitch token responses that return scopes as arrays. Live StreamPixels Twitch sign-in through Heimdall has succeeded and redeemed a completion code. StreamPixels delegates Twitch/YouTube OAuth to Heimdall, redeems one-time completion codes server-side, writes its own httpOnly viewer session, stores local profile/creator binding state, and asks Heimdall for current provider access tokens when runtime code needs them. Spotiverse is added as a Heimdall app profile with Spotify as a managed credential provider. Bifrost is added as a Heimdall app profile for Discord/Patreon member access through backend-callback handoff, with Bifrost owning KTLST role and Patreon tier policies while Heimdall owns provider OAuth/token custody and callback allowlist enforcement. Bifrost patron support sync now reuses Heimdall's linked Patreon identity and membership reader to emit signed recurring-support facts to Bifrost; Bifrost still owns ledgers, patron points, voting weight, and audit meaning. Heimdall now also has a daemon-owned boundary witness store and optional Idunn RUDP health pulse for the swarm transport cut. The key boundary still holds: Heimdall owns provider OAuth and credential custody; host apps own local sessions, route/resource checks, runtime behavior, and app-domain data.
+  next_action: Ship the CultLib snapshot through the Yggdrasil Heimdall deploy lane, deploy with a persistent `GC_ACCESS_CULTCACHE_PATH` plus `GC_ACCESS_IDUNN_RUDP_HEALTH=10.77.0.2:17870`, then update `check-heimdall.sh` to verify the witness store and confirm live Idunn accepts `yggdrasil-heimdall` from `10.77.0.1`. After that, return to Bifrost patron-support sync and the remaining browser verification passes.

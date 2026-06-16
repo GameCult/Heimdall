@@ -128,12 +128,12 @@ export interface EveProviderAdvertisementDocument {
   verseId: "gamecult";
   rootVerse: "asgard";
   canonicalService: "asgard.heimdall";
-  locatedService: "asgard.starfire.heimdall";
-  cultMeshAddress: "asgard.starfire.heimdall/eve/tui";
+  locatedService: "asgard.yggdrasil.heimdall";
+  cultMeshAddress: "asgard.yggdrasil.heimdall/eve/tui";
   title: "Heimdall";
   description: string;
   version: string;
-  status: "read_only_witness_planned";
+  status: "read_only_witness_planned" | "daemon_live";
   updatedAt: string;
   provider: {
     id: "heimdall";
@@ -169,8 +169,8 @@ export function buildHeimdallProviderAdvertisement(options: { updatedAt: string 
     verseId: "gamecult",
     rootVerse: "asgard",
     canonicalService: "asgard.heimdall",
-    locatedService: "asgard.starfire.heimdall",
-    cultMeshAddress: "asgard.starfire.heimdall/eve/tui",
+    locatedService: "asgard.yggdrasil.heimdall",
+    cultMeshAddress: "asgard.yggdrasil.heimdall/eve/tui",
     title: "Heimdall",
     description: "Shared GameCult auth/control-plane authority with redacted CultCache witness projections.",
     version: "read-only-witness-v0",
@@ -193,7 +193,7 @@ export function buildHeimdallProviderAdvertisement(options: { updatedAt: string 
       transport: "CultMesh provider advertisement; first cut is a read-only fixture/export.",
     },
     controlSurface: {
-      primary: "asgard.starfire.heimdall/eve/tui",
+      primary: "asgard.yggdrasil.heimdall/eve/tui",
       controls: {
         mode: "read-only",
         writes: false,
@@ -201,9 +201,9 @@ export function buildHeimdallProviderAdvertisement(options: { updatedAt: string 
       },
     },
     endpoints: [
-      "asgard.starfire.heimdall/eve/tui",
-      "asgard.starfire.heimdall/eve/gui",
-      "asgard.starfire.heimdall/witness",
+      "asgard.yggdrasil.heimdall/eve/tui",
+      "asgard.yggdrasil.heimdall/eve/gui",
+      "asgard.yggdrasil.heimdall/witness",
     ],
     routes: [
       {

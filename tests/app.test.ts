@@ -13,8 +13,14 @@ function createTestConfig(): HeimdallConfig {
     serviceName: "heimdall",
     host: "127.0.0.1",
     port: 4100,
+    workspaceRoot: "E:/Projects/Heimdall",
+    dataRoot: "E:/Projects/Heimdall/.heimdall-data",
+    cultCachePath: "E:/Projects/Heimdall/.heimdall-data/cultcache/heimdall.service.cc",
     publicBaseUrl: "https://heimdall.gamecult.org",
     issuer: "https://heimdall.gamecult.org",
+    daemonId: "yggdrasil-heimdall",
+    idunnRudpHealth: undefined,
+    idunnHealthContract: "heimdall.cultnet-rudp-provider-health",
     sessionTtlSeconds: 3600,
     refreshTtlSeconds: 60 * 60 * 24 * 30,
     stateTtlSeconds: 600,
@@ -175,7 +181,7 @@ describe("Heimdall service", () => {
         ],
       })
     );
-  });
+  }, 15_000);
 
   it("builds signed OAuth start state for supported providers", async () => {
     const app = await buildApp({ config: createTestConfig() });

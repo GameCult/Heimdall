@@ -57,6 +57,9 @@ What exists right now is:
   only public provider, required access, and queue protection
 - explicit state/doctrine scaffolding so the plan does not immediately turn into
   soup
+- a daemon-owned boundary witness store plus optional Idunn RUDP health pulse
+  so Heimdall can advertise provider/boundary truth to Odin and Idunn without
+  pretending HTTP/status checks own the daemon
 
 ## Primary objective
 

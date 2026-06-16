@@ -113,6 +113,13 @@ Do not trust this file for the exact live HEAD. Always check git.
   for the StreamPixels migration slice
 - the intended first deployment shape is a Heimdall service on Yggdrasil behind
   nginx, not an embedded cross-runtime shared library fantasy
+- Heimdall now writes a daemon-owned boundary witness store at
+  `GC_ACCESS_CULTCACHE_PATH` containing provider advertisement, command
+  boundary, transport profile, and daemon-health summary state
+- Heimdall can now publish `heimdall.cultnet-rudp-provider-health` to Idunn
+  over `cultnet.transport.rudp.v0` when `GC_ACCESS_IDUNN_RUDP_HEALTH` is
+  configured; HTTP `/healthz`, JWKS, discovery, systemd, and nginx routing
+  remain compatibility witnesses
 
 ## Critical Doctrine
 
@@ -127,6 +134,18 @@ Do not trust this file for the exact live HEAD. Always check git.
 ## Next Real Move
 
 Do not continue implementation automatically from a rehydrate-only request.
+
+If the user asks to continue on the Idunn/swarm transport cut, the current next
+move is deployment and live verification:
+
+- ship the `CultLib/packages/cultnet-ts` snapshot through the Yggdrasil
+  Heimdall deploy lane
+- configure persistent `GC_ACCESS_CULTCACHE_PATH` under `/srv/heimdall`
+- configure `GC_ACCESS_IDUNN_RUDP_HEALTH=10.77.0.2:17870`
+- redeploy Heimdall on Yggdrasil
+- update `check-heimdall.sh` to verify the witness store and the new `/healthz`
+  fields
+- confirm live Idunn accepts `yggdrasil-heimdall` from `10.77.0.1`
 
 If the user asks to continue on Spotiverse, the current next move is the real
 browser `/auth/login` flow through public Heimdall. The Yggdrasil SSH tunnel

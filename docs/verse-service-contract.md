@@ -40,8 +40,8 @@ Heimdall currently has durable Postgres storage for deployed auth/control-plane
 state. That is acceptable for live auth operations, but it is not enough for the
 GameCult Verse service contract by itself.
 
-The next state cut is a CultCache `.cc` witness/export path for Heimdall-owned
-auth/control-plane documents:
+The next full state cut is a redacted CultCache `.cc` witness/export path for
+Heimdall-owned auth/control-plane documents:
 
 - `heimdall.account.v0`
 - `heimdall.linked_identity.v0`
@@ -53,8 +53,12 @@ auth/control-plane documents:
 - `heimdall.app_profile.v0`
 - `heimdall.managed_credential_projection.v0`
 
-The `.cc` store does not need to replace Postgres in the first pass. The first
-pass should export a typed, redacted, operator-safe witness of Heimdall state so
+The `.cc` store does not need to replace Postgres in the first pass. The live
+first pass is narrower: it publishes a daemon-owned boundary store for Odin and
+Idunn. That store carries the Heimdall provider advertisement, command
+boundary, transport profile, and daemon-health summary without exporting
+per-account auth truth. The next pass should extend that runtime-owned boundary
+store into a typed, redacted, operator-safe witness of Heimdall auth state so
 CultMesh/Odin/Eve can inspect service truth without receiving provider secrets.
 
 Sensitive fields must be handled explicitly:
@@ -89,41 +93,48 @@ refreshing an entitlement snapshot. Heimdall accepts or denies those actions.
 
 1. Define Heimdall CultCache document shapes for redacted auth/control-plane
    witness state.
-2. Add a read-only export command from the current store into a `.cc` witness.
-3. Publish the witness through CultMesh with secret-safe projections only.
-4. Add an Eve DSL provider over the witness and existing health/discovery data.
-5. Register Heimdall's provider surface with Odin.
-6. Only after the witness path is stable, decide whether any live state should
+2. Publish a daemon-owned boundary `.cc` store plus Idunn daemon-health
+   summary from the live runtime.
+3. Extend the boundary store into redacted auth/document witness exports.
+4. Publish the witness through CultMesh with secret-safe projections only.
+5. Add an Eve DSL provider over the witness and existing health/discovery data.
+6. Register Heimdall's provider surface with Odin.
+7. Only after the witness path is stable, decide whether any live state should
    move from Postgres into a CultCache-backed primary store.
 
 The invariant: Heimdall owns shared auth truth, not app-domain truth. CultCache
 and CultMesh make Heimdall inspectable; they do not leak secrets or move product
 state into the auth authority.
 
-## Read-Only Witness First Cut
+## Runtime Boundary First Cut
 
-The current repo cut defines the read-only witness/ad surface without wiring a
-runtime writer or migrating live state.
+The current repo cut now publishes a daemon-owned boundary witness without
+migrating live auth truth out of Postgres or the HTTP auth surface.
 
 Authority map:
 
 - Owner: Heimdall remains the only owner of auth/control-plane mutation.
-- Inputs: static provider catalog, static app profiles, and the redacted witness
-  descriptor table in `src/verse-witness.ts`.
-- Outputs: `gamecult.eve.provider_advertisement.v1` JSON printed by
-  `pnpm export:provider-advertisement`.
-- Derived state: advertised CultCache paths and schema IDs are witness/export
-  targets. They do not prove that a live `.cc` writer exists yet.
-- Forbidden writers: Odin probes, Eve renderers, dashboards, and this export
-  command cannot mutate accounts, linked identities, grants, sessions, tokens,
-  completions, entitlements, audit events, or app profiles.
-- Shared paths: future CultCache export, CultMesh publication, and Eve lowering
-  should reuse the same document IDs and redaction doctrine.
+- Inputs: static provider catalog, static app profiles, deployment/runtime
+  config, and the redacted witness descriptor table in `src/verse-witness.ts`.
+- Outputs: the existing read-only `pnpm export:provider-advertisement` JSON plus
+  a runtime-owned `GC_ACCESS_CULTCACHE_PATH` store containing
+  `gamecult.eve.provider_advertisement.v1`, `heimdall.command_boundary.v1`,
+  `heimdall.transport_profile.v1`, and `idunn.daemon_health.v1` summary state.
+- Derived state: `/healthz`, JWKS, discovery, systemd, nginx routing, and the
+  boundary store are projections. They must not mutate auth truth or replace
+  explicit Heimdall API ownership.
+- Forbidden writers: Odin probes, Eve renderers, dashboards, Idunn, and the
+  boundary store cannot mutate accounts, linked identities, grants, sessions,
+  tokens, completions, entitlements, audit events, or app profiles.
+- Shared paths: the runtime boundary store, future redacted auth witness
+  exports, CultMesh publication, and Eve lowering should reuse the same
+  document IDs and redaction doctrine.
 - Deletion line: if a future writer needs app-domain fields or provider tokens
-  to make the surface useful, the design is wrong; keep those fields out or move
-  the concern back to the owning app/service.
+  to make the surface useful, the design is wrong; keep those fields out or
+  move the concern back to the owning app/service.
 
-The advertised witness descriptors currently name these redacted `.cc` targets:
+The boundary store currently names the daemon-owned publication seam. The next
+redacted auth witness cut should add these `.cc` targets:
 
 - `heimdall.account.v0` at `cultcache/heimdall/accounts/{accountId}.cc`
 - `heimdall.linked_identity.v0` at
