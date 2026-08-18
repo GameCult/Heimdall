@@ -37,7 +37,7 @@ describe("Heimdall verse runtime publication", () => {
       runtime: {
         storageBackend: "postgres",
         configuredProviders: ["discord", "twitch"],
-        appProfileCount: 4,
+        appProfileCount: 5,
       },
     });
     expect(bySchema.get("heimdall.command_boundary.v1")).toMatchObject({
@@ -56,7 +56,7 @@ describe("Heimdall verse runtime publication", () => {
     expect(bySchema.get("idunn.daemon_health")).toEqual([
       "yggdrasil-heimdall",
       "active",
-      "Heimdall auth runtime active; storage=postgres; providers=2/6; apps=4; healthTransport=CultNet/RUDP",
+      "Heimdall auth runtime active; storage=postgres; providers=2/6; apps=5; healthTransport=CultNet/RUDP",
       "2026-06-16T17:10:00.000Z",
       "heimdall.cultnet-rudp-provider-health",
       "daemon-published",

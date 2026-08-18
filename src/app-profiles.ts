@@ -197,11 +197,38 @@ const bifrostProfile: AppProfile = {
   },
 };
 
+const ghostlightProfile: AppProfile = {
+  slug: "ghostlight",
+  displayName: "Ghostlight Dungeon",
+  profileVersion: "2026-08-19",
+  identityProviders: ["discord"],
+  entitlementSources: [],
+  managedConnectionProviders: [],
+  capabilities: [
+    {
+      key: "app_access",
+      mode: "shared",
+      summary: "May enter the public Ghostlight Dungeon demo.",
+      sharedRule: identityFacts.authenticated,
+    },
+    {
+      key: "campaign_play",
+      mode: "hybrid",
+      summary: "May play campaigns owned by the authenticated Ghostlight account.",
+      localRequirement: "Ghostlight must combine app_access with local campaign ownership.",
+    },
+  ],
+  evaluateSharedCapabilities(context) {
+    return context.facts.has(identityFacts.authenticated) ? ["app_access"] : [];
+  },
+};
+
 export const appProfiles: Record<AppSlug, AppProfile> = {
   repixelizer: repixelizerProfile,
   streampixels: streampixelsProfile,
   spotiverse: spotiverseProfile,
   bifrost: bifrostProfile,
+  ghostlight: ghostlightProfile,
 };
 
 export function getAppProfile(appSlug: AppSlug): AppProfile {

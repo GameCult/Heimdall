@@ -37,6 +37,7 @@ describe("Heimdall Verse witness advertisement", () => {
       "streampixels",
       "spotiverse",
       "bifrost",
+      "ghostlight",
     ]);
     expect(advertisement.documents.map((document) => document.schemaId)).toEqual([...heimdallWitnessSchemaIds]);
   });
