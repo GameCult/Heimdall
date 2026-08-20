@@ -6,6 +6,7 @@ import { createHeimdallRuntimePulse, buildHeimdallHealthDetail, publishHeimdallV
 const config = loadConfig();
 const app = await buildApp({ config });
 const versePulseIntervalMs = 60_000;
+const healthPulseIntervalMs = 10_000;
 
 try {
   await app.listen({ host: config.host, port: config.port });
@@ -13,12 +14,21 @@ try {
   await publishVerseState().catch((error) => {
     console.error("Heimdall verse publication failed on startup:", error);
   });
-  const timer = setInterval(() => {
+  await publishHealthState().catch((error) => {
+    console.error("Heimdall signed health publication failed on startup:", error);
+  });
+  const verseTimer = setInterval(() => {
     void publishVerseState().catch((error) => {
       console.error("Heimdall verse publication failed on interval:", error);
     });
   }, versePulseIntervalMs);
-  timer.unref?.();
+  const healthTimer = setInterval(() => {
+    void publishHealthState().catch((error) => {
+      console.error("Heimdall signed health publication failed on interval:", error);
+    });
+  }, healthPulseIntervalMs);
+  verseTimer.unref?.();
+  healthTimer.unref?.();
 } catch (error) {
   app.log.error(error);
   process.exitCode = 1;
@@ -27,6 +37,10 @@ try {
 async function publishVerseState(): Promise<void> {
   const pulse = createHeimdallRuntimePulse(config);
   await publishHeimdallVerseState(config, pulse);
+}
+
+async function publishHealthState(): Promise<void> {
+  const pulse = createHeimdallRuntimePulse(config);
   await publishIdunnRudpHealth(config, {
     daemonId: config.daemonId,
     state: "active",
