@@ -22,11 +22,7 @@ try {
       console.error("Heimdall verse publication failed on interval:", error);
     });
   }, versePulseIntervalMs);
-  const healthTimer = setInterval(() => {
-    void publishHealthState().catch((error) => {
-      console.error("Heimdall signed health publication failed on interval:", error);
-    });
-  }, healthPulseIntervalMs);
+  void runHealthPulseLoop();
   verseTimer.unref?.();
 } catch (error) {
   app.log.error(error);
@@ -46,4 +42,13 @@ async function publishHealthState(): Promise<void> {
     detail: buildHeimdallHealthDetail(config, pulse),
     observedAt: pulse.updatedAt,
   });
+}
+
+async function runHealthPulseLoop(): Promise<void> {
+  for (;;) {
+    await new Promise((resolve) => setTimeout(resolve, healthPulseIntervalMs));
+    await publishHealthState().catch((error) => {
+      console.error("Heimdall signed health publication failed on interval:", error);
+    });
+  }
 }
