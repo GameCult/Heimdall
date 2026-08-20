@@ -120,6 +120,16 @@ Do not trust this file for the exact live HEAD. Always check git.
   over `cultnet.transport.rudp.v0` when `GC_ACCESS_IDUNN_RUDP_HEALTH` is
   configured; HTTP `/healthz`, JWKS, discovery, systemd, and nginx routing
   remain compatibility witnesses
+- Yggdrasil now runs Heimdall commit
+  `2a905354b9dc85101463030dea9045c1561a4638`. Heimdall persists its private
+  provider-health identity at `/srv/heimdall/keys/provider-health-identity.cc`
+  and publishes canonical signed health independently of the slower Verse
+  snapshot cadence. Idunn owns the exact root trust binding, authenticated
+  admission, lifecycle decision, and redacted public `.cc` projection.
+- Odin commit `67f215fb57f688f5f8258ccc1dd7bd4288c631da` fixes Idunn's RUDP health and
+  public-query listeners so `EINTR` retries instead of killing the listener.
+  Live proof showed repeated authenticated Heimdall admissions and
+  `observe (daemon is healthy)` with both services active and zero restarts.
 
 ## Critical Doctrine
 
@@ -135,17 +145,10 @@ Do not trust this file for the exact live HEAD. Always check git.
 
 Do not continue implementation automatically from a rehydrate-only request.
 
-If the user asks to continue on the Idunn/swarm transport cut, the current next
-move is deployment and live verification:
-
-- ship the `CultLib/packages/cultnet-ts` snapshot through the Yggdrasil
-  Heimdall deploy lane
-- configure persistent `GC_ACCESS_CULTCACHE_PATH` under `/srv/heimdall`
-- configure `GC_ACCESS_IDUNN_RUDP_HEALTH=10.77.0.2:17870`
-- redeploy Heimdall on Yggdrasil
-- update `check-heimdall.sh` to verify the witness store and the new `/healthz`
-  fields
-- confirm live Idunn accepts `yggdrasil-heimdall` from `10.77.0.1`
+The Idunn/swarm health transport cut is live. Do not regress Heimdall to
+unsigned `idunn.daemon_health`, merge its private key into Idunn, or make HTTP
+health an authority. The next product work is the Bifrost and remaining browser
+verification listed below.
 
 If the user asks to continue on Spotiverse, the current next move is the real
 browser `/auth/login` flow through public Heimdall. The Yggdrasil SSH tunnel
