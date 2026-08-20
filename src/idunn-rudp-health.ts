@@ -1,4 +1,5 @@
 import dgram from "node:dgram";
+import { randomUUID } from "node:crypto";
 import { encode } from "@msgpack/msgpack";
 import {
   encodeCultNetMessageForWire,
@@ -7,12 +8,19 @@ import {
   type CultNetRudpPacket,
 } from "cultnet-ts";
 import type { HeimdallConfig } from "./config.js";
+import {
+  openOrEnrollProviderHealthIdentity,
+  signProviderHealthPayload,
+} from "./provider-health-identity.js";
 
 const CULTNET_RUDP_PROTOCOL_ID = "cultnet.transport.rudp.v0";
 const IDUNN_HEALTH_RUDP_CONNECTION_ID = 0x1d0d0001;
 const RUDP_HEALTH_CONNECT_ATTEMPTS = 3;
 const RUDP_PULSE_POST_SEND_GRACE_MS = 1000;
 const RUDP_CONNECT_TO_DATA_GRACE_MS = 300;
+const SIGNED_DAEMON_HEALTH_SCHEMA = "idunn.signed_daemon_health.v1";
+const publisherIncarnationId = randomUUID();
+let publisherSequence = 0;
 
 type Endpoint = {
   host: string;
@@ -59,7 +67,7 @@ async function publishIdunnRudpHealthOnce(
     const connect = buildConnectPacket();
     await sendPacket(socket, endpoint, connect);
     await sleep(RUDP_CONNECT_TO_DATA_GRACE_MS);
-    const payload = buildDocumentPutPayload(config, health);
+    const payload = await buildSignedDocumentPutPayload(config, health);
     await sendPacket(socket, endpoint, buildSchemaDataPacket(payload));
     await sleep(RUDP_PULSE_POST_SEND_GRACE_MS);
   } finally {
@@ -67,26 +75,41 @@ async function publishIdunnRudpHealthOnce(
   }
 }
 
-function buildDocumentPutPayload(config: HeimdallConfig, health: IdunnHealthInput): Uint8Array {
-  const recordPayload = encode([
+async function buildSignedDocumentPutPayload(config: HeimdallConfig, health: IdunnHealthInput): Promise<Uint8Array> {
+  const identity = await openOrEnrollProviderHealthIdentity(config.providerHealthIdentityPath);
+  publisherSequence += 1;
+  const unsigned = [
+    SIGNED_DAEMON_HEALTH_SCHEMA,
     health.daemonId,
+    config.idunnHealthContract,
+    "heimdall-service",
     health.state,
     health.detail,
-    health.observedAt,
-    config.idunnHealthContract,
-    "daemon-published",
-    CULTNET_RUDP_PROTOCOL_ID,
-  ]);
+    identity.identityId,
+    publisherIncarnationId,
+    publisherSequence,
+    Date.parse(health.observedAt),
+    null,
+    null,
+    null,
+    null,
+    "ed25519",
+    new Uint8Array(),
+    false,
+  ];
+  const signature = signProviderHealthPayload(identity, encode(unsigned));
+  const recordPayload = encode([...unsigned.slice(0, 15), signature, false]);
   const message: CultNetDocumentPutRawMessage = {
     schemaVersion: "cultnet.document_put_raw.v0",
     messageId: `heimdall-health:${health.daemonId}:${health.observedAt.replace(/[:.]/g, "-")}`,
     document: {
-      schemaId: "idunn.daemon_health",
+      schemaId: "idunn.signed_daemon_health",
       recordKey: health.daemonId,
       storedAt: health.observedAt,
       payloadEncoding: "messagepack",
       payload: recordPayload,
       sourceRuntimeId: "heimdall-service",
+      sourceAgentId: identity.identityId,
       sourceRole: "daemon-health-publisher",
       tags: [CULTNET_RUDP_PROTOCOL_ID],
     },

@@ -25,6 +25,7 @@ export interface HeimdallConfig {
   daemonId: string;
   idunnRudpHealth: string | undefined;
   idunnHealthContract: string;
+  providerHealthIdentityPath: string;
   sessionTtlSeconds: number;
   refreshTtlSeconds: number;
   stateTtlSeconds: number;
@@ -140,6 +141,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): HeimdallConfig
     daemonId: env.GC_ACCESS_IDUNN_DAEMON ?? "yggdrasil-heimdall",
     idunnRudpHealth: readOptionalString(env.GC_ACCESS_IDUNN_RUDP_HEALTH),
     idunnHealthContract: env.GC_ACCESS_IDUNN_HEALTH_CONTRACT ?? "heimdall.cultnet-rudp-provider-health",
+    providerHealthIdentityPath:
+      env.GC_ACCESS_PROVIDER_HEALTH_IDENTITY_PATH ?? path.join(dataRoot, "provider-health-identity.cc"),
     sessionTtlSeconds: readInt(env.GC_ACCESS_SESSION_TTL_SECONDS, 3600),
     refreshTtlSeconds: readInt(env.GC_ACCESS_REFRESH_TTL_SECONDS, 60 * 60 * 24 * 30),
     stateTtlSeconds: readInt(env.GC_ACCESS_STATE_TTL_SECONDS, 600),

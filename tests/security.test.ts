@@ -19,6 +19,7 @@ function createTestConfig(overrides: Partial<HeimdallConfig> = {}): HeimdallConf
     daemonId: "yggdrasil-heimdall",
     idunnRudpHealth: undefined,
     idunnHealthContract: "heimdall.cultnet-rudp-provider-health",
+    providerHealthIdentityPath: "E:/Projects/Heimdall/.heimdall-data/provider-health-identity.cc",
     sessionTtlSeconds: 3600,
     refreshTtlSeconds: 60 * 60 * 24 * 30,
     stateTtlSeconds: 600,

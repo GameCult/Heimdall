@@ -14,6 +14,9 @@ importers:
       '@msgpack/msgpack':
         specifier: ^3.1.3
         version: 3.1.3
+      cultcache-ts:
+        specifier: file:../CultLib/packages/cultcache-ts
+        version: file:../CultLib/packages/cultcache-ts
       cultnet-ts:
         specifier: file:../CultLib/packages/cultnet-ts
         version: file:../CultLib/packages/cultnet-ts
