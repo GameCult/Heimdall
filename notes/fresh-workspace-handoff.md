@@ -126,10 +126,12 @@ Do not trust this file for the exact live HEAD. Always check git.
   and publishes canonical signed health independently of the slower Verse
   snapshot cadence. Idunn owns the exact root trust binding, authenticated
   admission, lifecycle decision, and redacted public `.cc` projection.
-- Odin commit `67f215fb57f688f5f8258ccc1dd7bd4288c631da` fixes Idunn's RUDP health and
-  public-query listeners so `EINTR` retries instead of killing the listener.
-  Live proof showed repeated authenticated Heimdall admissions and
-  `observe (daemon is healthy)` with both services active and zero restarts.
+- Odin commit `5586910fa704b8a0d330b90a902a89b99566db77` fixes Idunn's RUDP health
+  and public-query listeners so `EINTR` retries instead of killing the
+  listener, and treats its whole-second ingress timestamp as the interval it
+  represents when checking a publisher's millisecond clock. Live proof showed
+  seven consecutive authenticated Heimdall admissions at the intended cadence
+  with both services active and zero restarts.
 
 ## Critical Doctrine
 
