@@ -28,7 +28,6 @@ try {
     });
   }, healthPulseIntervalMs);
   verseTimer.unref?.();
-  healthTimer.unref?.();
 } catch (error) {
   app.log.error(error);
   process.exitCode = 1;
