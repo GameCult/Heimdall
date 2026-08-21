@@ -70,6 +70,8 @@ export async function startHeimdallPrivateCommandPlane(
           ? "heimdall.auth_begin_command.v1"
           : request.operation === "heimdall.auth.complete"
             ? "heimdall.auth_complete_command.v1"
+            : request.operation === "heimdall.auth.refresh"
+              ? "heimdall.auth_refresh_command.v1"
             : undefined;
         if (!expectedContentSchema || envelope.contentSchema !== expectedContentSchema) {
           throw new Error("Private command content schema does not match its operation.");
@@ -158,7 +160,48 @@ async function executePrivateCommand(
 ): Promise<{ status: string; payloadSchema: string; payload: Record<string, unknown> }> {
   if (operation === "heimdall.auth.begin") return await beginAuth(app, config, appSlug, payload);
   if (operation === "heimdall.auth.complete") return await completeAuth(app, appSlug, payload);
+  if (operation === "heimdall.auth.refresh") return await refreshAuth(app, config, appSlug, payload);
   throw new Error(`Unsupported Heimdall private operation '${operation}'.`);
+}
+
+async function refreshAuth(
+  app: FastifyInstance,
+  config: HeimdallConfig,
+  appSlug: AppSlug,
+  payload: Record<string, unknown>,
+): Promise<{ status: string; payloadSchema: string; payload: Record<string, unknown> }> {
+  const refreshToken = String(payload.refreshToken ?? "");
+  if (!refreshToken) throw new Error("Auth refresh requires the app's encrypted refresh claim.");
+  const entitlementPolicy = parseEntitlementPolicy(payload.entitlementPolicy);
+  if (appSlug === "ghostlight" && (!entitlementPolicy || entitlementPolicy.kind !== "discord_role_access")) {
+    throw new Error("Ghostlight refresh requires its caller-owned Discord role policy.");
+  }
+  const refreshed = await app.inject({
+    method: "POST",
+    url: `/v1/apps/${appSlug}/sessions/refresh`,
+    headers: { "x-heimdall-app-secret": config.appSharedSecrets[appSlug] ?? "" },
+    payload: {
+      refreshToken,
+      ...(entitlementPolicy ? { entitlementPolicy } : {}),
+    },
+  });
+  const refreshedPayload = refreshed.json<Record<string, unknown>>();
+  if (refreshed.statusCode !== 201) {
+    return {
+      status: "denied",
+      payloadSchema: "heimdall.auth_refresh_receipt.v1",
+      payload: {
+        schema: "heimdall.auth_refresh_receipt.v1",
+        status: "denied",
+        error: String(refreshedPayload.error ?? "refresh_denied"),
+      },
+    };
+  }
+  return {
+    status: "accepted",
+    payloadSchema: "heimdall.auth_refresh_receipt.v1",
+    payload: { ...refreshedPayload, schema: "heimdall.auth_refresh_receipt.v1", status: "authenticated" },
+  };
 }
 
 async function beginAuth(

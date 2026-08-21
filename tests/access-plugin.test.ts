@@ -136,6 +136,28 @@ describe("Heimdall Eve access plugin", () => {
     expect(completion.status).toBe("authenticated");
     expect(completion.accessToken).toEqual(expect.any(String));
 
+    const refreshEnvelope = sealPrivateEnvelope({
+      appSlug: "ghostlight",
+      operation: "heimdall.auth.refresh",
+      contentSchema: "heimdall.auth_refresh_command.v1",
+      idempotencyKey: "refresh-1",
+      secret,
+      payload: {
+        refreshToken: completion.refreshToken,
+        entitlementPolicy: {
+          kind: "discord_role_access",
+          guildId: "gamecult-guild",
+          allowedRoleIds: ["role-ktlst"],
+        },
+      },
+    });
+    const refreshResponse = await invoke(plane.endpoint, "heimdall.auth.refresh", "transport-refresh-1", refreshEnvelope);
+    expect(refreshResponse.status).toBe("accepted");
+    const refresh = openPrivateEnvelope(decodeEnvelope(refreshResponse.payload), secret);
+    expect(refresh).toMatchObject({ schema: "heimdall.auth_refresh_receipt.v1", status: "authenticated" });
+    expect(refresh.accessToken).toEqual(expect.any(String));
+    expect(refresh.refreshToken).toEqual(expect.any(String));
+
     const retry = await invoke(plane.endpoint, "heimdall.auth.complete", "transport-complete-retry", completeEnvelope);
     expect(openPrivateEnvelope(decodeEnvelope(retry.payload), secret)).toEqual(completion);
 

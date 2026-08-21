@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "heimdall.auth_refresh_receipt.v1",
+  "type": "object",
+  "required": ["schema", "status"],
+  "properties": {
+    "schema": { "const": "heimdall.auth_refresh_receipt.v1" },
+    "status": { "enum": ["authenticated", "denied"] },
+    "error": { "type": "string" },
+    "accessToken": { "type": "string", "minLength": 1 },
+    "refreshToken": { "type": "string", "minLength": 1 },
+    "session": { "type": "object" },
+    "refresh": { "type": "object" },
+    "account": { "type": "object" },
+    "sharedCapabilities": { "type": "array", "items": { "type": "string" } }
+  },
+  "additionalProperties": true
+}

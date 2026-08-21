@@ -1415,7 +1415,9 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           detail: error instanceof Error ? error.message : "Invalid entitlement policy definition.",
         };
       }
-      if (entitlementPolicies.length > 0 && request.params.appSlug !== "repixelizer") {
+      const trustedGhostlightRefresh = request.params.appSlug === "ghostlight"
+        && request.headers["x-heimdall-app-secret"] === config.appSharedSecrets.ghostlight;
+      if (entitlementPolicies.length > 0 && request.params.appSlug !== "repixelizer" && !trustedGhostlightRefresh) {
         reply.code(400);
         return {
           error: "untrusted_entitlement_policy",
