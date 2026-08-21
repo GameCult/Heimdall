@@ -12,9 +12,9 @@ objective:
     Create a shared auth authority service that Repixelizer, StreamPixels, and
     future GameCult-hosted experiments can consume.
   current: >
-    Migrate StreamPixels viewer and creator OAuth onto Heimdall while keeping
-    StreamPixels-owned viewer profiles, creator memberships, connector
-    bindings, runtime state, and audience data local.
+    Publish the Heimdall Eve access plugin and private CultNet authentication
+    plane, then migrate Ghostlight onto app-local sessions without moving
+    campaign or membership authority into Heimdall.
 
 constraints:
   - Heimdall owns auth/control-plane authority; app-domain data stays app-owned by default.
@@ -34,6 +34,8 @@ invariants:
   - Spotiverse consumes Spotify as a Heimdall-managed credential; Spotiverse does not own Spotify refresh-token custody.
   - Heimdall's first Odin/Eve daemon boundary publication remains secret-safe: it writes only provider advertisement, command boundary, transport profile, and daemon-health summary state, not per-account auth truth.
   - Heimdall owns its persistent provider-health signing identity and signed observations; Idunn owns root-bound admission and the public provider-health projection. Unsigned health is never lifecycle authority.
+  - Heimdall owns OAuth attempts and completion redemption; the Eve access plugin and browser can project or carry one opaque handle but cannot grant access.
+  - Private auth commands are app-secret, source-runtime, expiry, nonce, and idempotency bound; sensitive completion claims remain AES-GCM wrapped until the app backend receives them.
   - Persistent state cruft is the same failure class as architecture cruft.
 
 data_flow:
@@ -56,6 +58,7 @@ data_flow:
     - reject per-request auth round-trip chatter
 
 active_subgoals:
+  - Migrate Ghostlight to the gamecult.heimdall.access plugin and private command plane.
   - Keep the shared architecture explicit and separate from app profiles.
   - Preserve the default boundary that app-domain data remains app-owned.
   - Align the plan to Heimdall as a Yggdrasil-hosted authority service.
@@ -64,6 +67,8 @@ active_subgoals:
   - Wire StreamPixels through Heimdall for Twitch/YouTube viewer identity and managed creator-provider credentials without moving StreamPixels domain state into Heimdall.
 
 accepted_design:
+  - `gamecult.heimdall.access` owns access-gate representation and browser navigation semantics; it has no access-grant or provider-state authority.
+  - Heimdall's loopback CultNet operation service owns authenticated auth begin/complete commands, while retained HTTP integrations remain supported for existing consumers.
   - `docs/architecture.md` is the canonical shared architecture note.
   - `docs/service-contract.md` records the concrete HTTP/JWKS contract of the landed service slice.
   - `docs/app-profiles/*.md` are thin app bindings, not duplicate brains.
@@ -86,6 +91,7 @@ accepted_design:
   - Heimdall's first runtime Verse cut publishes a service-owned CultCache boundary store and optional Idunn RUDP health pulse; full redacted auth-document witness export remains a later pass.
 
 landed_baseline:
+  - The Heimdall access plugin, persistent OAuth attempts, encrypted private CultNet commands, conformance fixtures, and browser reference adapter are implemented and locally verified.
   - Shared architecture extracted into its own repo and renamed to Heimdall.
   - Repixelizer and StreamPixels app-profile notes created.
   - Repo-local state, handoff, and compaction scaffolding created.
@@ -114,5 +120,5 @@ rejected_paths:
     reason: reusing auth mechanics does not justify centralizing app-domain audience or product data
 
 current_status:
-  summary: Heimdall is deployed on Yggdrasil at commit `2a905354b9dc85101463030dea9045c1561a4638`. Its daemon-owned boundary witness remains secret-safe, and its lifecycle health now crosses CultNet/RUDP as canonical signed state from a persistent machine-bound identity. Idunn has the exact root trust binding, admits every pulse as authenticated, evaluates Heimdall healthy, and publishes the redacted provider projection. Odin commit `5586910fa704b8a0d330b90a902a89b99566db77` keeps Idunn's UDP listeners alive across interrupted system calls and correctly compares millisecond publisher observations against its coarse whole-second ingress clock. The deployment brake is engaged; Heimdall and Idunn are active with zero restarts.
-  next_action: Return to Bifrost patron-support sync and the remaining browser verification passes. Preserve the signed health owner split: Heimdall signs observations; Idunn admits and projects them.
+  summary: The repository now contains the gamecult.heimdall.access Eve plugin, persistent auth attempts, and an authenticated encrypted loopback CultNet command plane for Ghostlight. The prior Yggdrasil release remains live until this commit is admitted through Idunn; signed health ownership remains unchanged.
+  next_action: Commit and push this Heimdall cut, then update Idunn/Odin deployment truth and migrate Ghostlight to the plugin/private-command contract.

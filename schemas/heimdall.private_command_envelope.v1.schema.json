@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "heimdall.private_command_envelope.v1",
+  "type": "object",
+  "required": ["schema", "appSlug", "operation", "contentSchema", "issuedAt", "expiresAt", "nonce", "idempotencyKey", "iv", "ciphertext", "authTag", "signature"],
+  "properties": {
+    "schema": { "const": "heimdall.private_command_envelope.v1" },
+    "appSlug": { "type": "string", "minLength": 1 },
+    "operation": { "type": "string", "minLength": 1 },
+    "contentSchema": { "type": "string", "minLength": 1 },
+    "issuedAt": { "type": "string", "format": "date-time" },
+    "expiresAt": { "type": "string", "format": "date-time" },
+    "nonce": { "type": "string", "minLength": 16 },
+    "idempotencyKey": { "type": "string", "minLength": 1 },
+    "iv": { "type": "string", "minLength": 16 },
+    "ciphertext": { "type": "string" },
+    "authTag": { "type": "string", "minLength": 16 },
+    "signature": { "type": "string", "minLength": 32 }
+  },
+  "additionalProperties": false
+}

@@ -17,6 +17,8 @@ export interface HeimdallConfig {
   serviceName: string;
   host: string;
   port: number;
+  privateCommandHost?: string;
+  privateCommandPort?: number;
   workspaceRoot: string;
   dataRoot: string;
   cultCachePath: string;
@@ -36,6 +38,7 @@ export interface HeimdallConfig {
   signingKeyId?: string;
   tokenEncryptionKeyBase64?: string;
   appSharedSecrets: Partial<Record<AppSlug, string>>;
+  appRuntimeIds?: Partial<Record<AppSlug, string[]>>;
   appBackendCallbacks: Partial<Record<AppSlug, string[]>>;
   bifrostPatronSupportEndpoint?: string;
   bifrostPatronSupportSecret?: string;
@@ -128,11 +131,21 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): HeimdallConfig
       })
       .filter(([, value]) => Array.isArray(value) && value.length > 0)
   ) as Partial<Record<AppSlug, string[]>>;
+  const appRuntimeIds = Object.fromEntries(
+    appSlugs
+      .map((appSlug) => {
+        const envKey = `GC_ACCESS_APP_${appSlug.toUpperCase()}_RUNTIME_IDS`;
+        return [appSlug, readList(env[envKey])];
+      })
+      .filter(([, value]) => Array.isArray(value) && value.length > 0)
+  ) as Partial<Record<AppSlug, string[]>>;
 
   const config: HeimdallConfig = {
     serviceName: "heimdall",
     host,
     port,
+    privateCommandHost: env.GC_ACCESS_PRIVATE_COMMAND_HOST ?? "127.0.0.1",
+    privateCommandPort: readInt(env.GC_ACCESS_PRIVATE_COMMAND_PORT, 4101),
     workspaceRoot,
     dataRoot,
     cultCachePath: env.GC_ACCESS_CULTCACHE_PATH ?? path.join(dataRoot, "cultcache", "heimdall.service.cc"),
@@ -149,6 +162,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): HeimdallConfig
     completionTtlSeconds: readInt(env.GC_ACCESS_COMPLETION_TTL_SECONDS, 300),
     bootstrapSigningPrivateKeyOnMissing: readBoolean(env.GC_ACCESS_SIGNING_PRIVATE_KEY_BOOTSTRAP, false),
     appSharedSecrets,
+    appRuntimeIds,
     appBackendCallbacks,
     storage: {
       backend: storageBackend,

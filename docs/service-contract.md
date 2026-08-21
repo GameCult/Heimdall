@@ -598,13 +598,39 @@ The following are not landed yet:
 - revocation flows
 - admin/grant management surfaces
 - GitHub callback runtime
-- runtime CultCache `.cc` witness writing or CultMesh publication
+- redacted per-account auth witness export and Odin/CultMesh consumption beyond
+  the landed boundary/plugin advertisement store
+
+## Private CultNet authentication commands
+
+The live daemon also binds a loopback-only CultNet/RUDP operation service at
+`127.0.0.1:4101` by default. Odin may advertise the route, but never proxies or
+persists its payloads.
+
+- service: `heimdall.private.commands`
+- operations: `heimdall.auth.begin`, `heimdall.auth.complete`
+- request envelope: `heimdall.private_command_envelope.v1`
+- begin result: `heimdall.auth_begin_receipt.v1`
+- completion result: `heimdall.auth_completion_receipt.v1`
+
+Requests are accepted only from a configured app runtime and use the existing
+per-app shared secret. Expiry, nonce, operation, app, and idempotency identity
+are authenticated. MessagePack payloads and sensitive completion results are
+AES-256-GCM wrapped with a fresh nonce. A repeated idempotency key returns the
+same result only for the exact same authenticated request; content changes are
+denied. Completion consumption remains single-use in Heimdall's canonical
+store.
+
+`gamecult.heimdall.access` exposes pure plugin ABI operations on the same
+loopback listener. Those operations describe, validate, or project access UI;
+they cannot create attempts, mint claims, or establish an app session.
 
 ## Odin/Eve provider advertisement
 
 Purpose:
 
-- advertise Heimdall as a read-only Eve provider surface for Odin discovery
+- advertise Heimdall's redacted provider, plugin, and command-boundary surfaces
+  for Odin discovery
 - name the redacted CultCache witness document schemas and future `.cc` paths
 - avoid touching provider secrets, token custody, store migrations, or runtime
   mutation paths

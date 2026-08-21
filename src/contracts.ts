@@ -26,6 +26,7 @@ export interface OAuthConnectionBinding {
 
 export interface OAuthBrowserCompletionHandoff {
   kind: "browser_completion";
+  attemptId?: string;
 }
 
 export interface OAuthBackendCallbackHandoff {
@@ -96,6 +97,23 @@ export interface IssueClaimRequest {
 
 export interface RedeemAuthCompletionRequest {
   completionCode: string;
+}
+
+export type HeimdallAuthAttemptStatus = "pending" | "completed" | "denied" | "consumed" | "expired";
+
+export interface HeimdallAuthAttempt {
+  schema: "heimdall.auth_attempt.v1";
+  handle: string;
+  appSlug: AppSlug;
+  provider: Provider;
+  mode: OAuthMode;
+  returnTo: string;
+  status: HeimdallAuthAttemptStatus;
+  createdAt: string;
+  expiresAt: string;
+  completedAt?: string;
+  consumedAt?: string;
+  denialCode?: string;
 }
 
 export interface RefreshSessionRequest {

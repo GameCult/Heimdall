@@ -200,16 +200,16 @@ const bifrostProfile: AppProfile = {
 const ghostlightProfile: AppProfile = {
   slug: "ghostlight",
   displayName: "Ghostlight Dungeon",
-  profileVersion: "2026-08-19",
+  profileVersion: "2026-08-22",
   identityProviders: ["discord"],
-  entitlementSources: [],
+  entitlementSources: ["discord"],
   managedConnectionProviders: [],
   capabilities: [
     {
       key: "app_access",
       mode: "shared",
-      summary: "May enter the public Ghostlight Dungeon demo.",
-      sharedRule: identityFacts.authenticated,
+      summary: "May enter Ghostlight Dungeon after Heimdall verifies the app-supplied GameCult Discord role policy.",
+      sharedRule: "entitlement.app_access || grant.global_member || grant.app_access",
     },
     {
       key: "campaign_play",
@@ -219,7 +219,11 @@ const ghostlightProfile: AppProfile = {
     },
   ],
   evaluateSharedCapabilities(context) {
-    return context.facts.has(identityFacts.authenticated) ? ["app_access"] : [];
+    return hasAnyFact(context.facts, [
+      entitlementFacts.appAccess,
+      grantFacts.globalMember,
+      grantFacts.appAccess,
+    ]) ? ["app_access"] : [];
   },
 };
 

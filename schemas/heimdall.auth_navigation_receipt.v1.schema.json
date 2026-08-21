@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "heimdall.auth_navigation_receipt.v1",
+  "type": "object",
+  "required": ["schema", "handle", "navigation"],
+  "properties": {
+    "schema": { "const": "heimdall.auth_navigation_receipt.v1" },
+    "handle": { "type": "string", "minLength": 1 },
+    "navigation": {
+      "type": "object",
+      "required": ["url", "allowedOrigins"],
+      "properties": {
+        "url": { "type": "string", "format": "uri", "pattern": "^https://" },
+        "allowedOrigins": { "type": "array", "items": { "type": "string", "format": "uri" }, "minItems": 1, "uniqueItems": true }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

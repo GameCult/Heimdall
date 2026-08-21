@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "heimdall.auth_begin_command.v1",
+  "type": "object",
+  "required": ["provider", "mode", "returnTo", "entitlementPolicy"],
+  "properties": {
+    "provider": { "enum": ["discord", "patreon", "github", "twitch", "youtube", "spotify"] },
+    "mode": { "enum": ["sign_in", "link", "connect"] },
+    "returnTo": { "type": "string", "format": "uri" },
+    "entitlementPolicy": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind", "guildId", "allowedRoleIds"],
+          "properties": {
+            "kind": { "const": "discord_role_access" },
+            "guildId": { "type": "string", "minLength": 1 },
+            "allowedRoleIds": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 }, "uniqueItems": true }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "requiredTierTitle"],
+          "properties": {
+            "kind": { "const": "patreon_membership_access" },
+            "requiredTierTitle": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": false
+        }
+      ]
+    }
+  },
+  "additionalProperties": false
+}

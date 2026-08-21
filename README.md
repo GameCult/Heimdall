@@ -25,7 +25,8 @@ Landed right now:
 - signed OAuth start-state scaffolding for Discord, Patreon, GitHub, Twitch,
   YouTube, and Spotify
 - durable auth/control-plane storage with in-memory and Postgres backends
-- account, linked-identity, session, grant, entitlement snapshot, and audit
+- account, linked-identity, session, persistent OAuth attempt, grant,
+  entitlement snapshot, and audit
   persistence
 - a real Discord OAuth callback path for the first Repixelizer access flow
 - direct backend callback handoff for same-host or Yggdrasil-reachable app
@@ -44,10 +45,16 @@ Landed right now:
   profile, and Idunn daemon-health summary
 - optional Idunn daemon-health publication over `cultnet.transport.rudp.v0`
   when `GC_ACCESS_IDUNN_RUDP_HEALTH` is configured
+- the `gamecult.heimdall.access` Eve plugin with executable `describe`,
+  `validate`, and `project` operations plus a browser reference adapter
+- a loopback-only CultNet operation boundary on port `4101` for authenticated
+  `heimdall.auth.begin` and `heimdall.auth.complete`; app payloads and completion
+  claims are AES-256-GCM wrapped and HMAC-bound to expiry, nonce, operation,
+  runtime, and idempotency identity
 
 Still not landed:
 
-- end-to-end app integrations in consumer repos
+- the Ghostlight Eve-host consumer migration and deployed two-account canary
 - refresh/revocation flows and admin surfaces
 - full redacted per-document Heimdall auth witness export or CultMesh publication
 

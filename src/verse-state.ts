@@ -2,6 +2,7 @@ import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { encode } from "@msgpack/msgpack";
 import { appSlugs, providers } from "./contracts.js";
+import { buildHeimdallAccessPluginAdvertisement } from "./access-plugin.js";
 import type { HeimdallConfig } from "./config.js";
 import { buildHeimdallProviderAdvertisement } from "./verse-witness.js";
 
@@ -56,6 +57,14 @@ export async function publishHeimdallVerseState(config: HeimdallConfig, pulse: H
       storedAt: pulse.updatedAt,
     },
     {
+      key: "gamecult.heimdall.access",
+      schemaId: "gamecult.eve.plugin_advertisement.v1",
+      schemaName: "gamecult.eve.plugin_advertisement",
+      schemaVersion: "gamecult.eve.plugin_advertisement.v1",
+      payload: buildHeimdallAccessPluginAdvertisement(),
+      storedAt: pulse.updatedAt,
+    },
+    {
       key: "heimdall",
       schemaId: "heimdall.transport_profile.v1",
       schemaName: "heimdall.transport_profile",
@@ -98,7 +107,7 @@ function buildRuntimeProviderAdvertisement(config: HeimdallConfig, pulse: Heimda
       ...advertisement.controlSurface,
       controls: {
         ...advertisement.controlSurface.controls,
-        reason: "This runtime publication advertises provider shape and lifecycle boundaries. Auth mutation remains behind explicit Heimdall HTTP APIs.",
+        reason: "This runtime publication advertises provider, plugin, and lifecycle boundaries. Auth mutation remains behind Heimdall's authenticated private command plane or retained HTTP compatibility APIs.",
       },
     },
     runtime: {
@@ -108,6 +117,7 @@ function buildRuntimeProviderAdvertisement(config: HeimdallConfig, pulse: Heimda
       cultCachePath: witnessPath,
       idunnHealthContract: config.idunnHealthContract,
       idunnRudpHealth: config.idunnRudpHealth ?? null,
+      privateCommandRoute: `rudp://${config.privateCommandHost ?? "127.0.0.1"}:${config.privateCommandPort ?? 4101}`,
     },
   };
 }
@@ -127,7 +137,24 @@ function buildCommandBoundary(config: HeimdallConfig, pulse: HeimdallRuntimePuls
       publicationSource: config.idunnRudpHealth ? "daemon-published" : "daemon-published-cultcache",
       stateOwner: "Heimdall auth runtime",
     },
-    commands: [],
+    commands: [
+      {
+        operation: "heimdall.auth.begin",
+        requestSchema: "heimdall.private_command_envelope.v1",
+        responseSchema: "heimdall.auth_begin_receipt.v1",
+      },
+      {
+        operation: "heimdall.auth.complete",
+        requestSchema: "heimdall.private_command_envelope.v1",
+        responseSchema: "heimdall.auth_completion_receipt.v1",
+      },
+    ],
+    privateRoute: {
+      endpoint: `rudp://${config.privateCommandHost ?? "127.0.0.1"}:${config.privateCommandPort ?? 4101}`,
+      exposure: "loopback-only",
+      authentication: "app-bound HMAC + AES-256-GCM envelope",
+      secretBearing: false,
+    },
     forbiddenWriters: [
       "Odin and Idunn may observe Heimdall boundary state but do not mutate auth/control-plane truth.",
       "HTTP /healthz, JWKS, discovery, systemd, and nginx routing are compatibility witnesses, not daemon truth.",

@@ -145,6 +145,41 @@ describe("PostgresStore", () => {
     const consumedAgain = await store.consumeAuthCompletion("repixelizer", completion.code, "2026-04-26T12:02:00.000Z");
     expect(consumedAgain).toBeNull();
 
+    const attempt = await store.createAuthAttempt({
+      handle: "attempt-123",
+      appSlug: "ghostlight",
+      provider: "discord",
+      mode: "sign_in",
+      returnTo: "https://yggdrasil.gamecult.org/ghostlight/",
+      createdAt: now,
+      expiresAt: "2026-04-26T12:05:00.000Z",
+    });
+    expect(attempt.status).toBe("pending");
+    expect((await store.updateAuthAttempt("ghostlight", attempt.handle, {
+      status: "completed",
+      at: "2026-04-26T12:01:00.000Z",
+    }))?.status).toBe("completed");
+    expect((await store.updateAuthAttempt("ghostlight", attempt.handle, {
+      status: "pending",
+      at: "2026-04-26T12:02:00.000Z",
+    }))?.status).toBe("completed");
+
+    const privateReceipt = await store.createPrivateCommandReceipt({
+      appSlug: "ghostlight",
+      idempotencyKey: "idem-123",
+      requestFingerprint: "fingerprint-123",
+      status: "accepted",
+      contentSchema: "heimdall.auth_begin_receipt.v1",
+      envelopeBase64: "encrypted-messagepack",
+      createdAt: now,
+      expiresAt: "2026-04-26T12:01:00.000Z",
+    });
+    expect(await store.findPrivateCommandReceipt("ghostlight", "idem-123")).toEqual(privateReceipt);
+    await expect(store.createPrivateCommandReceipt({
+      ...privateReceipt,
+      requestFingerprint: "different-command",
+    })).rejects.toThrow("Idempotency key was reused");
+
     await store.close();
   });
 });

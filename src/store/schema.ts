@@ -42,6 +42,38 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE INDEX IF NOT EXISTS sessions_account_id_idx
   ON sessions(account_id);
 
+CREATE TABLE IF NOT EXISTS auth_attempts (
+  handle TEXT PRIMARY KEY,
+  app_slug TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  mode TEXT NOT NULL,
+  return_to TEXT NOT NULL,
+  status TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  completed_at TIMESTAMPTZ,
+  consumed_at TIMESTAMPTZ,
+  denial_code TEXT
+);
+
+CREATE INDEX IF NOT EXISTS auth_attempts_lookup_idx
+  ON auth_attempts(app_slug, expires_at, status);
+
+CREATE TABLE IF NOT EXISTS private_command_receipts (
+  app_slug TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  request_fingerprint TEXT NOT NULL,
+  status TEXT NOT NULL,
+  content_schema TEXT NOT NULL,
+  envelope_base64 TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (app_slug, idempotency_key)
+);
+
+CREATE INDEX IF NOT EXISTS private_command_receipts_expiry_idx
+  ON private_command_receipts(expires_at);
+
 CREATE TABLE IF NOT EXISTS auth_completions (
   code TEXT PRIMARY KEY,
   app_slug TEXT NOT NULL,

@@ -1,20 +1,24 @@
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient, type QueryResultRow } from "pg";
-import { type AppSlug, type LinkedIdentityInput, type Provider } from "../contracts.js";
+import { type AppSlug, type HeimdallAuthAttemptStatus, type LinkedIdentityInput, type Provider } from "../contracts.js";
 import { CREATE_SCHEMA_SQL } from "./schema.js";
 import {
   type CreateAccountInput,
+  type CreateAuthAttemptInput,
   type CreateAuthCompletionInput,
   type CreateAuditEventInput,
   type CreateCapabilityGrantInput,
   type CreateEntitlementSnapshotInput,
   type CreateSessionInput,
+  type CreatePrivateCommandReceiptInput,
   type HeimdallStore,
   type StoredAccount,
+  type StoredAuthAttempt,
   type StoredAuthCompletion,
   type StoredCapabilityGrant,
   type StoredLinkedIdentity,
   type StoredSession,
+  type StoredPrivateCommandReceipt,
   type UpsertLinkedIdentityInput,
 } from "./types.js";
 
@@ -80,6 +84,31 @@ interface AuthCompletionRow extends QueryResultRow {
   created_at: string | Date;
   expires_at: string | Date;
   consumed_at: string | Date | null;
+}
+
+interface AuthAttemptRow extends QueryResultRow {
+  handle: string;
+  app_slug: AppSlug;
+  provider: Provider;
+  mode: "sign_in" | "link" | "connect";
+  return_to: string;
+  status: HeimdallAuthAttemptStatus;
+  created_at: string | Date;
+  expires_at: string | Date;
+  completed_at: string | Date | null;
+  consumed_at: string | Date | null;
+  denial_code: string | null;
+}
+
+interface PrivateCommandReceiptRow extends QueryResultRow {
+  app_slug: AppSlug;
+  idempotency_key: string;
+  request_fingerprint: string;
+  status: string;
+  content_schema: string;
+  envelope_base64: string;
+  created_at: string | Date;
+  expires_at: string | Date;
 }
 
 function expectRow<T>(row: T | undefined, label: string): T {
@@ -218,6 +247,36 @@ function mapAuthCompletionRow(row: AuthCompletionRow): StoredAuthCompletion {
   }
 
   return completion;
+}
+
+function mapPrivateCommandReceiptRow(row: PrivateCommandReceiptRow): StoredPrivateCommandReceipt {
+  return {
+    appSlug: row.app_slug,
+    idempotencyKey: row.idempotency_key,
+    requestFingerprint: row.request_fingerprint,
+    status: row.status,
+    contentSchema: row.content_schema,
+    envelopeBase64: row.envelope_base64,
+    createdAt: normalizeTimestamp(row.created_at),
+    expiresAt: normalizeTimestamp(row.expires_at),
+  };
+}
+
+function mapAuthAttemptRow(row: AuthAttemptRow): StoredAuthAttempt {
+  const attempt: StoredAuthAttempt = {
+    handle: row.handle,
+    appSlug: row.app_slug,
+    provider: row.provider,
+    mode: row.mode,
+    returnTo: row.return_to,
+    status: row.status,
+    createdAt: normalizeTimestamp(row.created_at),
+    expiresAt: normalizeTimestamp(row.expires_at),
+  };
+  if (row.completed_at) attempt.completedAt = normalizeTimestamp(row.completed_at);
+  if (row.consumed_at) attempt.consumedAt = normalizeTimestamp(row.consumed_at);
+  if (row.denial_code) attempt.denialCode = row.denial_code;
+  return attempt;
 }
 
 export class PostgresStore implements HeimdallStore {
@@ -499,6 +558,88 @@ export class PostgresStore implements HeimdallStore {
     );
 
     return mapSessionRow(expectRow(result.rows[0], "createSession"));
+  }
+
+  async createAuthAttempt(input: CreateAuthAttemptInput): Promise<StoredAuthAttempt> {
+    const handle = input.handle ?? randomUUID();
+    const result = await this.pool.query<AuthAttemptRow>(
+      `INSERT INTO auth_attempts (
+        handle, app_slug, provider, mode, return_to, status, created_at, expires_at
+      ) VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7) RETURNING *`,
+      [handle, input.appSlug, input.provider, input.mode, input.returnTo, input.createdAt, input.expiresAt],
+    );
+    return mapAuthAttemptRow(expectRow(result.rows[0], "createAuthAttempt"));
+  }
+
+  async findAuthAttempt(appSlug: AppSlug, handle: string): Promise<StoredAuthAttempt | null> {
+    const result = await this.pool.query<AuthAttemptRow>(
+      "SELECT * FROM auth_attempts WHERE app_slug = $1 AND handle = $2",
+      [appSlug, handle],
+    );
+    return result.rowCount ? mapAuthAttemptRow(expectRow(result.rows[0], "findAuthAttempt")) : null;
+  }
+
+  async updateAuthAttempt(
+    appSlug: AppSlug,
+    handle: string,
+    update: { status: HeimdallAuthAttemptStatus; at: string; denialCode?: string },
+  ): Promise<StoredAuthAttempt | null> {
+    const result = await this.pool.query<AuthAttemptRow>(
+      `UPDATE auth_attempts SET
+        status = $3,
+        completed_at = CASE WHEN $3 = 'completed' THEN $4 ELSE completed_at END,
+        consumed_at = CASE WHEN $3 = 'consumed' THEN $4 ELSE consumed_at END,
+        denial_code = COALESCE($5, denial_code)
+      WHERE app_slug = $1 AND handle = $2
+        AND (
+          status = $3 OR
+          (status = 'pending' AND $3 IN ('completed', 'denied', 'expired')) OR
+          (status = 'completed' AND $3 = 'consumed')
+        )
+      RETURNING *`,
+      [appSlug, handle, update.status, update.at, nullable(update.denialCode)],
+    );
+    if (result.rowCount) return mapAuthAttemptRow(expectRow(result.rows[0], "updateAuthAttempt"));
+    return await this.findAuthAttempt(appSlug, handle);
+  }
+
+  async createPrivateCommandReceipt(input: CreatePrivateCommandReceiptInput): Promise<StoredPrivateCommandReceipt> {
+    const result = await this.pool.query<PrivateCommandReceiptRow>(
+      `INSERT INTO private_command_receipts (
+        app_slug, idempotency_key, request_fingerprint, status,
+        content_schema, envelope_base64, created_at, expires_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      ON CONFLICT (app_slug, idempotency_key) DO NOTHING
+      RETURNING *`,
+      [
+        input.appSlug,
+        input.idempotencyKey,
+        input.requestFingerprint,
+        input.status,
+        input.contentSchema,
+        input.envelopeBase64,
+        input.createdAt,
+        input.expiresAt,
+      ],
+    );
+    const existing = result.rowCount
+      ? mapPrivateCommandReceiptRow(expectRow(result.rows[0], "createPrivateCommandReceipt"))
+      : await this.findPrivateCommandReceipt(input.appSlug, input.idempotencyKey);
+    if (!existing) throw new Error("Private command receipt conflict returned no record.");
+    if (existing.requestFingerprint !== input.requestFingerprint) {
+      throw new Error("Idempotency key was reused with different command content.");
+    }
+    return existing;
+  }
+
+  async findPrivateCommandReceipt(appSlug: AppSlug, idempotencyKey: string): Promise<StoredPrivateCommandReceipt | null> {
+    const result = await this.pool.query<PrivateCommandReceiptRow>(
+      "SELECT * FROM private_command_receipts WHERE app_slug = $1 AND idempotency_key = $2",
+      [appSlug, idempotencyKey],
+    );
+    return result.rowCount
+      ? mapPrivateCommandReceiptRow(expectRow(result.rows[0], "findPrivateCommandReceipt"))
+      : null;
   }
 
   async createAuthCompletion(input: CreateAuthCompletionInput): Promise<StoredAuthCompletion> {

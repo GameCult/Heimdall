@@ -27,6 +27,19 @@ Do not trust this file for the exact live HEAD. Always check git.
 
 ## Current Orientation
 
+- `gamecult.heimdall.access` now has a manifest, advertisement, schemas,
+  fixtures, executable `describe`/`validate`/`project` ABI, and browser
+  reference adapter
+- Heimdall persists OAuth attempts and serves authenticated
+  `heimdall.auth.begin` / `heimdall.auth.complete` through loopback
+  CultNet/RUDP on port `4101`
+- private commands are source-runtime, app-secret, expiry, nonce, and
+  idempotency bound; their MessagePack payloads and completion claims are
+  AES-256-GCM wrapped
+- the Ghostlight app profile now requires its caller-owned Discord role policy;
+  Heimdall evaluates it and Ghostlight remains owner of local sessions,
+  memberships, and campaigns
+
 - this repo now has a first stateful Heimdall service slice
 - the canonical shared architecture lives in `docs/architecture.md`
 - the concrete HTTP/JWKS contract lives in `docs/service-contract.md`
@@ -151,6 +164,11 @@ The Idunn/swarm health transport cut is live. Do not regress Heimdall to
 unsigned `idunn.daemon_health`, merge its private key into Idunn, or make HTTP
 health an authority. The next product work is the Bifrost and remaining browser
 verification listed below.
+
+For the active Ghostlight cut, first consume the access plugin and private
+command envelope in Ghostlight, then deploy Heimdall and Ghostlight through
+Idunn. Verify Odin sees the redacted plugin/route records while port `4101`
+remains loopback-only and no token appears in CultMesh, logs, or browser state.
 
 If the user asks to continue on Spotiverse, the current next move is the real
 browser `/auth/login` flow through public Heimdall. The Yggdrasil SSH tunnel

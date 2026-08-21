@@ -44,11 +44,23 @@ import {
 
 const MANAGED_CREDENTIAL_REFRESH_SKEW_MS = 5 * 60 * 1000;
 
-interface BuildAppOptions {
+export interface BuildAppOptions {
   config?: HeimdallConfig;
   store?: HeimdallStore;
   oauthRuntimes?: Partial<OAuthRuntimeRegistry>;
   tokenCustody?: TokenCustody;
+}
+
+export interface HeimdallRuntimeContext {
+  config: HeimdallConfig;
+  keys: ReturnType<typeof createRuntimeKeyMaterial>;
+  store: HeimdallStore;
+  oauthRuntimes: OAuthRuntimeRegistry;
+  tokenCustody: TokenCustody;
+}
+
+export function getHeimdallRuntimeContext(app: FastifyInstance): HeimdallRuntimeContext {
+  return (app as FastifyInstance & { heimdallContext: HeimdallRuntimeContext }).heimdallContext;
 }
 
 function buildDiscovery(config: HeimdallConfig) {
@@ -117,7 +129,9 @@ function parseOAuthStatePayload(payload: Record<string, unknown>): OAuthStatePay
     handoff === undefined ||
     (typeof handoff === "object" &&
       handoff !== null &&
-      ((handoff as Record<string, unknown>).kind === "browser_completion" ||
+      (((handoff as Record<string, unknown>).kind === "browser_completion" &&
+          ((handoff as Record<string, unknown>).attemptId === undefined ||
+            typeof (handoff as Record<string, unknown>).attemptId === "string")) ||
         ((handoff as Record<string, unknown>).kind === "backend_callback" &&
           typeof (handoff as Record<string, unknown>).attemptId === "string" &&
           typeof (handoff as Record<string, unknown>).callbackUrl === "string")));
@@ -237,7 +251,8 @@ function normalizeOAuthHandoff(value: OAuthStartRequest["handoff"]): OAuthHandof
   }
 
   if (value.kind === "browser_completion") {
-    return value;
+    const attemptId = value.attemptId?.trim();
+    return attemptId ? { kind: "browser_completion", attemptId } : { kind: "browser_completion" };
   }
 
   if (
@@ -678,7 +693,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           detail: "Backend callback handoffs are only accepted for configured app callback URLs.",
         };
       }
-      if (entitlementPolicy && handoff.kind !== "backend_callback") {
+      const trustedAppCaller = secretMatches(config.appSharedSecrets[profile.slug], getSharedSecret(request));
+      if (entitlementPolicy && handoff.kind !== "backend_callback" && !trustedAppCaller) {
         reply.code(400);
         return {
           error: "untrusted_entitlement_policy",
@@ -774,8 +790,17 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         return { error: "state_provider_mismatch" };
       }
       const handoff = statePayload.handoff ?? { kind: "browser_completion" };
+      const denyBrowserAttempt = async (denialCode: string): Promise<void> => {
+        if (handoff.kind !== "browser_completion" || !handoff.attemptId) return;
+        await store.updateAuthAttempt(statePayload.app_slug, handoff.attemptId, {
+          status: "denied",
+          at: new Date().toISOString(),
+          denialCode,
+        });
+      };
 
       if (request.query.error) {
+        await denyBrowserAttempt("provider_error");
         if (handoff.kind === "backend_callback") {
           await maybeDeliverBackendHandoff(handoff, {
             source: "heimdall",
@@ -821,6 +846,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       }
 
       if (!request.query.code) {
+        await denyBrowserAttempt("missing_code");
         if (handoff.kind === "backend_callback") {
           await maybeDeliverBackendHandoff(handoff, {
             source: "heimdall",
@@ -1061,6 +1087,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
         const completionExpiresAt = new Date(Date.now() + config.completionTtlSeconds * 1000).toISOString();
         const completion = await store.createAuthCompletion({
+          ...(handoff.kind === "browser_completion" && handoff.attemptId ? { code: handoff.attemptId } : {}),
           appSlug: statePayload.app_slug,
           provider: request.params.provider,
           mode: statePayload.mode,
@@ -1071,6 +1098,12 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           expiresAt: completionExpiresAt,
           payloadJson: completionPayload as unknown as Record<string, unknown>,
         });
+        if (handoff.kind === "browser_completion" && handoff.attemptId) {
+          await store.updateAuthAttempt(statePayload.app_slug, handoff.attemptId, {
+            status: "completed",
+            at: nowIso,
+          });
+        }
 
         await store.createAuditEvent({
           accountId: account.id,
@@ -1097,6 +1130,9 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
               mode: statePayload.mode,
               returnTo: statePayload.return_to,
               completionCode: completion.code,
+              ...(handoff.kind === "browser_completion" && handoff.attemptId
+                ? { attemptId: handoff.attemptId }
+                : {}),
             })
           );
         }
@@ -1113,6 +1149,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       } catch (error) {
         const message = error instanceof Error ? error.message : "OAuth callback failed.";
         const nowIso = new Date().toISOString();
+        await denyBrowserAttempt("oauth_callback_failed");
         await store.createAuditEvent({
           appSlug: statePayload.app_slug,
           eventType: "oauth_callback_failed",
@@ -1214,6 +1251,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           completionCode: completion.code,
         },
         createdAt: nowIso,
+      });
+      await store.updateAuthAttempt(request.params.appSlug, request.body.completionCode, {
+        status: "consumed",
+        at: nowIso,
       });
 
       reply.code(201);

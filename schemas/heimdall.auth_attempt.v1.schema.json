@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "heimdall.auth_attempt.v1",
+  "type": "object",
+  "required": ["schema", "handle", "appSlug", "provider", "mode", "returnTo", "status", "createdAt", "expiresAt"],
+  "properties": {
+    "schema": { "const": "heimdall.auth_attempt.v1" },
+    "handle": { "type": "string", "minLength": 1 },
+    "appSlug": { "type": "string", "minLength": 1 },
+    "provider": { "type": "string", "minLength": 1 },
+    "mode": { "type": "string", "minLength": 1 },
+    "returnTo": { "type": "string", "format": "uri" },
+    "status": { "enum": ["pending", "completed", "denied", "consumed", "expired"] },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "expiresAt": { "type": "string", "format": "date-time" },
+    "completedAt": { "type": "string", "format": "date-time" },
+    "consumedAt": { "type": "string", "format": "date-time" },
+    "denialCode": { "type": "string" }
+  },
+  "additionalProperties": false
+}

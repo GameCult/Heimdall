@@ -1,0 +1,49 @@
+{
+  "schema": "gamecult.eve.plugin.v1",
+  "pluginId": "gamecult.heimdall.access",
+  "title": "Heimdall Access",
+  "owner": "heimdall",
+  "version": "0.1.0",
+  "componentKinds": ["heimdall.access_gate", "heimdall.identity", "heimdall.access_status"],
+  "commands": [
+    { "command": "heimdall.auth.begin", "schema": "heimdall.auth_begin_command.v1", "effect": "request-auth-navigation" },
+    { "command": "heimdall.auth.complete", "schema": "heimdall.auth_complete_command.v1", "effect": "redeem-auth-completion" },
+    { "command": "app.auth.logout", "schema": "heimdall.auth_logout_command.v1", "effect": "request-app-local-session-revocation" }
+  ],
+  "runtime": {
+    "invocationModel": "executable-sidecar",
+    "contract": "gamecult.eve.plugin_abi.v1",
+    "transports": ["cultnet.operation.v0", "in-process-reference"],
+    "authority": ["renderer-independent", "no-access-grant", "no-provider-state-mutation"],
+    "sidecar": {
+      "processKind": "heimdall-daemon-plugin-organ",
+      "protocol": "cultnet.operation.v0",
+      "requestSchema": "gamecult.eve.plugin_abi.request.v1",
+      "responseSchema": "gamecult.eve.plugin_abi.response.v1",
+      "operations": ["describe", "validate", "project"],
+      "commandEnvelope": "gamecult.eve.command_invocation.v1",
+      "receiptSchema": "gamecult.eve.command_result.v1",
+      "stateAuthority": "Heimdall projects access state; host apps accept commands and create only their own local sessions.",
+      "endpoint": "rudp://127.0.0.1:4101"
+    }
+  },
+  "stateSchemas": [
+    "heimdall.access_gate_state.v1",
+    "heimdall.auth_attempt.v1",
+    "heimdall.auth_begin_receipt.v1",
+    "heimdall.auth_completion_receipt.v1",
+    "heimdall.auth_navigation_receipt.v1",
+    "heimdall.auth_completion_status.v1"
+  ],
+  "fixtures": [
+    { "fixtureId": "heimdall.access.anonymous", "schema": "heimdall.access_gate_state.v1", "path": "fixtures/anonymous.json" },
+    { "fixtureId": "heimdall.access.pending", "schema": "heimdall.access_gate_state.v1", "path": "fixtures/pending.json" },
+    { "fixtureId": "heimdall.access.denied", "schema": "heimdall.access_gate_state.v1", "path": "fixtures/denied.json" },
+    { "fixtureId": "heimdall.access.authenticated", "schema": "heimdall.access_gate_state.v1", "path": "fixtures/authenticated.json" },
+    { "fixtureId": "heimdall.access.expired", "schema": "heimdall.access_gate_state.v1", "path": "fixtures/expired.json" },
+    { "fixtureId": "heimdall.access.unavailable", "schema": "heimdall.access_gate_state.v1", "path": "fixtures/unavailable.json" }
+  ],
+  "capabilities": {
+    "requires": ["auth.gate", "auth.begin", "auth.complete", "auth.logout", "control.button", "text.body"]
+  }
+}

@@ -2,17 +2,21 @@ import { randomUUID } from "node:crypto";
 import { type AppSlug, type LinkedIdentityInput, type Provider } from "../contracts.js";
 import {
   type CreateAccountInput,
+  type CreateAuthAttemptInput,
   type CreateAuthCompletionInput,
   type CreateAuditEventInput,
   type CreateCapabilityGrantInput,
   type CreateEntitlementSnapshotInput,
   type CreateSessionInput,
+  type CreatePrivateCommandReceiptInput,
   type HeimdallStore,
   type StoredAccount,
+  type StoredAuthAttempt,
   type StoredAuthCompletion,
   type StoredCapabilityGrant,
   type StoredLinkedIdentity,
   type StoredSession,
+  type StoredPrivateCommandReceipt,
   type UpsertLinkedIdentityInput,
 } from "./types.js";
 
@@ -37,6 +41,8 @@ export class InMemoryStore implements HeimdallStore {
   private readonly linkedIdentities = new Map<string, StoredLinkedIdentity>();
   private readonly grants = new Map<string, StoredCapabilityGrant>();
   private readonly sessions = new Map<string, StoredSession>();
+  private readonly authAttempts = new Map<string, StoredAuthAttempt>();
+  private readonly privateCommandReceipts = new Map<string, StoredPrivateCommandReceipt>();
   private readonly authCompletions = new Map<string, StoredAuthCompletion>();
   private readonly entitlementSnapshots = new Map<string, CreateEntitlementSnapshotInput>();
   private readonly auditEvents = new Map<string, CreateAuditEventInput>();
@@ -226,6 +232,64 @@ export class InMemoryStore implements HeimdallStore {
     const session: StoredSession = clone(input);
     this.sessions.set(session.id, session);
     return clone(session);
+  }
+
+  async createAuthAttempt(input: CreateAuthAttemptInput): Promise<StoredAuthAttempt> {
+    const attempt: StoredAuthAttempt = {
+      handle: input.handle ?? randomUUID(),
+      appSlug: input.appSlug,
+      provider: input.provider,
+      mode: input.mode,
+      returnTo: input.returnTo,
+      status: "pending",
+      createdAt: input.createdAt,
+      expiresAt: input.expiresAt,
+    };
+    if (this.authAttempts.has(attempt.handle)) throw new Error("Auth attempt handle already exists.");
+    this.authAttempts.set(attempt.handle, clone(attempt));
+    return clone(attempt);
+  }
+
+  async findAuthAttempt(appSlug: AppSlug, handle: string): Promise<StoredAuthAttempt | null> {
+    const attempt = this.authAttempts.get(handle);
+    return attempt?.appSlug === appSlug ? clone(attempt) : null;
+  }
+
+  async updateAuthAttempt(
+    appSlug: AppSlug,
+    handle: string,
+    update: { status: import("../contracts.js").HeimdallAuthAttemptStatus; at: string; denialCode?: string },
+  ): Promise<StoredAuthAttempt | null> {
+    const attempt = this.authAttempts.get(handle);
+    if (!attempt || attempt.appSlug !== appSlug) return null;
+    const allowed = attempt.status === update.status ||
+      (attempt.status === "pending" && ["completed", "denied", "expired"].includes(update.status)) ||
+      (attempt.status === "completed" && update.status === "consumed");
+    if (!allowed) return clone(attempt);
+    attempt.status = update.status;
+    if (update.status === "completed") attempt.completedAt = update.at;
+    if (update.status === "consumed") attempt.consumedAt = update.at;
+    if (update.denialCode !== undefined) attempt.denialCode = update.denialCode;
+    this.authAttempts.set(handle, clone(attempt));
+    return clone(attempt);
+  }
+
+  async createPrivateCommandReceipt(input: CreatePrivateCommandReceiptInput): Promise<StoredPrivateCommandReceipt> {
+    const key = `${input.appSlug}:${input.idempotencyKey}`;
+    const existing = this.privateCommandReceipts.get(key);
+    if (existing) {
+      if (existing.requestFingerprint !== input.requestFingerprint) {
+        throw new Error("Idempotency key was reused with different command content.");
+      }
+      return clone(existing);
+    }
+    this.privateCommandReceipts.set(key, clone(input));
+    return clone(input);
+  }
+
+  async findPrivateCommandReceipt(appSlug: AppSlug, idempotencyKey: string): Promise<StoredPrivateCommandReceipt | null> {
+    const receipt = this.privateCommandReceipts.get(`${appSlug}:${idempotencyKey}`);
+    return receipt ? clone(receipt) : null;
   }
 
   async createAuthCompletion(input: CreateAuthCompletionInput): Promise<StoredAuthCompletion> {

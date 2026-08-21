@@ -71,6 +71,29 @@ bind its own policy and runtime seams onto it.
   signed app-facing claim set derived from the account, grants, and app policy
 - `AuditEvent`
   durable record for login, link, unlink, refresh, denial, and admin overrides
+- `AuthAttempt`
+  Heimdall-owned, expiring OAuth lifecycle record addressed by an opaque handle;
+  browsers may carry the handle but cannot complete or redeem it themselves
+
+## Eve access plugin and private command plane
+
+`gamecult.heimdall.access` is Heimdall's reusable Eve representation boundary.
+It projects access gates, identity summaries, and access status, and declares
+the `auth.begin`, `auth.complete`, and `auth.logout` capabilities. Its
+executable `describe`, `validate`, and `project` ABI cannot grant access or
+mutate provider state.
+
+App backends call `heimdall.auth.begin` and `heimdall.auth.complete` over the
+loopback CultNet operation service at `127.0.0.1:4101`. Every private request is
+bound to the configured app secret, source runtime, operation, expiry, nonce,
+and idempotency key. The MessagePack payload is AES-256-GCM encrypted; the full
+envelope is HMAC authenticated. Completion claims are returned only inside the
+same encrypted app-bound envelope.
+
+The browser adapter stores one opaque attempt handle and follows only HTTPS
+navigation receipts whose origin appears in both the plugin advertisement and
+the validated receipt. It never receives access or refresh claims. The host app
+redeems the handle, verifies the Heimdall claim, and owns its local session.
 
 ## Provider taxonomy
 

@@ -1,4 +1,10 @@
-import { type AppSlug, type LinkedIdentityInput, type OAuthMode, type Provider } from "../contracts.js";
+import {
+  type AppSlug,
+  type HeimdallAuthAttemptStatus,
+  type LinkedIdentityInput,
+  type OAuthMode,
+  type Provider,
+} from "../contracts.js";
 
 export interface StoredAccount {
   id: string;
@@ -148,6 +154,43 @@ export interface CreateAuthCompletionInput {
   payloadJson: Record<string, unknown>;
 }
 
+export interface StoredAuthAttempt {
+  handle: string;
+  appSlug: AppSlug;
+  provider: Provider;
+  mode: OAuthMode;
+  returnTo: string;
+  status: HeimdallAuthAttemptStatus;
+  createdAt: string;
+  expiresAt: string;
+  completedAt?: string;
+  consumedAt?: string;
+  denialCode?: string;
+}
+
+export interface CreateAuthAttemptInput {
+  handle?: string;
+  appSlug: AppSlug;
+  provider: Provider;
+  mode: OAuthMode;
+  returnTo: string;
+  createdAt: string;
+  expiresAt: string;
+}
+
+export interface StoredPrivateCommandReceipt {
+  appSlug: AppSlug;
+  idempotencyKey: string;
+  requestFingerprint: string;
+  status: string;
+  contentSchema: string;
+  envelopeBase64: string;
+  createdAt: string;
+  expiresAt: string;
+}
+
+export type CreatePrivateCommandReceiptInput = StoredPrivateCommandReceipt;
+
 export interface HeimdallStore {
   ensureSchema(): Promise<void>;
   close(): Promise<void>;
@@ -163,6 +206,15 @@ export interface HeimdallStore {
   createCapabilityGrant(input: CreateCapabilityGrantInput): Promise<StoredCapabilityGrant>;
   listActiveGrants(accountId: string, appSlug: AppSlug, at: string): Promise<StoredCapabilityGrant[]>;
   createSession(input: CreateSessionInput): Promise<StoredSession>;
+  createAuthAttempt(input: CreateAuthAttemptInput): Promise<StoredAuthAttempt>;
+  findAuthAttempt(appSlug: AppSlug, handle: string): Promise<StoredAuthAttempt | null>;
+  updateAuthAttempt(
+    appSlug: AppSlug,
+    handle: string,
+    update: { status: HeimdallAuthAttemptStatus; at: string; denialCode?: string },
+  ): Promise<StoredAuthAttempt | null>;
+  createPrivateCommandReceipt(input: CreatePrivateCommandReceiptInput): Promise<StoredPrivateCommandReceipt>;
+  findPrivateCommandReceipt(appSlug: AppSlug, idempotencyKey: string): Promise<StoredPrivateCommandReceipt | null>;
   createAuthCompletion(input: CreateAuthCompletionInput): Promise<StoredAuthCompletion>;
   consumeAuthCompletion(appSlug: AppSlug, code: string, at: string): Promise<StoredAuthCompletion | null>;
   upsertEntitlementSnapshot(input: CreateEntitlementSnapshotInput): Promise<void>;

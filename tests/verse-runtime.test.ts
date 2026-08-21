@@ -47,6 +47,19 @@ describe("Heimdall verse runtime publication", () => {
         contract: "heimdall.cultnet-rudp-provider-health",
         transport: "cultnet.transport.rudp.v0",
       },
+      commands: [
+        { operation: "heimdall.auth.begin" },
+        { operation: "heimdall.auth.complete" },
+      ],
+      privateRoute: {
+        endpoint: "rudp://127.0.0.1:4101",
+        exposure: "loopback-only",
+      },
+    });
+    expect(bySchema.get("gamecult.eve.plugin_advertisement.v1")).toMatchObject({
+      pluginId: "gamecult.heimdall.access",
+      ownerService: "asgard.heimdall",
+      commands: ["heimdall.auth.begin", "heimdall.auth.complete", "app.auth.logout"],
     });
     expect(bySchema.get("heimdall.transport_profile.v1")).toMatchObject({
       daemonId: "yggdrasil-heimdall",

@@ -1,0 +1,1 @@
+{"schema":"heimdall.access_gate_state.v1","state":"authenticated","title":"Signed in","detail":"Heimdall verified this app session.","canBegin":false,"canComplete":false,"displayName":"Tester"}

@@ -60,6 +60,8 @@ What exists right now is:
 - a daemon-owned boundary witness store plus optional Idunn RUDP health pulse
   so Heimdall can advertise provider/boundary truth to Odin and Idunn without
   pretending HTTP/status checks own the daemon
+- the `gamecult.heimdall.access` Eve plugin, persistent auth attempts, and a
+  loopback-only authenticated CultNet command boundary for Ghostlight
 
 ## Primary objective
 
@@ -72,6 +74,25 @@ Build Heimdall as a shared auth authority service that can:
 - expose a clean contract to app backends without owning their domain data
 
 ## Current priorities
+
+### 0. Complete the Ghostlight Eve access cut
+
+Landed in Heimdall:
+
+- public plugin manifest, advertisement, state schemas, fixtures, pure ABI, and
+  browser reference adapter
+- persistent attempt lifecycle in memory and Postgres
+- encrypted/HMAC-bound `heimdall.auth.begin` and `heimdall.auth.complete`
+- exact source-runtime admission, nonce/expiry checks, idempotent retries, and
+  single-use completion redemption
+- Odin-safe plugin and private-route metadata without secret-bearing state
+
+Remaining outside this repo:
+
+- Ghostlight must consume the plugin, verify returned claims, and own its local
+  sessions
+- Idunn must deploy the new release and Odin must witness the plugin and route
+  metadata
 
 ### 1. Lock the service boundary
 

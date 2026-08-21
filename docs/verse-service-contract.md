@@ -11,14 +11,14 @@ evidence only.
 
 ## Owner Map
 
-- Owner: Heimdall owns provider identity/linking, signed session and claim
+- Owner: Heimdall owns provider identity/linking, OAuth attempts, signed session and claim
   issuance, entitlement refresh, managed provider token custody, grants,
   auth-completion handoffs, refresh sessions, and audit events.
 - Inputs: provider OAuth callbacks, app profile requests, caller-supplied
   entitlement policy, provider API responses, configured signing/encryption
   keys, app backend callback receipts, and local Postgres/in-memory store
   records.
-- Outputs: signed access claims, refresh claims, JWKS, discovery documents,
+- Outputs: signed access claims, refresh claims, typed private-command receipts, JWKS, discovery documents,
   backend handoff payloads, managed credential projections, audit records, and
   app-local verification material.
 - Derived state: health/discovery/JWKS responses, browser completion pages,
@@ -120,6 +120,9 @@ Authority map:
   a runtime-owned `GC_ACCESS_CULTCACHE_PATH` store containing
   `gamecult.eve.provider_advertisement.v1`, `heimdall.command_boundary.v1`,
   `heimdall.transport_profile.v1`, and `idunn.daemon_health.v1` summary state.
+  It also publishes the redacted `gamecult.heimdall.access` plugin
+  advertisement and loopback command-route metadata. No claim, token, secret,
+  nonce, or opaque attempt handle enters that store.
 - Derived state: `/healthz`, JWKS, discovery, systemd, nginx routing, and the
   boundary store are projections. They must not mutate auth truth or replace
   explicit Heimdall API ownership.
@@ -146,6 +149,8 @@ redacted auth witness cut should add these `.cc` targets:
   `cultcache/heimdall/entitlements/{accountId}/{provider}/{scope}.cc`
 - `heimdall.auth_completion.v0` at
   `cultcache/heimdall/auth-completions/{completionCodeHash}.cc`
+- `heimdall.auth_attempt.v1` at
+  `cultcache/heimdall/auth-attempts/{attemptHandleHash}.cc`
 - `heimdall.audit_event.v0` at `cultcache/heimdall/audit/{eventId}.cc`
 - `heimdall.app_profile.v0` at
   `cultcache/heimdall/app-profiles/{appSlug}.cc`

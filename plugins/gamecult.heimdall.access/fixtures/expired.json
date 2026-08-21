@@ -1,0 +1,1 @@
+{"schema":"heimdall.access_gate_state.v1","state":"expired","title":"Sign-in expired","detail":"Begin a fresh authentication attempt.","canBegin":true,"canComplete":false}

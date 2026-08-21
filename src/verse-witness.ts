@@ -8,6 +8,7 @@ export const heimdallWitnessSchemaIds = [
   "heimdall.capability_grant.v0",
   "heimdall.session.v0",
   "heimdall.entitlement_snapshot.v0",
+  "heimdall.auth_attempt.v1",
   "heimdall.auth_completion.v0",
   "heimdall.audit_event.v0",
   "heimdall.app_profile.v0",
@@ -65,6 +66,14 @@ export const heimdallWitnessDocuments: readonly HeimdallWitnessDocumentDescripto
     redaction: "Raw provider responses stay out; export reason codes and compact summaries only.",
     ownedTruth: "Cached provider entitlement evaluation result.",
     forbiddenFields: ["rawProviderResponse", "providerAccessToken", "providerRefreshToken"],
+  },
+  {
+    schemaId: "heimdall.auth_attempt.v1",
+    documentType: "heimdall.auth_attempt.v1",
+    cultCachePath: "cultcache/heimdall/auth-attempts/{attemptHandleHash}.cc",
+    redaction: "Attempt handles, return URLs, nonces, signatures, and policy contents stay private; export only app, provider, status, and expiry.",
+    ownedTruth: "Persistent Heimdall-owned OAuth attempt lifecycle.",
+    forbiddenFields: ["handle", "returnTo", "nonce", "signature", "entitlementPolicy"],
   },
   {
     schemaId: "heimdall.auth_completion.v0",
@@ -160,6 +169,7 @@ export interface EveProviderAdvertisementDocument {
   providers: HeimdallAdvertisedProvider[];
   appProfiles: HeimdallAdvertisedAppProfile[];
   documents: HeimdallWitnessDocumentDescriptor[];
+  plugins: Array<Record<string, unknown>>;
 }
 
 export function buildHeimdallProviderAdvertisement(options: { updatedAt: string }): EveProviderAdvertisementDocument {
@@ -172,7 +182,7 @@ export function buildHeimdallProviderAdvertisement(options: { updatedAt: string 
     locatedService: "asgard.yggdrasil.heimdall",
     cultMeshAddress: "asgard.yggdrasil.heimdall/eve/tui",
     title: "Heimdall",
-    description: "Shared GameCult auth/control-plane authority with redacted CultCache witness projections.",
+    description: "Shared GameCult auth/control-plane authority with a reusable Eve access plugin and redacted CultCache witness projections.",
     version: "read-only-witness-v0",
     status: "read_only_witness_planned",
     updatedAt: options.updatedAt,
@@ -188,6 +198,8 @@ export function buildHeimdallProviderAdvertisement(options: { updatedAt: string 
         "session-claims",
         "managed-credential-custody",
         "redacted-cultcache-witness",
+        "eve-access-plugin",
+        "private-cultnet-auth-commands",
       ],
       usesCultMesh: true,
       transport: "CultMesh provider advertisement; first cut is a read-only fixture/export.",
@@ -244,5 +256,17 @@ export function buildHeimdallProviderAdvertisement(options: { updatedAt: string 
       };
     }),
     documents: [...heimdallWitnessDocuments],
+    plugins: [
+      {
+        schema: "gamecult.eve.plugin_advertisement.v1",
+        pluginId: "gamecult.heimdall.access",
+        ownerService: "asgard.heimdall",
+        version: "0.1.0",
+        manifestAddress: "cultmesh://gamecult/heimdall/plugins/access/manifest",
+        capabilities: ["auth.gate", "auth.begin", "auth.complete", "auth.logout"],
+        componentKinds: ["heimdall.access_gate", "heimdall.identity", "heimdall.access_status"],
+        commands: ["heimdall.auth.begin", "heimdall.auth.complete", "app.auth.logout"],
+      },
+    ],
   };
 }

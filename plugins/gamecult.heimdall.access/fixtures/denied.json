@@ -1,0 +1,1 @@
+{"schema":"heimdall.access_gate_state.v1","state":"denied","title":"Access denied","detail":"This Discord identity does not currently satisfy Ghostlight's access policy.","canBegin":true,"canComplete":false}

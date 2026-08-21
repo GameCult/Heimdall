@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "heimdall.auth_completion_receipt.v1",
+  "type": "object",
+  "required": ["schema", "status"],
+  "properties": {
+    "schema": { "const": "heimdall.auth_completion_receipt.v1" },
+    "status": { "enum": ["pending", "authenticated", "denied"] },
+    "handle": { "type": "string" },
+    "error": { "type": "string" },
+    "account": { "type": "object" },
+    "session": { "type": "object" },
+    "accessToken": { "type": "string" },
+    "refreshToken": { "type": "string" },
+    "refresh": { "type": "object" },
+    "claimSet": { "type": "object" },
+    "verification": { "type": "object" },
+    "sharedCapabilities": { "type": "array", "items": { "type": "string" } },
+    "hybridCapabilities": { "type": "array", "items": { "type": "string" } },
+    "entitlements": { "type": "object" }
+  },
+  "additionalProperties": true
+}
