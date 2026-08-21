@@ -7,7 +7,7 @@ import {
   type CultNetOperationServer,
 } from "cultnet-ts";
 import { type FastifyInstance } from "fastify";
-import { getHeimdallRuntimeContext } from "./app.js";
+import { getHeimdallRuntimeContext, verifyRefreshToken } from "./app.js";
 import { executeHeimdallAccessPlugin, HEIMDALL_ACCESS_PLUGIN_ID, type EvePluginAbiRequest } from "./access-plugin.js";
 import { appSlugs, oauthModes, providers, type AppSlug, type OAuthEntitlementPolicy, type OAuthMode, type Provider } from "./contracts.js";
 import { type HeimdallConfig } from "./config.js";
@@ -72,6 +72,8 @@ export async function startHeimdallPrivateCommandPlane(
             ? "heimdall.auth_complete_command.v1"
             : request.operation === "heimdall.auth.refresh"
               ? "heimdall.auth_refresh_command.v1"
+              : request.operation === "heimdall.auth.logout"
+                ? "heimdall.auth_logout_command.v1"
             : undefined;
         if (!expectedContentSchema || envelope.contentSchema !== expectedContentSchema) {
           throw new Error("Private command content schema does not match its operation.");
@@ -161,7 +163,51 @@ async function executePrivateCommand(
   if (operation === "heimdall.auth.begin") return await beginAuth(app, config, appSlug, payload);
   if (operation === "heimdall.auth.complete") return await completeAuth(app, appSlug, payload);
   if (operation === "heimdall.auth.refresh") return await refreshAuth(app, config, appSlug, payload);
+  if (operation === "heimdall.auth.logout") return await logoutAuth(app, config, appSlug, payload);
   throw new Error(`Unsupported Heimdall private operation '${operation}'.`);
+}
+
+async function logoutAuth(
+  app: FastifyInstance,
+  config: HeimdallConfig,
+  appSlug: AppSlug,
+  payload: Record<string, unknown>,
+): Promise<{ status: string; payloadSchema: string; payload: Record<string, unknown> }> {
+  const refreshToken = String(payload.refreshToken ?? "");
+  if (!refreshToken) throw new Error("Auth logout requires the app's encrypted refresh claim.");
+  const context = getHeimdallRuntimeContext(app);
+  const claim = verifyRefreshToken(refreshToken, appSlug, config, context.keys);
+  if (!claim) throw new Error("Auth logout received an invalid or expired refresh claim.");
+  const revokedAt = new Date().toISOString();
+  const session = await context.store.revokeSession(
+    appSlug,
+    claim.sid,
+    claim.account_id,
+    claim.access_revision,
+    revokedAt,
+  );
+  if (!session || session.accessRevision !== claim.access_revision + 1) {
+    throw new Error("Auth logout could not revoke the exact session custody claim.");
+  }
+  await context.store.createAuditEvent({
+    accountId: claim.account_id,
+    sessionId: claim.sid,
+    appSlug,
+    eventType: "session_revoked",
+    eventPayloadJson: { previousAccessRevision: claim.access_revision, accessRevision: session.accessRevision },
+    createdAt: revokedAt,
+  });
+  return {
+    status: "accepted",
+    payloadSchema: "heimdall.auth_logout_receipt.v1",
+    payload: {
+      schema: "heimdall.auth_logout_receipt.v1",
+      status: "revoked",
+      sessionId: claim.sid,
+      accessRevision: session.accessRevision,
+      revokedAt,
+    },
+  };
 }
 
 async function refreshAuth(

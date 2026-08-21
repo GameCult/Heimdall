@@ -595,7 +595,6 @@ Examples:
 
 The following are not landed yet:
 
-- revocation flows
 - admin/grant management surfaces
 - GitHub callback runtime
 - redacted per-account auth witness export and Odin/CultMesh consumption beyond
@@ -608,10 +607,13 @@ The live daemon also binds a loopback-only CultNet/RUDP operation service at
 persists its payloads.
 
 - service: `heimdall.private.commands`
-- operations: `heimdall.auth.begin`, `heimdall.auth.complete`
+- operations: `heimdall.auth.begin`, `heimdall.auth.complete`,
+  `heimdall.auth.refresh`, `heimdall.auth.logout`
 - request envelope: `heimdall.private_command_envelope.v1`
 - begin result: `heimdall.auth_begin_receipt.v1`
 - completion result: `heimdall.auth_completion_receipt.v1`
+- refresh result: `heimdall.auth_refresh_receipt.v1`
+- logout result: `heimdall.auth_logout_receipt.v1`
 
 Requests are accepted only from a configured app runtime and use the existing
 per-app shared secret. Expiry, nonce, operation, app, and idempotency identity
@@ -620,6 +622,12 @@ AES-256-GCM wrapped with a fresh nonce. A repeated idempotency key returns the
 same result only for the exact same authenticated request; content changes are
 denied. Completion consumption remains single-use in Heimdall's canonical
 store.
+
+Refresh claims are admitted only while their exact persisted session,
+app/account custody, access revision, and refresh expiry still match. Logout
+uses the refresh claim as custody proof and atomically advances the persisted
+access revision while expiring the session. A stale or concurrently superseded
+refresh cannot recreate the revoked session.
 
 `gamecult.heimdall.access` exposes pure plugin ABI operations on the same
 loopback listener. Those operations describe, validate, or project access UI;

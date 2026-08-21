@@ -229,9 +229,43 @@ export class InMemoryStore implements HeimdallStore {
   }
 
   async createSession(input: CreateSessionInput): Promise<StoredSession> {
+    const existing = this.sessions.get(input.id);
+    if (existing && (existing.appSlug !== input.appSlug || existing.accountId !== input.accountId)) {
+      throw new Error("Session custody cannot move between accounts or apps.");
+    }
+    if (existing && existing.accessRevision > input.accessRevision) {
+      throw new Error("Session access revision cannot move backward.");
+    }
     const session: StoredSession = clone(input);
     this.sessions.set(session.id, session);
     return clone(session);
+  }
+
+  async findSession(appSlug: AppSlug, sessionId: string): Promise<StoredSession | null> {
+    const session = this.sessions.get(sessionId);
+    return session?.appSlug === appSlug ? structuredClone(session) : null;
+  }
+
+  async revokeSession(
+    appSlug: AppSlug,
+    sessionId: string,
+    accountId: string,
+    expectedAccessRevision: number,
+    at: string,
+  ): Promise<StoredSession | null> {
+    const session = this.sessions.get(sessionId);
+    if (!session
+      || session.appSlug !== appSlug
+      || session.accountId !== accountId
+      || session.accessRevision !== expectedAccessRevision) return null;
+    const revoked = {
+      ...session,
+      lastSeenAt: at,
+      expiresAt: at,
+      accessRevision: expectedAccessRevision + 1,
+    };
+    this.sessions.set(sessionId, revoked);
+    return structuredClone(revoked);
   }
 
   async createAuthAttempt(input: CreateAuthAttemptInput): Promise<StoredAuthAttempt> {

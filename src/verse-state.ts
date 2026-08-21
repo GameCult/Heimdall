@@ -153,6 +153,11 @@ function buildCommandBoundary(config: HeimdallConfig, pulse: HeimdallRuntimePuls
         requestSchema: "heimdall.private_command_envelope.v1",
         responseSchema: "heimdall.auth_refresh_receipt.v1",
       },
+      {
+        operation: "heimdall.auth.logout",
+        requestSchema: "heimdall.private_command_envelope.v1",
+        responseSchema: "heimdall.auth_logout_receipt.v1",
+      },
     ],
     privateRoute: {
       endpoint: `rudp://${config.privateCommandHost ?? "127.0.0.1"}:${config.privateCommandPort ?? 4101}`,

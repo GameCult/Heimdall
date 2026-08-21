@@ -219,8 +219,12 @@ Landed in the first pass:
 
 Next in this phase:
 
-- revocation flows
 - connection lifecycle and token-rotation work
+
+Landed for the Ghostlight private-command consumer:
+
+- exact persisted-session validation for refresh
+- revision-bound logout revocation with stale-refresh rejection
 
 ### Phase 3: Repixelizer binding
 

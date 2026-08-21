@@ -158,6 +158,41 @@ describe("Heimdall Eve access plugin", () => {
     expect(refresh.accessToken).toEqual(expect.any(String));
     expect(refresh.refreshToken).toEqual(expect.any(String));
 
+    const logoutEnvelope = sealPrivateEnvelope({
+      appSlug: "ghostlight",
+      operation: "heimdall.auth.logout",
+      contentSchema: "heimdall.auth_logout_command.v1",
+      idempotencyKey: "logout-1",
+      secret,
+      payload: {
+        schema: "heimdall.auth_logout_command.v1",
+        refreshToken: refresh.refreshToken,
+      },
+    });
+    const logoutResponse = await invoke(plane.endpoint, "heimdall.auth.logout", "transport-logout-1", logoutEnvelope);
+    expect(logoutResponse.status).toBe("accepted");
+    const logout = openPrivateEnvelope(decodeEnvelope(logoutResponse.payload), secret);
+    expect(logout).toMatchObject({ schema: "heimdall.auth_logout_receipt.v1", status: "revoked" });
+
+    const staleRefreshEnvelope = sealPrivateEnvelope({
+      appSlug: "ghostlight",
+      operation: "heimdall.auth.refresh",
+      contentSchema: "heimdall.auth_refresh_command.v1",
+      idempotencyKey: "refresh-after-logout",
+      secret,
+      payload: {
+        refreshToken: refresh.refreshToken,
+        entitlementPolicy: {
+          kind: "discord_role_access",
+          guildId: "gamecult-guild",
+          allowedRoleIds: ["role-ktlst"],
+        },
+      },
+    });
+    const staleRefreshResponse = await invoke(plane.endpoint, "heimdall.auth.refresh", "transport-refresh-after-logout", staleRefreshEnvelope);
+    const staleRefresh = openPrivateEnvelope(decodeEnvelope(staleRefreshResponse.payload), secret);
+    expect(staleRefresh).toMatchObject({ schema: "heimdall.auth_refresh_receipt.v1", status: "denied" });
+
     const retry = await invoke(plane.endpoint, "heimdall.auth.complete", "transport-complete-retry", completeEnvelope);
     expect(openPrivateEnvelope(decodeEnvelope(retry.payload), secret)).toEqual(completion);
 

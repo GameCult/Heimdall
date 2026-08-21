@@ -31,7 +31,8 @@ Do not trust this file for the exact live HEAD. Always check git.
   fixtures, executable `describe`/`validate`/`project` ABI, and browser
   reference adapter
 - Heimdall persists OAuth attempts and serves authenticated
-  `heimdall.auth.begin` / `heimdall.auth.complete` through loopback
+  `heimdall.auth.begin` / `heimdall.auth.complete` / `heimdall.auth.refresh` /
+  `heimdall.auth.logout` through loopback
   CultNet/RUDP on port `4101`
 - private commands are source-runtime, app-secret, expiry, nonce, and
   idempotency bound; their MessagePack payloads and completion claims are
@@ -39,6 +40,9 @@ Do not trust this file for the exact live HEAD. Always check git.
 - the Ghostlight app profile now requires its caller-owned Discord role policy;
   Heimdall evaluates it and Ghostlight remains owner of local sessions,
   memberships, and campaigns
+- refresh verifies the exact persisted session revision before reissuing a
+  claim; logout expires that session and advances its revision, so a stale or
+  racing refresh cannot resurrect revoked custody
 
 - this repo now has a first stateful Heimdall service slice
 - the canonical shared architecture lives in `docs/architecture.md`
@@ -165,10 +169,10 @@ unsigned `idunn.daemon_health`, merge its private key into Idunn, or make HTTP
 health an authority. The next product work is the Bifrost and remaining browser
 verification listed below.
 
-For the active Ghostlight cut, first consume the access plugin and private
-command envelope in Ghostlight, then deploy Heimdall and Ghostlight through
-Idunn. Verify Odin sees the redacted plugin/route records while port `4101`
-remains loopback-only and no token appears in CultMesh, logs, or browser state.
+For the active Ghostlight cut, deploy the reviewed Heimdall and Ghostlight
+releases through Idunn. Verify Odin sees the redacted plugin/route records while
+port `4101` remains loopback-only and no token appears in CultMesh, logs, or
+browser state.
 
 If the user asks to continue on Spotiverse, the current next move is the real
 browser `/auth/login` flow through public Heimdall. The Yggdrasil SSH tunnel

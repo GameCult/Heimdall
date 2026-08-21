@@ -36,6 +36,7 @@ invariants:
   - Heimdall owns its persistent provider-health signing identity and signed observations; Idunn owns root-bound admission and the public provider-health projection. Unsigned health is never lifecycle authority.
   - Heimdall owns OAuth attempts and completion redemption; the Eve access plugin and browser can project or carry one opaque handle but cannot grant access.
   - Private auth commands are app-secret, source-runtime, expiry, nonce, and idempotency bound; sensitive completion claims remain AES-GCM wrapped until the app backend receives them.
+  - Refresh and logout are exact persisted-session transitions. App/account custody and access revision must match; logout advances the revision and stale refresh cannot recreate the session.
   - Persistent state cruft is the same failure class as architecture cruft.
 
 data_flow:
@@ -69,6 +70,7 @@ active_subgoals:
 accepted_design:
   - `gamecult.heimdall.access` owns access-gate representation and browser navigation semantics; it has no access-grant or provider-state authority.
   - Heimdall's loopback CultNet operation service owns authenticated auth begin/complete commands, while retained HTTP integrations remain supported for existing consumers.
+  - Ghostlight refresh and logout use the same private CultNet boundary; refresh re-evaluates the caller-owned KLTST policy and logout revokes exact Heimdall session custody.
   - `docs/architecture.md` is the canonical shared architecture note.
   - `docs/service-contract.md` records the concrete HTTP/JWKS contract of the landed service slice.
   - `docs/app-profiles/*.md` are thin app bindings, not duplicate brains.
@@ -92,6 +94,7 @@ accepted_design:
 
 landed_baseline:
   - The Heimdall access plugin, persistent OAuth attempts, encrypted private CultNet commands, conformance fixtures, and browser reference adapter are implemented and locally verified.
+  - Exact-session refresh validation and logout revocation are implemented; stale or racing refresh cannot resurrect a revoked session.
   - Shared architecture extracted into its own repo and renamed to Heimdall.
   - Repixelizer and StreamPixels app-profile notes created.
   - Repo-local state, handoff, and compaction scaffolding created.
@@ -120,5 +123,5 @@ rejected_paths:
     reason: reusing auth mechanics does not justify centralizing app-domain audience or product data
 
 current_status:
-  summary: The repository now contains the gamecult.heimdall.access Eve plugin, persistent auth attempts, and an authenticated encrypted loopback CultNet command plane for Ghostlight. The prior Yggdrasil release remains live until this commit is admitted through Idunn; signed health ownership remains unchanged.
-  next_action: Commit and push this Heimdall cut, then update Idunn/Odin deployment truth and migrate Ghostlight to the plugin/private-command contract.
+  summary: The repository contains the gamecult.heimdall.access Eve plugin, persistent auth attempts, and authenticated encrypted loopback CultNet begin, complete, refresh, and logout commands for Ghostlight. Refresh and logout are revision-bound to exact persisted session custody. The prior Yggdrasil release remains live until this commit is admitted through Idunn; signed health ownership remains unchanged.
+  next_action: Deploy this Heimdall release with the Eve-native Ghostlight release through Idunn, then verify Odin discovery, loopback-only port 4101, real KLTST authentication, refresh, logout, and secret absence from public surfaces.

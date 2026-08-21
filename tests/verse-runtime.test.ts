@@ -51,6 +51,7 @@ describe("Heimdall verse runtime publication", () => {
         { operation: "heimdall.auth.begin" },
         { operation: "heimdall.auth.complete" },
         { operation: "heimdall.auth.refresh" },
+        { operation: "heimdall.auth.logout" },
       ],
       privateRoute: {
         endpoint: "rudp://127.0.0.1:4101",

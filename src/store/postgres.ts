@@ -543,6 +543,9 @@ export class PostgresStore implements HeimdallStore {
         expires_at = EXCLUDED.expires_at,
         claims_json = EXCLUDED.claims_json,
         access_revision = EXCLUDED.access_revision
+      WHERE sessions.account_id = EXCLUDED.account_id
+        AND sessions.app_slug = EXCLUDED.app_slug
+        AND sessions.access_revision <= EXCLUDED.access_revision
       RETURNING *
       `,
       [
@@ -558,6 +561,31 @@ export class PostgresStore implements HeimdallStore {
     );
 
     return mapSessionRow(expectRow(result.rows[0], "createSession"));
+  }
+
+  async findSession(appSlug: AppSlug, sessionId: string): Promise<StoredSession | null> {
+    const result = await this.pool.query<SessionRow>(
+      "SELECT * FROM sessions WHERE app_slug = $1 AND id = $2",
+      [appSlug, sessionId],
+    );
+    return result.rowCount ? mapSessionRow(expectRow(result.rows[0], "findSession")) : null;
+  }
+
+  async revokeSession(
+    appSlug: AppSlug,
+    sessionId: string,
+    accountId: string,
+    expectedAccessRevision: number,
+    at: string,
+  ): Promise<StoredSession | null> {
+    const result = await this.pool.query<SessionRow>(
+      `UPDATE sessions
+       SET last_seen_at = $5, expires_at = $5, access_revision = access_revision + 1
+       WHERE app_slug = $1 AND id = $2 AND account_id = $3 AND access_revision = $4
+       RETURNING *`,
+      [appSlug, sessionId, accountId, expectedAccessRevision, at],
+    );
+    return result.rowCount ? mapSessionRow(expectRow(result.rows[0], "revokeSession")) : null;
   }
 
   async createAuthAttempt(input: CreateAuthAttemptInput): Promise<StoredAuthAttempt> {

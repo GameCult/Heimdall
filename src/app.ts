@@ -213,7 +213,7 @@ function parseRefreshTokenPayload(payload: Record<string, unknown>): RefreshToke
   return payload as unknown as RefreshTokenPayload;
 }
 
-function verifyRefreshToken(
+export function verifyRefreshToken(
   token: string,
   appSlug: AppSlug,
   config: HeimdallConfig,
@@ -1432,6 +1432,14 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       }
 
       const nowIso = new Date().toISOString();
+      const persistedSession = await store.findSession(request.params.appSlug, refreshClaim.sid);
+      if (!persistedSession
+        || persistedSession.accountId !== refreshClaim.account_id
+        || persistedSession.accessRevision !== refreshClaim.access_revision
+        || Date.parse(persistedSession.expiresAt) <= Date.parse(nowIso)) {
+        reply.code(401);
+        return { error: "revoked_or_stale_refresh_token" };
+      }
       const account = await store.findAccountById(refreshClaim.account_id);
       const linkedIdentities = await store.listLinkedIdentitiesForAccount(refreshClaim.account_id);
       const grants = await store.listActiveGrants(refreshClaim.account_id, request.params.appSlug, nowIso);

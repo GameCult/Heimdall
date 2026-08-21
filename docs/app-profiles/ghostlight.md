@@ -3,7 +3,7 @@
 Ghostlight Dungeon uses Heimdall's private CultNet authentication commands and
 the `gamecult.heimdall.access` Eve plugin. Heimdall owns provider OAuth,
 persistent attempts, local account identity, entitlement evaluation, signed
-access claims, completion redemption, and refresh. Ghostlight verifies claims
+access claims, completion redemption, refresh, and exact-session revocation. Ghostlight verifies claims
 locally and owns app sessions, campaigns, campaign membership, current campaign
 selection, and every world mutation.
 
@@ -26,3 +26,7 @@ The browser never carries provider tokens or a completion code. The access
 plugin stores only an opaque attempt handle. Ghostlight redeems that handle over
 the encrypted loopback command plane, verifies the resulting `aud=ghostlight`
 claim against Heimdall JWKS, and establishes app-local campaign authority.
+Short-lived local access continues without a Heimdall round trip. Scheduled
+refresh re-evaluates the Ghostlight-owned KLTST role policy; explicit logout
+revokes both Ghostlight's local session and the matching Heimdall refresh
+custody record.

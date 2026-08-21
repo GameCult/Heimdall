@@ -206,6 +206,14 @@ export interface HeimdallStore {
   createCapabilityGrant(input: CreateCapabilityGrantInput): Promise<StoredCapabilityGrant>;
   listActiveGrants(accountId: string, appSlug: AppSlug, at: string): Promise<StoredCapabilityGrant[]>;
   createSession(input: CreateSessionInput): Promise<StoredSession>;
+  findSession(appSlug: AppSlug, sessionId: string): Promise<StoredSession | null>;
+  revokeSession(
+    appSlug: AppSlug,
+    sessionId: string,
+    accountId: string,
+    expectedAccessRevision: number,
+    at: string,
+  ): Promise<StoredSession | null>;
   createAuthAttempt(input: CreateAuthAttemptInput): Promise<StoredAuthAttempt>;
   findAuthAttempt(appSlug: AppSlug, handle: string): Promise<StoredAuthAttempt | null>;
   updateAuthAttempt(
