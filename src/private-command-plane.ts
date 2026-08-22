@@ -234,7 +234,7 @@ async function refreshAuth(
   const refreshedPayload = refreshed.json<Record<string, unknown>>();
   if (refreshed.statusCode !== 201) {
     return {
-      status: "denied",
+      status: "accepted",
       payloadSchema: "heimdall.auth_refresh_receipt.v1",
       payload: {
         schema: "heimdall.auth_refresh_receipt.v1",
@@ -326,22 +326,29 @@ async function completeAuth(
   const now = new Date().toISOString();
   if (attempt.expiresAt <= now && attempt.status !== "completed") {
     await store.updateAuthAttempt(appSlug, handle, { status: "expired", at: now });
-    return authCompletion("denied", { error: "expired_attempt" });
+    return authCompletion("denied", { handle, error: "expired_attempt" });
   }
   if (attempt.status === "pending") return authCompletion("pending", { handle });
-  if (attempt.status !== "completed") return authCompletion("denied", { error: attempt.denialCode ?? `attempt_${attempt.status}` });
+  if (attempt.status !== "completed") {
+    return authCompletion("denied", { handle, error: attempt.denialCode ?? `attempt_${attempt.status}` });
+  }
   const redemption = await app.inject({
     method: "POST",
     url: `/v1/apps/${appSlug}/auth-completions/redeem`,
     payload: { completionCode: handle },
   });
-  if (redemption.statusCode !== 201) return authCompletion("denied", { error: "invalid_or_expired_completion" });
-  return authCompletion("authenticated", redemption.json<Record<string, unknown>>());
+  if (redemption.statusCode !== 201) {
+    return authCompletion("denied", { handle, error: "invalid_or_expired_completion" });
+  }
+  return authCompletion("authenticated", { handle, ...redemption.json<Record<string, unknown>>() });
 }
 
 function authCompletion(status: string, values: Record<string, unknown>) {
   return {
-    status: status === "authenticated" ? "accepted" : status,
+    // CultNet reports whether the private command executed. Authentication state
+    // remains inside the typed receipt so callers can decode pending and denied
+    // outcomes instead of mistaking them for transport failures.
+    status: "accepted",
     payloadSchema: "heimdall.auth_completion_receipt.v1",
     payload: { ...values, schema: "heimdall.auth_completion_receipt.v1", status },
   };

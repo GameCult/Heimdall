@@ -111,6 +111,19 @@ describe("Heimdall Eve access plugin", () => {
     const state = new URL(navigation.url).searchParams.get("state");
     expect(state).toBeTruthy();
 
+    const pendingEnvelope = sealPrivateEnvelope({
+      appSlug: "ghostlight",
+      operation: "heimdall.auth.complete",
+      contentSchema: "heimdall.auth_complete_command.v1",
+      idempotencyKey: "complete-pending-1",
+      secret,
+      payload: { handle },
+    });
+    const pendingResponse = await invoke(plane.endpoint, "heimdall.auth.complete", "transport-complete-pending-1", pendingEnvelope);
+    expect(pendingResponse.status).toBe("accepted");
+    const pending = openPrivateEnvelope(decodeEnvelope(pendingResponse.payload), secret);
+    expect(pending).toMatchObject({ status: "pending", handle });
+
     const callback = await app.inject({
       method: "GET",
       url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(state ?? "")}`,
@@ -134,7 +147,21 @@ describe("Heimdall Eve access plugin", () => {
     expect(completionWire.contentSchema).toBe("heimdall.auth_completion_receipt.v1");
     const completion = openPrivateEnvelope(completionWire, secret);
     expect(completion.status).toBe("authenticated");
+    expect(completion.handle).toBe(handle);
     expect(completion.accessToken).toEqual(expect.any(String));
+
+    const consumedEnvelope = sealPrivateEnvelope({
+      appSlug: "ghostlight",
+      operation: "heimdall.auth.complete",
+      contentSchema: "heimdall.auth_complete_command.v1",
+      idempotencyKey: "complete-consumed-1",
+      secret,
+      payload: { handle },
+    });
+    const consumedResponse = await invoke(plane.endpoint, "heimdall.auth.complete", "transport-complete-consumed-1", consumedEnvelope);
+    expect(consumedResponse.status).toBe("accepted");
+    const consumed = openPrivateEnvelope(decodeEnvelope(consumedResponse.payload), secret);
+    expect(consumed).toMatchObject({ status: "denied", handle, error: "attempt_consumed" });
 
     const refreshEnvelope = sealPrivateEnvelope({
       appSlug: "ghostlight",
