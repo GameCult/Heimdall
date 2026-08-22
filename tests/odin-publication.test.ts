@@ -16,16 +16,22 @@ describe("Heimdall Odin publication", () => {
     });
     const pulse = createHeimdallRuntimePulse(config, "2026-08-22T12:00:00.000Z");
     const published: CultCacheRecord[] = [];
+    let inFlight = 0;
+    let maximumInFlight = 0;
 
     await publishHeimdallOdinState(config, pulse, {
       environment: { CULTMESH_URI_ODIN_RUDP: "10.77.0.1:17871" },
       publish: async (record, endpoint) => {
+        inFlight += 1;
+        maximumInFlight = Math.max(maximumInFlight, inFlight);
         expect(endpoint).toEqual({
           host: "10.77.0.1",
           port: 17871,
           uri: "rudp://10.77.0.1:17871",
         });
         published.push(record);
+        await Promise.resolve();
+        inFlight -= 1;
       },
     });
 
@@ -40,6 +46,7 @@ describe("Heimdall Odin publication", () => {
     expect(serialized).not.toContain("must-never-publish-either");
     expect(serialized).not.toContain("access_token");
     expect(serialized).not.toContain("refresh_token");
+    expect(maximumInFlight).toBe(1);
   });
 
   it("does not invent an Odin route when publication is not configured", async () => {

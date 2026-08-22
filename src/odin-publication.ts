@@ -35,9 +35,9 @@ export async function publishHeimdallOdinState(
     options.environment ?? process.env,
   );
   const publish = options.publish ?? publishRecord;
-  await Promise.all(
-    buildHeimdallVerseRecords(config, pulse).map((record) => publish(record, endpoint)),
-  );
+  for (const record of buildHeimdallVerseRecords(config, pulse)) {
+    await publish(record, endpoint);
+  }
 }
 
 async function publishRecord(
@@ -60,6 +60,8 @@ async function publishRecord(
     record.key,
     payload,
     {
+      flushTimeoutMs: 500,
+      resendPollMs: 10,
       sourceRole: "heimdall-auth-authority",
       tags: ["heimdall", "redacted", "discovery"],
     },
