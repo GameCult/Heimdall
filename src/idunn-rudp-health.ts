@@ -119,7 +119,7 @@ async function buildSignedDocumentPutPayload(config: HeimdallConfig, health: Idu
     schemaVersion: "cultnet.document_put_raw.v0",
     messageId: `heimdall-health:${health.daemonId}:${health.observedAt.replace(/[:.]/g, "-")}`,
     document: {
-      schemaId: "idunn.signed_daemon_health",
+      schemaId: SIGNED_DAEMON_HEALTH_SCHEMA,
       recordKey: health.daemonId,
       storedAt: health.observedAt,
       payloadEncoding: "messagepack",

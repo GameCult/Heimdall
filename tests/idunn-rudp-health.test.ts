@@ -76,7 +76,7 @@ describe("Heimdall Idunn health publication", () => {
       if (message.schemaVersion !== "cultnet.document_put_raw.v0") {
         throw new Error("Expected raw document publication.");
       }
-      expect(message.document.schemaId).toBe("idunn.signed_daemon_health");
+      expect(message.document.schemaId).toBe("idunn.signed_daemon_health.v1");
       expect(message.document.recordKey).toBe("yggdrasil-heimdall");
       expect(message.document.sourceRuntimeId).toBe("heimdall-service");
       expect(message.document.sourceRole).toBe("daemon-health-publisher");
