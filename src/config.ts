@@ -27,6 +27,7 @@ export interface HeimdallConfig {
   daemonId: string;
   idunnRudpHealth: string | undefined;
   idunnHealthContract: string;
+  odinCultMeshUri?: string;
   providerHealthIdentityPath: string;
   sessionTtlSeconds: number;
   refreshTtlSeconds: number;
@@ -170,6 +171,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): HeimdallConfig
     },
     providers: providersConfig,
   };
+
+  const odinCultMeshUri = readOptionalString(env.GC_ACCESS_ODIN_CULTMESH_URI);
+  if (odinCultMeshUri) {
+    config.odinCultMeshUri = odinCultMeshUri;
+  }
 
   const signingPrivateKeyPem = env.GC_ACCESS_SIGNING_PRIVATE_KEY_PEM?.replace(/\\n/g, "\n");
   if (signingPrivateKeyPem) {

@@ -1,6 +1,7 @@
 import { buildApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { publishIdunnRudpHealth } from "./idunn-rudp-health.js";
+import { publishHeimdallOdinState } from "./odin-publication.js";
 import { startHeimdallPrivateCommandPlane } from "./private-command-plane.js";
 import type { CultNetOperationServer } from "cultnet-ts";
 import { createHeimdallRuntimePulse, buildHeimdallHealthDetail, publishHeimdallVerseState } from "./verse-state.js";
@@ -39,6 +40,7 @@ try {
 async function publishVerseState(): Promise<void> {
   const pulse = createHeimdallRuntimePulse(config);
   await publishHeimdallVerseState(config, pulse);
+  await publishHeimdallOdinState(config, pulse);
 }
 
 async function publishHealthState(): Promise<void> {

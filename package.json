@@ -19,9 +19,11 @@
     "@fastify/cors": "^11.2.0",
     "@msgpack/msgpack": "^3.1.3",
     "cultcache-ts": "file:../CultLib/packages/cultcache-ts",
+    "cultmesh-ts": "file:../CultLib/packages/cultmesh-ts",
     "cultnet-ts": "file:../CultLib/packages/cultnet-ts",
     "fastify": "^5.8.5",
-    "pg": "^8.20.0"
+    "pg": "^8.20.0",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",
@@ -30,5 +32,11 @@
     "tsx": "^4.21.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.5"
+  },
+  "pnpm": {
+    "overrides": {
+      "cultcache-ts": "file:../CultLib/packages/cultcache-ts",
+      "cultnet-ts": "file:../CultLib/packages/cultnet-ts"
+    }
   }
 }

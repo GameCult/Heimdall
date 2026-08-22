@@ -8,7 +8,7 @@ import { buildHeimdallProviderAdvertisement } from "./verse-witness.js";
 
 const STORE_FORMAT_VERSION = "cultcache.store.v1";
 
-type CultCacheRecord = {
+export type CultCacheRecord = {
   key: string;
   schemaId: string;
   schemaName: string;
@@ -40,6 +40,22 @@ export function createHeimdallRuntimePulse(config: HeimdallConfig, updatedAt = n
 
 export async function publishHeimdallVerseState(config: HeimdallConfig, pulse: HeimdallRuntimePulse): Promise<void> {
   const records: CultCacheRecord[] = [
+    ...buildHeimdallVerseRecords(config, pulse),
+    {
+      key: config.daemonId,
+      schemaId: "idunn.daemon_health",
+      schemaName: "idunn.daemon_health",
+      schemaVersion: "idunn.daemon_health.v1",
+      payload: buildDaemonHealthRecord(config, pulse),
+      storedAt: pulse.updatedAt,
+    },
+  ];
+
+  await writeCultCacheSnapshot(config.cultCachePath, records);
+}
+
+export function buildHeimdallVerseRecords(config: HeimdallConfig, pulse: HeimdallRuntimePulse): CultCacheRecord[] {
+  return [
     {
       key: "heimdall",
       schemaId: "gamecult.eve.provider_advertisement.v1",
@@ -72,17 +88,7 @@ export async function publishHeimdallVerseState(config: HeimdallConfig, pulse: H
       payload: buildTransportProfile(config, pulse),
       storedAt: pulse.updatedAt,
     },
-    {
-      key: config.daemonId,
-      schemaId: "idunn.daemon_health",
-      schemaName: "idunn.daemon_health",
-      schemaVersion: "idunn.daemon_health.v1",
-      payload: buildDaemonHealthRecord(config, pulse),
-      storedAt: pulse.updatedAt,
-    },
   ];
-
-  await writeCultCacheSnapshot(config.cultCachePath, records);
 }
 
 export function buildHeimdallHealthDetail(config: HeimdallConfig, pulse: HeimdallRuntimePulse): string {
