@@ -2,8 +2,8 @@
 
 ## What this file is
 
-This file is the shared architecture note for Heimdall, the planned auth
-authority service for GameCult-hosted experiments.
+This file is the shared architecture note for Heimdall, GameCult's auth
+authority service for hosted experiments.
 
 Its basic promise is:
 
@@ -13,7 +13,8 @@ Its basic promise is:
 - issue signed local claims that hosted apps can verify without trusting raw
   provider tokens
 
-It is not a map of landed auth code yet.
+Implementation and live-release detail belongs in the handoff and evidence
+ledger; this file owns the authority model.
 
 ## Problem
 
@@ -94,6 +95,14 @@ The browser adapter stores one opaque attempt handle and follows only HTTPS
 navigation receipts whose origin appears in both the plugin advertisement and
 the validated receipt. It never receives access or refresh claims. The host app
 redeems the handle, verifies the Heimdall claim, and owns its local session.
+
+Heimdall publishes four redacted discovery documents to Odin: provider
+advertisement, command boundary, plugin advertisement, and transport profile.
+Their record keys are globally unique within Odin's catalog. Odin persists and
+returns these documents but does not proxy private auth commands. Consumers
+resolve the route through Odin, validate the advertised loopback/HMAC/AES
+contract, and talk directly to Heimdall. Claims, completions, provider tokens,
+app secrets, and account state never enter Odin or public CultMesh.
 
 ## Provider taxonomy
 

@@ -27,6 +27,18 @@ Do not trust this file for the exact live HEAD. Always check git.
 
 ## Current Orientation
 
+- Yggdrasil runs Heimdall
+  `1086aee01169bf60e8a492b2740db1c6f3e8cabf` with CultLib
+  `5cefa0db0079a8e3ee22f29d7b9e6e5aa60912a9`
+- Heimdall publishes four redacted access records to Odin under unique keys:
+  `eve:provider:heimdall`, `heimdall:command-boundary`,
+  `eve:plugin:gamecult.heimdall.access`, and `heimdall:transport-profile`
+- Odin `b4f9a2e95f0b41cebdeddc49223781d1d3c7b42a` persists and returns all four;
+  it does not proxy private commands or receive claims
+- Ghostlight `b515ca90c25573005a616244143803b37f2d06ec` resolves the boundary through
+  Odin and accepted a live canonical anonymous `heimdall.auth.begin`; its unit
+  has no direct Heimdall endpoint
+
 - `gamecult.heimdall.access` now has a manifest, advertisement, schemas,
   fixtures, executable `describe`/`validate`/`project` ABI, and browser
   reference adapter
@@ -138,17 +150,15 @@ Do not trust this file for the exact live HEAD. Always check git.
   configured; HTTP `/healthz`, JWKS, discovery, systemd, and nginx routing
   remain compatibility witnesses
 - Yggdrasil now runs Heimdall commit
-  `2a905354b9dc85101463030dea9045c1561a4638`. Heimdall persists its private
+  `1086aee01169bf60e8a492b2740db1c6f3e8cabf`. Heimdall persists its private
   provider-health identity at `/srv/heimdall/keys/provider-health-identity.cc`
   and publishes canonical signed health independently of the slower Verse
   snapshot cadence. Idunn owns the exact root trust binding, authenticated
   admission, lifecycle decision, and redacted public `.cc` projection.
-- Odin commit `5586910fa704b8a0d330b90a902a89b99566db77` fixes Idunn's RUDP health
-  and public-query listeners so `EINTR` retries instead of killing the
-  listener, and treats its whole-second ingress timestamp as the interval it
-  represents when checking a publisher's millisecond clock. Live proof showed
-  seven consecutive authenticated Heimdall admissions at the intended cadence
-  with both services active and zero restarts.
+- Odin commit `b4f9a2e95f0b41cebdeddc49223781d1d3c7b42a` retains the RUDP health
+  reliability cut and registers Heimdall's command-boundary, plugin, and
+  transport schemas so the typed catalog can persist rather than silently drop
+  them. Live proof returned all four exact Heimdall records.
 
 ## Critical Doctrine
 
@@ -169,10 +179,11 @@ unsigned `idunn.daemon_health`, merge its private key into Idunn, or make HTTP
 health an authority. The next product work is the Bifrost and remaining browser
 verification listed below.
 
-For the active Ghostlight cut, deploy the reviewed Heimdall and Ghostlight
-releases through Idunn. Verify Odin sees the redacted plugin/route records while
-port `4101` remains loopback-only and no token appears in CultMesh, logs, or
-browser state.
+The active Ghostlight deployment cut is complete. The next Ghostlight work is a
+real separate-account KLTST completion/refresh/logout canary, followed by the
+eight-account Session Zero privacy and actor-binding smoke. Keep port `4101`
+loopback-only and treat any claim, token, completion, app secret, or account
+state in Odin/CultMesh/browser output as a release-blocking fault.
 
 If the user asks to continue on Spotiverse, the current next move is the real
 browser `/auth/login` flow through public Heimdall. The Yggdrasil SSH tunnel

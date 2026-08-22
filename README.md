@@ -51,12 +51,17 @@ Landed right now:
   `heimdall.auth.begin` and `heimdall.auth.complete`; app payloads and completion
   claims are AES-256-GCM wrapped and HMAC-bound to expiry, nonce, operation,
   runtime, and idempotency identity
+- redacted provider, command-boundary, plugin, and transport records published
+  through Odin under unique typed catalog keys; secret-bearing auth state never
+  enters the catalog
+- the deployed Ghostlight Eve host consumes that discovered boundary and keeps
+  routine app-session verification local
 
-Still not landed:
+Remaining work:
 
-- the Ghostlight Eve-host consumer migration and deployed two-account canary
+- the two-account and eight-account Ghostlight human canaries
 - refresh/revocation flows and admin surfaces
-- full redacted per-document Heimdall auth witness export or CultMesh publication
+- broader admin and inspection projections beyond the redacted access boundary
 
 Canonical docs:
 

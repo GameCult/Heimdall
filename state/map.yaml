@@ -59,7 +59,7 @@ data_flow:
     - reject per-request auth round-trip chatter
 
 active_subgoals:
-  - Migrate Ghostlight to the gamecult.heimdall.access plugin and private command plane.
+  - Pressure the deployed Ghostlight gamecult.heimdall.access integration with two- and eight-account human canaries.
   - Keep the shared architecture explicit and separate from app profiles.
   - Preserve the default boundary that app-domain data remains app-owned.
   - Align the plan to Heimdall as a Yggdrasil-hosted authority service.
@@ -93,6 +93,8 @@ accepted_design:
   - Heimdall's first runtime Verse cut publishes a service-owned CultCache boundary store and optional Idunn RUDP health pulse; full redacted auth-document witness export remains a later pass.
 
 landed_baseline:
+  - Heimdall publishes its redacted provider, command boundary, Eve plugin, and transport profile through Odin under globally unique record keys; Ghostlight resolves that boundary instead of owning a direct endpoint.
+  - Yggdrasil runs Heimdall 1086aee01169bf60e8a492b2740db1c6f3e8cabf with CultLib 5cefa0db0079a8e3ee22f29d7b9e6e5aa60912a9; live Ghostlight auth.begin through Odin discovery is accepted.
   - The Heimdall access plugin, persistent OAuth attempts, encrypted private CultNet commands, conformance fixtures, and browser reference adapter are implemented and locally verified.
   - Exact-session refresh validation and logout revocation are implemented; stale or racing refresh cannot resurrect a revoked session.
   - Shared architecture extracted into its own repo and renamed to Heimdall.
@@ -123,5 +125,5 @@ rejected_paths:
     reason: reusing auth mechanics does not justify centralizing app-domain audience or product data
 
 current_status:
-  summary: The repository contains the gamecult.heimdall.access Eve plugin, persistent auth attempts, and authenticated encrypted loopback CultNet begin, complete, refresh, and logout commands for Ghostlight. Refresh and logout are revision-bound to exact persisted session custody. The prior Yggdrasil release remains live until this commit is admitted through Idunn; signed health ownership remains unchanged.
-  next_action: Deploy this Heimdall release with the Eve-native Ghostlight release through Idunn, then verify Odin discovery, loopback-only port 4101, real KLTST authentication, refresh, logout, and secret absence from public surfaces.
+  summary: Yggdrasil runs the gamecult.heimdall.access plugin and encrypted loopback begin, complete, refresh, and logout plane at 1086aee01169bf60e8a492b2740db1c6f3e8cabf. Odin returns all four redacted discovery records, Ghostlight resolves the boundary through Odin, and live anonymous auth.begin is accepted without exposing claims or secrets.
+  next_action: Run separate-account KLTST completion, refresh, logout, privacy, and stale-attempt canaries through the deployed Ghostlight Eve host; keep provider credential rotation on the operator list because prior tool output exposed OAuth secrets.

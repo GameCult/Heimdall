@@ -89,10 +89,19 @@ Landed in Heimdall:
 
 Remaining outside this repo:
 
-- Ghostlight must consume the plugin, verify returned claims, and own its local
-  sessions
-- Idunn must deploy the new release and Odin must witness the plugin and route
-  metadata
+- complete the two-account and eight-account Ghostlight human canaries
+- pressure refresh, logout, stale completion, and Odin-outage behavior through
+  the deployed browser host
+
+Live proof:
+
+- Heimdall `1086aee01169bf60e8a492b2740db1c6f3e8cabf` with CultLib
+  `5cefa0db0079a8e3ee22f29d7b9e6e5aa60912a9` is active on Yggdrasil
+- Odin's typed snapshot returns the provider, command boundary, plugin, and
+  transport profile under their unique record keys
+- Ghostlight accepted a canonical anonymous `heimdall.auth.begin` by resolving
+  that boundary through Odin; the navigation receipt exposed only advertised
+  Discord and Heimdall origins
 
 ### 1. Lock the service boundary
 
