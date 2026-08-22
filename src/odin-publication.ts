@@ -36,7 +36,22 @@ export async function publishHeimdallOdinState(
   );
   const publish = options.publish ?? publishRecord;
   for (const record of buildHeimdallVerseRecords(config, pulse)) {
-    await publish(record, endpoint);
+    await publish({ ...record, key: odinCatalogKey(record) }, endpoint);
+  }
+}
+
+function odinCatalogKey(record: CultCacheRecord): string {
+  switch (record.schemaId) {
+    case "gamecult.eve.provider_advertisement.v1":
+      return "eve:provider:heimdall";
+    case "heimdall.command_boundary.v1":
+      return "heimdall:command-boundary";
+    case "gamecult.eve.plugin_advertisement.v1":
+      return "eve:plugin:gamecult.heimdall.access";
+    case "heimdall.transport_profile.v1":
+      return "heimdall:transport-profile";
+    default:
+      throw new Error(`Heimdall has no Odin catalog key for ${record.schemaId}`);
   }
 }
 

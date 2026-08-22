@@ -36,10 +36,10 @@ describe("Heimdall Odin publication", () => {
     });
 
     expect(published.map((record) => [record.schemaId, record.key])).toEqual([
-      ["gamecult.eve.provider_advertisement.v1", "heimdall"],
-      ["heimdall.command_boundary.v1", "heimdall"],
-      ["gamecult.eve.plugin_advertisement.v1", "gamecult.heimdall.access"],
-      ["heimdall.transport_profile.v1", "heimdall"],
+      ["gamecult.eve.provider_advertisement.v1", "eve:provider:heimdall"],
+      ["heimdall.command_boundary.v1", "heimdall:command-boundary"],
+      ["gamecult.eve.plugin_advertisement.v1", "eve:plugin:gamecult.heimdall.access"],
+      ["heimdall.transport_profile.v1", "heimdall:transport-profile"],
     ]);
     const serialized = JSON.stringify(published);
     expect(serialized).not.toContain("must-never-publish");
@@ -85,10 +85,10 @@ describe("Heimdall Odin publication", () => {
         environment: { CULTMESH_URI_ODIN_RUDP: `127.0.0.1:${server.bind.port}` },
       });
       expect([...received].sort()).toEqual([
-        "gamecult.eve.plugin_advertisement.v1:gamecult.heimdall.access",
-        "gamecult.eve.provider_advertisement.v1:heimdall",
-        "heimdall.command_boundary.v1:heimdall",
-        "heimdall.transport_profile.v1:heimdall",
+        "gamecult.eve.plugin_advertisement.v1:eve:plugin:gamecult.heimdall.access",
+        "gamecult.eve.provider_advertisement.v1:eve:provider:heimdall",
+        "heimdall.command_boundary.v1:heimdall:command-boundary",
+        "heimdall.transport_profile.v1:heimdall:transport-profile",
       ]);
     } finally {
       server.close();
