@@ -4,6 +4,10 @@ export interface HeimdallAccessResumeTarget {
   complete(handle: string): Promise<void>;
 }
 
+export interface HeimdallAccessResumeOptions {
+  appSlug: string;
+}
+
 export function createHeimdallAccessBrowserAdapter(options: { advertisedOrigins: readonly string[] }) {
   const advertisedOrigins = new Set(options.advertisedOrigins.map(value => new URL(value).origin));
   return {
@@ -68,11 +72,60 @@ export const heimdallAccessBrowserAdapter = createHeimdallAccessBrowserAdapter({
   advertisedOrigins: ["https://discord.com", "https://heimdall.gamecult.org"],
 });
 
-export async function resumeHeimdallAccess(target: HeimdallAccessResumeTarget): Promise<boolean> {
-  const handle = sessionStorage.getItem(ATTEMPT_KEY);
+export async function resumeHeimdallAccess(
+  target: HeimdallAccessResumeTarget,
+  options: HeimdallAccessResumeOptions,
+): Promise<boolean> {
+  const returned = readHeimdallBrowserReturn(window.location.href, options.appSlug);
+  const storedHandle = sessionStorage.getItem(ATTEMPT_KEY);
+  if (returned) {
+    clearHeimdallBrowserReturn();
+    if (returned.status === "error") {
+      sessionStorage.removeItem(ATTEMPT_KEY);
+      throw new Error(returned.message);
+    }
+    if (storedHandle && storedHandle !== returned.handle) {
+      sessionStorage.removeItem(ATTEMPT_KEY);
+      throw new Error("Heimdall returned an authentication attempt other than the one this browser started.");
+    }
+    sessionStorage.setItem(ATTEMPT_KEY, returned.handle);
+  }
+  const handle = returned?.status === "success" ? returned.handle : storedHandle;
   if (!handle) return false;
   await target.complete(handle);
   return true;
+}
+
+export function readHeimdallBrowserReturn(
+  href: string,
+  appSlug: string,
+): { status: "success"; handle: string } | { status: "error"; message: string } | undefined {
+  const url = new URL(href);
+  const parameters = new URLSearchParams(url.hash.startsWith("#") ? url.hash.slice(1) : url.hash);
+  const status = parameters.get("heimdall_status");
+  if (!status) return undefined;
+  if (parameters.get("heimdall_handoff_kind") !== "browser_completion"
+    || parameters.get("heimdall_app_slug") !== appSlug) {
+    return { status: "error", message: "Heimdall returned an authentication result for another application or handoff mode." };
+  }
+  if (status !== "success") {
+    return {
+      status: "error",
+      message: parameters.get("heimdall_error_description")
+        || parameters.get("heimdall_error")
+        || "Heimdall authentication failed.",
+    };
+  }
+  const attemptId = parameters.get("heimdall_attempt_id") || "";
+  const completionCode = parameters.get("heimdall_completion_code") || "";
+  if (!attemptId || !completionCode || attemptId !== completionCode) {
+    return { status: "error", message: "Heimdall returned a malformed authentication completion witness." };
+  }
+  return { status: "success", handle: completionCode };
+}
+
+function clearHeimdallBrowserReturn(): void {
+  history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
 }
 
 function object(value: unknown): Record<string, unknown> {
