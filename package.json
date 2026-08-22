@@ -12,6 +12,7 @@
     "start": "node dist/index.js",
     "test": "vitest run --config vitest.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "export:provider-health-public-key": "tsx src/export-provider-health-public-key.ts",
     "export:provider-advertisement": "tsx src/export-provider-advertisement.ts --pretty"
   },
   "dependencies": {
