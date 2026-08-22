@@ -2,6 +2,8 @@ import dgram from "node:dgram";
 import { randomUUID } from "node:crypto";
 import { encode } from "@msgpack/msgpack";
 import {
+  CultNetRudpSession,
+  decodeRudpPacket,
   encodeCultNetMessageForWire,
   encodeRudpPacket,
   type CultNetDocumentPutRawMessage,
@@ -16,8 +18,8 @@ import {
 const CULTNET_RUDP_PROTOCOL_ID = "cultnet.transport.rudp.v0";
 const IDUNN_HEALTH_RUDP_CONNECTION_ID = 0x1d0d0001;
 const RUDP_HEALTH_CONNECT_ATTEMPTS = 3;
-const RUDP_PULSE_POST_SEND_GRACE_MS = 1000;
-const RUDP_CONNECT_TO_DATA_GRACE_MS = 300;
+const RUDP_ACCEPT_TIMEOUT_MS = 2_000;
+const RUDP_ACK_TIMEOUT_MS = 1_000;
 const SIGNED_DAEMON_HEALTH_SCHEMA = "idunn.signed_daemon_health.v1";
 const publisherIncarnationId = randomUUID();
 let publisherSequence = 0;
@@ -61,16 +63,30 @@ async function publishIdunnRudpHealthOnce(
   health: IdunnHealthInput,
 ): Promise<void> {
   const socket = dgram.createSocket(endpointFamily(endpoint.host));
+  const receiver = createPacketReceiver(socket);
+  const session = new CultNetRudpSession({
+    connectionId: IDUNN_HEALTH_RUDP_CONNECTION_ID,
+    initialSequence: 1,
+    resendDelayMs: 100,
+  });
 
   try {
     await bindSocket(socket, endpoint);
-    const connect = buildConnectPacket();
-    await sendPacket(socket, endpoint, connect);
-    await sleep(RUDP_CONNECT_TO_DATA_GRACE_MS);
+    await sendPacket(socket, endpoint, session.createConnect(Date.now(), new Uint8Array()));
+    await receiveUntil(receiver, session, endpoint, "accept", RUDP_ACCEPT_TIMEOUT_MS);
+
     const payload = await buildSignedDocumentPutPayload(config, health);
-    await sendPacket(socket, endpoint, buildSchemaDataPacket(payload));
-    await sleep(RUDP_PULSE_POST_SEND_GRACE_MS);
+    const ack = receiveUntil(receiver, session, endpoint, "ack", RUDP_ACK_TIMEOUT_MS);
+    for (const packet of session.sendMany("schema", payload, {
+      reliable: true,
+      ordered: true,
+      nowMs: Date.now(),
+    })) {
+      await sendPacket(socket, endpoint, packet);
+    }
+    await ack;
   } finally {
+    receiver.close();
     socket.close();
   }
 }
@@ -117,36 +133,6 @@ async function buildSignedDocumentPutPayload(config: HeimdallConfig, health: Idu
   return encode(encodeCultNetMessageForWire(message, "cultnet.schema.v0"));
 }
 
-function buildConnectPacket(): CultNetRudpPacket {
-  return {
-    packetType: "connect",
-    connectionId: IDUNN_HEALTH_RUDP_CONNECTION_ID,
-    sequence: 1,
-    ack: 0,
-    ackMask: 0,
-    channelId: "control",
-    reliable: true,
-    ordered: true,
-    sequenced: false,
-    payload: new Uint8Array(),
-  };
-}
-
-function buildSchemaDataPacket(payload: Uint8Array): CultNetRudpPacket {
-  return {
-    packetType: "data",
-    connectionId: IDUNN_HEALTH_RUDP_CONNECTION_ID,
-    sequence: 2,
-    ack: 0,
-    ackMask: 0,
-    channelId: "schema",
-    reliable: true,
-    ordered: true,
-    sequenced: false,
-    payload,
-  };
-}
-
 async function bindSocket(socket: dgram.Socket, endpoint: Endpoint): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     socket.once("error", reject);
@@ -180,10 +166,6 @@ async function sendPacket(socket: dgram.Socket, endpoint: Endpoint, input: CultN
   });
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function endpointFamily(host: string): "udp4" | "udp6" {
   return host.includes(":") ? "udp6" : "udp4";
 }
@@ -210,4 +192,109 @@ function parsePort(value: string): number {
     throw new Error(`Idunn RUDP endpoint port is invalid: ${value}`);
   }
   return port;
+}
+
+type PacketReceiver = {
+  socket: dgram.Socket;
+  next(timeoutMs: number, label: string): Promise<CultNetRudpPacket>;
+  close(): void;
+};
+
+function createPacketReceiver(socket: dgram.Socket): PacketReceiver {
+  const packets: CultNetRudpPacket[] = [];
+  const errors: Error[] = [];
+  const waiters: Array<{
+    resolve: (packet: CultNetRudpPacket) => void;
+    reject: (error: Error) => void;
+    timer: NodeJS.Timeout;
+  }> = [];
+
+  const resolveNext = (): void => {
+    while (waiters.length > 0 && (packets.length > 0 || errors.length > 0)) {
+      const waiter = waiters.shift()!;
+      clearTimeout(waiter.timer);
+      const error = errors.shift();
+      if (error) waiter.reject(error);
+      else waiter.resolve(packets.shift()!);
+    }
+  };
+  const onMessage = (wire: Buffer): void => {
+    try {
+      packets.push(decodeRudpPacket(wire));
+    } catch (error) {
+      errors.push(asError(error));
+    }
+    resolveNext();
+  };
+  const onError = (error: Error): void => {
+    errors.push(error);
+    resolveNext();
+  };
+  socket.on("message", onMessage);
+  socket.on("error", onError);
+
+  return {
+    socket,
+    next(timeoutMs, label) {
+      const packet = packets.shift();
+      if (packet) return Promise.resolve(packet);
+      const error = errors.shift();
+      if (error) return Promise.reject(error);
+      return new Promise((resolve, reject) => {
+        const waiter = {
+          resolve,
+          reject,
+          timer: setTimeout(() => {
+            const index = waiters.indexOf(waiter);
+            if (index >= 0) waiters.splice(index, 1);
+            const timeout = new Error(`timed out waiting for Idunn RUDP ${label}`) as Error & { code?: string };
+            timeout.code = "ETIMEDOUT";
+            reject(timeout);
+          }, Math.max(1, timeoutMs)),
+        };
+        waiters.push(waiter);
+      });
+    },
+    close() {
+      socket.off("message", onMessage);
+      socket.off("error", onError);
+      while (waiters.length > 0) {
+        const waiter = waiters.shift()!;
+        clearTimeout(waiter.timer);
+        const error = new Error("Idunn RUDP packet receiver closed") as Error & { code?: string };
+        error.code = "ECLOSED";
+        waiter.reject(error);
+      }
+    },
+  };
+}
+
+async function receiveUntil(
+  receiver: PacketReceiver,
+  session: CultNetRudpSession,
+  endpoint: Endpoint,
+  packetType: "accept" | "ack",
+  timeoutMs: number,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const packet = await receiver.next(Math.min(100, deadline - Date.now()), packetType);
+      const result = session.receive(packet, Date.now());
+      if (result.reply) await sendPacket(receiver.socket, endpoint, result.reply);
+      if (packet.packetType === packetType) return;
+    } catch (error) {
+      if ((error as Error & { code?: string }).code !== "ETIMEDOUT") throw error;
+    }
+    for (const packet of session.dueResends(Date.now())) {
+      await sendPacket(receiver.socket, endpoint, packet);
+    }
+  }
+  const error = new Error(`timed out waiting for Idunn RUDP ${packetType}`) as Error & { code?: string };
+  error.code = "ETIMEDOUT";
+  throw error;
+}
+
+function asError(value: unknown): Error {
+  return value instanceof Error ? value : new Error(String(value));
 }
