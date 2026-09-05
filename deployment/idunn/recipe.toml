@@ -1,0 +1,120 @@
+# NOT YET DEPLOYABLE. This recipe is correct and `idunn validate` accepts it,
+# but the service does not yet implement the runtime contract it declares.
+#
+# src/index.ts binds `config.port` (4100, fixed). Idunn's warm-then-cutover
+# requires a candidate to bind where it is told, via GAMECULT_IDUNN_CANDIDATE_BIND,
+# because the candidate and the incumbent must run at once under distinct UIDs
+# and namespaces. A service hardcoded to one port cannot warm alongside itself.
+# GAMECULT_IDUNN_PROCESS_WRITE_LEASE and GAMECULT_IDUNN_RUNTIME_BUNDLE are
+# likewise declared and unread; `grep -r GAMECULT_IDUNN src/` returns nothing.
+#
+# Odin, Ghostlight and CodexConnector each read these. Heimdall publishes Idunn
+# health already (src/idunn-rudp-health.ts) but stops short of the rest.
+# Implement the contract before the first `idunn up heimdall`.
+
+schema = "gamecult.idunn.target_declaration.v1"
+target = "heimdall"
+source_stamp_environment = "HEIMDALL_BUILD_COMMIT"
+required_gitlinks = ["vendor/CultLib"]
+
+# CultLib's TypeScript packages resolve through main/types to dist/, which a
+# fresh checkout does not have. They must be built before Heimdall's own
+# typecheck can resolve cultcache-ts, cultnet-ts or cultmesh-ts. This used to
+# live in a shell manifest on the host; it belongs here, where the source seal
+# covers it.
+[[steps]]
+id = "install-cultlib"
+phase = "build"
+runner = "node-build"
+argv = ["npm", "ci", "--ignore-scripts", "--prefix", "vendor/CultLib"]
+
+[[steps]]
+id = "build-cultcache-ts"
+phase = "build"
+runner = "node-build"
+argv = ["npm", "run", "build", "--prefix", "vendor/CultLib", "--workspace=cultcache-ts"]
+
+[[steps]]
+id = "build-cultnet-ts"
+phase = "build"
+runner = "node-build"
+argv = ["npm", "run", "build", "--prefix", "vendor/CultLib", "--workspace=cultnet-ts"]
+
+[[steps]]
+id = "build-cultmesh-ts"
+phase = "build"
+runner = "node-build"
+argv = ["npm", "run", "build", "--prefix", "vendor/CultLib", "--workspace=cultmesh-ts"]
+
+[[steps]]
+id = "install-heimdall"
+phase = "build"
+runner = "node-build"
+argv = ["pnpm", "install", "--frozen-lockfile"]
+
+[[steps]]
+id = "test-heimdall"
+phase = "test"
+runner = "node-build"
+argv = ["pnpm", "test"]
+
+[[steps]]
+id = "build-heimdall"
+phase = "build"
+runner = "node-build"
+argv = ["pnpm", "build"]
+
+# The unit runs dist/src/index.js, and Node resolves its imports at runtime, so
+# the release is the compiled output plus the production dependency tree. These
+# are the two artifacts; nothing else from the build tree is installed.
+[[artifacts]]
+id = "heimdall-dist"
+source_kind = "runner-output"
+runner = "node-build"
+source = "dist"
+destination = "dist"
+executable = false
+
+[[artifacts]]
+id = "heimdall-node-modules"
+source_kind = "runner-output"
+runner = "node-build"
+source = "node_modules"
+destination = "node_modules"
+executable = false
+
+[service]
+executable_artifact = "heimdall-dist"
+arguments = [
+  { kind = "literal", value = "dist/src/index.js" },
+]
+transport = "rudp"
+route_required = true
+required_environment = [
+  "GAMECULT_IDUNN_RUNTIME_BUNDLE",
+  "GAMECULT_IDUNN_CANDIDATE_BIND",
+  "GAMECULT_IDUNN_PROCESS_WRITE_LEASE",
+  "HEIMDALL_DATABASE_URL",
+  "HOST",
+  "PORT",
+]
+
+[service.health]
+contract = "heimdall.cultnet-rudp-access-health"
+
+[state]
+schema_generation = "heimdall-v1"
+
+[[state.slots]]
+id = "service"
+relative_path = "heimdall.service.cc"
+kind = "cultcache-file"
+schema = "heimdall.service_state.v1"
+writer = "process-bound-single-writer"
+recovery = "preserve"
+startup = "create-or-open-after-write-lease"
+
+[[provides]]
+capability = "gamecult.shared-auth"
+schema = "heimdall.access-discovery.v1"
+compatibility = "v1"
