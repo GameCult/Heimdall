@@ -41,36 +41,42 @@ The planned non-shared-by-default layer is:
 
 ## Important Paths
 
-- Project root: `E:\Projects\Heimdall`
-- Shared architecture: `E:\Projects\Heimdall\docs\architecture.md`
-- Implementation plan: `E:\Projects\Heimdall\docs\implementation-plan.md`
-- Repixelizer profile: `E:\Projects\Heimdall\docs\app-profiles\repixelizer.md`
-- StreamPixels profile: `E:\Projects\Heimdall\docs\app-profiles\streampixels.md`
-- Spotiverse profile: `E:\Projects\Heimdall\docs\app-profiles\spotiverse.md`
-- Handoff summary: `E:\Projects\Heimdall\notes\fresh-workspace-handoff.md`
-- State CLI: `E:\Projects\Heimdall\tools\heimdall_state.py`
-- Pre-compaction helper: `E:\Projects\Heimdall\tools\heimdall_prepare_compaction.py`
+Paths are relative to the repository root. Do not hard-code an absolute drive
+path into this file; the repo has already been moved between drives once, and
+every absolute path in here rotted the moment it happened.
+
+- Shared architecture: `docs/architecture.md`
+- Implementation plan: `docs/implementation-plan.md`
+- Repixelizer profile: `docs/app-profiles/repixelizer.md`
+- StreamPixels profile: `docs/app-profiles/streampixels.md`
+- Spotiverse profile: `docs/app-profiles/spotiverse.md`
+- Handoff summary: `notes/fresh-workspace-handoff.md`
+- State CLI: `tools/heimdall_state.py`
+- Pre-compaction helper: `tools/heimdall_prepare_compaction.py`
 
 ## Useful Commands
 
-This repo does not carry a dedicated virtualenv yet. Use any working Python
-3.11+ interpreter. On this workstation,
-`E:\Projects\repixelizer\.venv\Scripts\python.exe` is known-good.
-
-Preferred here:
-
-```powershell
-E:\Projects\repixelizer\.venv\Scripts\python.exe .\tools\heimdall_state.py status
-E:\Projects\repixelizer\.venv\Scripts\python.exe .\tools\heimdall_state.py add-evidence --type design --status accepted --note "..."
-E:\Projects\repixelizer\.venv\Scripts\python.exe .\tools\heimdall_prepare_compaction.py
-```
-
-Fallback if a normal `python` command exists:
+Both state tools are single-file, standard-library-only Python. They need no
+virtualenv and no installed dependencies. Run them with `python` from the repo
+root:
 
 ```powershell
 python .\tools\heimdall_state.py status
 python .\tools\heimdall_state.py add-evidence --type design --status accepted --note "..."
 python .\tools\heimdall_prepare_compaction.py
+```
+
+Verified 2026-09-06 against Python 3.13.15 installed to the user scope; `py -3`
+resolves the same interpreter.
+
+If `python --version` prints an install prompt rather than a version, PATH is
+resolving the Microsoft Store alias in `WindowsApps` instead of a real
+interpreter, and it will still exit 0 while doing so. Install a real Python and
+put it ahead of `WindowsApps` on PATH rather than hunting for some other
+interpreter to hard-code here:
+
+```powershell
+winget install --id Python.Python.3.13 --scope user
 ```
 
 ## Session Bootstrap And Re-entry Protocol
@@ -134,5 +140,5 @@ user did not say so yet:
 
 - For StreamPixels architecture/auth context, prefer the indexed `StreamPixels`
   repo through `voidbot` before filesystem spelunking.
-- For GameCult deployment and host conventions, check
-  `E:\Projects\gamecult-ops` before improvising infra claims.
+- For GameCult deployment and host conventions, check the sibling `gamecult-ops`
+  repo in the same projects root as this one before improvising infra claims.
