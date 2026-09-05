@@ -443,6 +443,97 @@ Current intended first deployment shape:
 
 This matches the host pattern already used by other GameCult app workloads.
 
+## Public surface boundary
+
+**Status: proposed, 2026-09-06. Not implemented.**
+
+The topology above already says what should be true — same-host apps reach
+Heimdall over localhost or private routing, and app backends verify claims
+locally. The nginx vhost never implemented it. `heimdall.gamecult.org.conf` is a
+single `location / { proxy_pass http://heimdall_app; }`, so every route Fastify
+registers is on the open web. The boundary exists in this document and nowhere
+in the running system.
+
+### What actually has to be public
+
+Only the browser-driven OAuth flow:
+
+| Path | Why it must be public |
+|---|---|
+| `/v1/oauth/{provider}/start` | the user's browser goes here |
+| `/v1/oauth/{provider}/callback` | the provider redirects here; one-shot and not retryable |
+| `/.well-known/jwks.json` | *nothing external consumes it today* — see below |
+
+Everything else is internal by the design already written down:
+
+| Path | Consumer |
+|---|---|
+| `/.well-known/heimdall-configuration` | GC apps, mesh-reachable |
+| `/v1/apps` | GC apps, mesh-reachable |
+| `/v1/apps/{appSlug}/claims/issue` | GC app backends, mesh-reachable |
+| `/healthz` | local probes |
+
+The private command plane is not part of this question. It is
+`startCultNetOperationServer` and never touches nginx.
+
+### JWKS: keep it public, deliberately
+
+No OAuth provider fetches it — every adapter in `src/oauth.ts` authenticates
+with `client_secret`, not `private_key_jwt`. Every relying party today is
+GameCult-owned and mesh-reachable, so nothing outside needs it.
+
+Keep it public anyway. Publishing verification keys is cryptographically
+harmless, and the failure mode of hiding it is asymmetric: the first relying
+party hosted outside this mesh will be integrated with a standard OIDC library,
+and a `jwks_uri` that resolves only on the mesh fails confusingly at integration
+time rather than obviously at design time. This is the one endpoint where the
+cost of being wrong is higher in the closed direction.
+
+### Discovery and `/v1/apps`: move them internal
+
+These carry no keys and no cryptographic obligation, and they publish a product
+inventory. For every app, `serializeAppProfile` emits `slug`, `displayName`,
+`profileVersion`, `identityProviders`, `entitlementSources`,
+`managedConnectionProviders` and `capabilities`, alongside `supportedProviders`
+and their roles. Since the private command plane's record kinds are
+`discord_role_access` and `patreon_membership_access`, the entitlement and
+monetization model is legible to anyone who fetches it.
+
+Both routes must move together. Trimming the discovery document alone leaves
+`/v1/apps` serving the same list.
+
+### Consequence for the nginx vhost
+
+The vhost stops being one `location /` and becomes an explicit allowlist:
+`/v1/oauth/`, `/.well-known/jwks.json`, and nothing else by default. A path
+added to Fastify should not become public by having been added — that is the
+property the current catch-all lacks.
+
+The vhost stays operator-owned and static regardless of who deploys Heimdall,
+because `publicBaseUrl` builds the OAuth callback URL that is **registered with
+each provider**. That URL cannot move on deploy.
+
+### Finding: the `spotify` provider outlived its consumer
+
+`spotiverse` is the only profile naming `spotify`, and Spotiverse was lost with
+the `E:` drive — it was a small daemon exposing the Spotify API to agents, and
+it no longer exists in the swarm.
+
+What survives it: `GC_ACCESS_PROVIDER_SPOTIFY_CLIENT_ID` and
+`GC_ACCESS_PROVIDER_SPOTIFY_CLIENT_SECRET` are configured in
+`/srv/heimdall/env/service.env`, the profile is advertised in the public
+discovery document, and `/v1/oauth/spotify/start` is reachable from the open
+web. That path would run a real OAuth handshake against a real client secret and
+take custody of a user's Spotify refresh token on behalf of a consumer that
+cannot use it.
+
+This is not an active compromise. It is a live credential and a token-custody
+code path kept alive for nothing, which is exactly the shape that becomes an
+incident later. Retire the profile and the provider config together, or record
+why Spotiverse is expected back. Retiring is a change to `src/app-profiles.ts`
+and the provider catalog and should be decided on its own, not folded into the
+boundary change.
+
 ## Deployment modes
 
 ### Mode 1: Same-host shared access service
