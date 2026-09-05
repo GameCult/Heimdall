@@ -35,7 +35,6 @@ describe("Heimdall Verse witness advertisement", () => {
     expect(advertisement.appProfiles.map((profile) => profile.slug)).toEqual([
       "repixelizer",
       "streampixels",
-      "spotiverse",
       "bifrost",
       "ghostlight",
     ]);
