@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient, type QueryResultRow } from "pg";
+import { type CapabilityDefinition } from "../capability-rules.js";
 import { type AppSlug, type HeimdallAuthAttemptStatus, type LinkedIdentityInput, type Provider } from "../contracts.js";
 import { CREATE_SCHEMA_SQL } from "./schema.js";
 import {
@@ -17,6 +18,8 @@ import {
   type StoredAuthCompletion,
   type StoredCapabilityGrant,
   type StoredLinkedIdentity,
+  type RegisterAppInput,
+  type StoredRegisteredApp,
   type StoredSession,
   type StoredPrivateCommandReceipt,
   type UpsertLinkedIdentityInput,
@@ -59,6 +62,20 @@ interface GrantRow extends QueryResultRow {
   note: string | null;
   created_at: string;
   updated_at: string;
+}
+
+interface RegisteredAppRow extends QueryResultRow {
+  slug: string;
+  display_name: string;
+  profile_version: string;
+  created_at: string;
+  updated_at: string;
+  identity_providers: Provider[];
+  entitlement_sources: Provider[];
+  managed_connection_providers: Provider[];
+  capabilities_json: CapabilityDefinition[];
+  redirect_uris: string[];
+  client_secret_hash: string | null;
 }
 
 interface SessionRow extends QueryResultRow {
@@ -281,6 +298,63 @@ function mapAuthAttemptRow(row: AuthAttemptRow): StoredAuthAttempt {
 
 export class PostgresStore implements HeimdallStore {
   constructor(private readonly pool: Pick<Pool, "query" | "end">) {}
+
+  async registerApp(input: RegisterAppInput): Promise<StoredRegisteredApp> {
+    // Re-registering an app keeps its original created_at: the record is the
+    // same app being updated, not a new one, and RFC 7592 treats management as
+    // an update to an existing registration.
+    const result = await this.pool.query<RegisteredAppRow>(
+      `
+      INSERT INTO registered_apps (
+        slug, display_name, profile_version, created_at, updated_at,
+        identity_providers, entitlement_sources, managed_connection_providers,
+        capabilities_json, redirect_uris, client_secret_hash
+      )
+      VALUES ($1, $2, $3, $4, $4, $5, $6, $7, $8, $9, $10)
+      ON CONFLICT (slug)
+      DO UPDATE SET
+        display_name = EXCLUDED.display_name,
+        profile_version = EXCLUDED.profile_version,
+        updated_at = EXCLUDED.updated_at,
+        identity_providers = EXCLUDED.identity_providers,
+        entitlement_sources = EXCLUDED.entitlement_sources,
+        managed_connection_providers = EXCLUDED.managed_connection_providers,
+        capabilities_json = EXCLUDED.capabilities_json,
+        redirect_uris = EXCLUDED.redirect_uris,
+        client_secret_hash = COALESCE(EXCLUDED.client_secret_hash, registered_apps.client_secret_hash)
+      RETURNING *
+      `,
+      [
+        input.slug,
+        input.displayName,
+        input.profileVersion,
+        input.registeredAt,
+        JSON.stringify(input.identityProviders),
+        JSON.stringify(input.entitlementSources),
+        JSON.stringify(input.managedConnectionProviders),
+        JSON.stringify(input.capabilities),
+        JSON.stringify(input.redirectUris),
+        input.clientSecretHash,
+      ],
+    );
+    return mapRegisteredApp(result.rows[0]!);
+  }
+
+  async findRegisteredApp(slug: string): Promise<StoredRegisteredApp | null> {
+    const result = await this.pool.query<RegisteredAppRow>(
+      `SELECT * FROM registered_apps WHERE slug = $1`,
+      [slug],
+    );
+    const row = result.rows[0];
+    return row ? mapRegisteredApp(row) : null;
+  }
+
+  async listRegisteredApps(): Promise<StoredRegisteredApp[]> {
+    const result = await this.pool.query<RegisteredAppRow>(
+      `SELECT * FROM registered_apps ORDER BY slug ASC`,
+    );
+    return result.rows.map(mapRegisteredApp);
+  }
 
   async ensureSchema(): Promise<void> {
     await this.pool.query(CREATE_SCHEMA_SQL);
@@ -772,4 +846,20 @@ export function createPostgresStore(databaseUrl: string): HeimdallStore {
     connectionString: databaseUrl,
   });
   return new PostgresStore(pool);
+}
+
+function mapRegisteredApp(row: RegisteredAppRow): StoredRegisteredApp {
+  return {
+    slug: row.slug,
+    displayName: row.display_name,
+    profileVersion: row.profile_version,
+    createdAt: new Date(row.created_at).toISOString(),
+    updatedAt: new Date(row.updated_at).toISOString(),
+    identityProviders: row.identity_providers,
+    entitlementSources: row.entitlement_sources,
+    managedConnectionProviders: row.managed_connection_providers,
+    capabilities: row.capabilities_json,
+    redirectUris: row.redirect_uris,
+    clientSecretHash: row.client_secret_hash,
+  };
 }

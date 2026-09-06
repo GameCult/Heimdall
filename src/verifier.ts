@@ -1,5 +1,5 @@
 import { createPublicKey, type KeyObject } from "node:crypto";
-import { appSlugs, providers, type AccessClaimPayload, type AppSlug, type LinkedIdentityInput, type Provider } from "./contracts.js";
+import { isAppSlug, providers, type AccessClaimPayload, type AppSlug, type LinkedIdentityInput, type Provider } from "./contracts.js";
 import { type PublicSigningJwk, verifyJwt } from "./signing.js";
 
 export interface HeimdallVerifierOptions {
@@ -52,7 +52,7 @@ function parseAccessClaimPayload(payload: Record<string, unknown>): AccessClaimP
     payload.typ !== "heimdall_access" ||
     typeof payload.iss !== "string" ||
     typeof payload.aud !== "string" ||
-    !appSlugs.includes(payload.aud as AppSlug) ||
+    !isAppSlug(payload.aud) ||
     typeof payload.sub !== "string" ||
     typeof payload.sid !== "string" ||
     typeof payload.jti !== "string" ||
@@ -64,7 +64,7 @@ function parseAccessClaimPayload(payload: Record<string, unknown>): AccessClaimP
     !payload.app ||
     typeof payload.app !== "object" ||
     typeof (payload.app as Record<string, unknown>).slug !== "string" ||
-    !appSlugs.includes((payload.app as Record<string, unknown>).slug as AppSlug) ||
+    !isAppSlug((payload.app as Record<string, unknown>).slug) ||
     typeof (payload.app as Record<string, unknown>).profile_version !== "string" ||
     !Array.isArray(payload.facts) ||
     !payload.facts.every((fact) => typeof fact === "string") ||

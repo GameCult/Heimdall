@@ -1,3 +1,4 @@
+import { type CapabilityDefinition } from "../capability-rules.js";
 import {
   type AppSlug,
   type HeimdallAuthAttemptStatus,
@@ -5,6 +6,40 @@ import {
   type OAuthMode,
   type Provider,
 } from "../contracts.js";
+
+/**
+ * An app registered at runtime.
+ *
+ * The built-in profiles are seed data of the same shape; nothing here is
+ * special-cased for them. clientSecretHash is stored rather than the secret,
+ * so a database read cannot impersonate a registered app.
+ */
+export interface StoredRegisteredApp {
+  slug: string;
+  displayName: string;
+  profileVersion: string;
+  createdAt: string;
+  updatedAt: string;
+  identityProviders: Provider[];
+  entitlementSources: Provider[];
+  managedConnectionProviders: Provider[];
+  capabilities: CapabilityDefinition[];
+  redirectUris: string[];
+  clientSecretHash: string | null;
+}
+
+export interface RegisterAppInput {
+  slug: string;
+  displayName: string;
+  profileVersion: string;
+  registeredAt: string;
+  identityProviders: Provider[];
+  entitlementSources: Provider[];
+  managedConnectionProviders: Provider[];
+  capabilities: CapabilityDefinition[];
+  redirectUris: string[];
+  clientSecretHash: string | null;
+}
 
 export interface StoredAccount {
   id: string;
@@ -192,6 +227,9 @@ export interface StoredPrivateCommandReceipt {
 export type CreatePrivateCommandReceiptInput = StoredPrivateCommandReceipt;
 
 export interface HeimdallStore {
+  registerApp(input: RegisterAppInput): Promise<StoredRegisteredApp>;
+  findRegisteredApp(slug: string): Promise<StoredRegisteredApp | null>;
+  listRegisteredApps(): Promise<StoredRegisteredApp[]>;
   ensureSchema(): Promise<void>;
   close(): Promise<void>;
   createAccount(input: CreateAccountInput): Promise<StoredAccount>;

@@ -15,6 +15,8 @@ import {
   type StoredAuthCompletion,
   type StoredCapabilityGrant,
   type StoredLinkedIdentity,
+  type RegisterAppInput,
+  type StoredRegisteredApp,
   type StoredSession,
   type StoredPrivateCommandReceipt,
   type UpsertLinkedIdentityInput,
@@ -37,6 +39,7 @@ function isGrantActive(grant: StoredCapabilityGrant, appSlug: AppSlug, at: strin
 }
 
 export class InMemoryStore implements HeimdallStore {
+  private readonly registeredApps = new Map<string, StoredRegisteredApp>();
   private readonly accounts = new Map<string, StoredAccount>();
   private readonly linkedIdentities = new Map<string, StoredLinkedIdentity>();
   private readonly grants = new Map<string, StoredCapabilityGrant>();
@@ -46,6 +49,36 @@ export class InMemoryStore implements HeimdallStore {
   private readonly authCompletions = new Map<string, StoredAuthCompletion>();
   private readonly entitlementSnapshots = new Map<string, CreateEntitlementSnapshotInput>();
   private readonly auditEvents = new Map<string, CreateAuditEventInput>();
+
+  async registerApp(input: RegisterAppInput): Promise<StoredRegisteredApp> {
+    const existing = this.registeredApps.get(input.slug);
+    const record: StoredRegisteredApp = {
+      slug: input.slug,
+      displayName: input.displayName,
+      profileVersion: input.profileVersion,
+      createdAt: existing?.createdAt ?? input.registeredAt,
+      updatedAt: input.registeredAt,
+      identityProviders: [...input.identityProviders],
+      entitlementSources: [...input.entitlementSources],
+      managedConnectionProviders: [...input.managedConnectionProviders],
+      capabilities: structuredClone(input.capabilities),
+      redirectUris: [...input.redirectUris],
+      clientSecretHash: input.clientSecretHash,
+    };
+    this.registeredApps.set(record.slug, record);
+    return structuredClone(record);
+  }
+
+  async findRegisteredApp(slug: string): Promise<StoredRegisteredApp | null> {
+    const record = this.registeredApps.get(slug);
+    return record ? structuredClone(record) : null;
+  }
+
+  async listRegisteredApps(): Promise<StoredRegisteredApp[]> {
+    return [...this.registeredApps.values()]
+      .sort((left, right) => left.slug.localeCompare(right.slug))
+      .map((record) => structuredClone(record));
+  }
 
   async ensureSchema(): Promise<void> {
     return;

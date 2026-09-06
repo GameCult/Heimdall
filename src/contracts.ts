@@ -2,9 +2,27 @@ export const providers = ["discord", "patreon", "github", "twitch", "youtube", "
 
 export type Provider = (typeof providers)[number];
 
+/** Apps shipped with Heimdall. Seed data, not the set of permissible apps. */
 export const appSlugs = ["repixelizer", "streampixels", "bifrost", "ghostlight"] as const;
 
-export type AppSlug = (typeof appSlugs)[number];
+export type BuiltInAppSlug = (typeof appSlugs)[number];
+
+/**
+ * An app identifier. Always a string on the wire; it was narrowed to a union
+ * only because every app was known at build time. Validity is decided by the
+ * app registry, not the type system.
+ */
+export type AppSlug = string;
+
+/**
+ * Shape check only. Whether an app exists is a registry question, and callers
+ * without a store — the offline token verifier, for one — can only check that
+ * an identifier is well formed. A host app verifying its own tokens should
+ * compare aud against its own slug rather than trusting a shape.
+ */
+export function isAppSlug(value: unknown): value is AppSlug {
+  return typeof value === "string" && /^[a-z][a-z0-9_-]{1,62}$/.test(value);
+}
 
 export const oauthModes = ["sign_in", "link", "connect"] as const;
 

@@ -171,7 +171,12 @@ export const builtInAppProfiles: Record<AppSlug, AppProfile> = {
 
 export const appProfiles = builtInAppProfiles;
 
-export function getAppProfile(appSlug: AppSlug): AppProfile {
+/**
+ * Built-in profiles only, and it can miss: an app registered at runtime is
+ * resolved through the registry, which needs a store. Callers with a store
+ * should prefer resolveAppProfile.
+ */
+export function getAppProfile(appSlug: AppSlug): AppProfile | undefined {
   return appProfiles[appSlug];
 }
 

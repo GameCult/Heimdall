@@ -6,7 +6,8 @@ import {
   type LinkedIdentityInput,
   type RefreshTokenPayload,
 } from "./contracts.js";
-import { evaluateSharedCapabilities, getAppProfile } from "./app-profiles.js";
+import { evaluateSharedCapabilities, type AppProfile } from "./app-profiles.js";
+import { resolveAppProfile } from "./app-registry.js";
 import { type HeimdallConfig } from "./config.js";
 import { identityFacts } from "./facts.js";
 import { signJwt, type RuntimeKeyMaterial } from "./signing.js";
@@ -66,7 +67,7 @@ export interface IssuedAccessClaimResult {
     kid: string;
   };
   sharedCapabilities: string[];
-  hybridCapabilities: ReturnType<typeof getAppProfile>["capabilities"];
+  hybridCapabilities: AppProfile["capabilities"];
 }
 
 export async function issueAccessClaim(options: {
@@ -75,7 +76,12 @@ export async function issueAccessClaim(options: {
   store: HeimdallStore;
   input: IssueAccessClaimInput;
 }): Promise<IssuedAccessClaimResult> {
-  const profile = getAppProfile(options.input.appSlug);
+  const profile = await resolveAppProfile(options.store, options.input.appSlug);
+  if (!profile) {
+    // An unregistered audience must not receive a signed claim: the token
+    // would name an app no verifier can resolve a profile for.
+    throw new Error(`Cannot issue an access claim for unknown app '${options.input.appSlug}'.`);
+  }
   const facts = normalizeFacts(options.input.accountId, options.input.linkedIdentities, options.input.facts);
   const factSet = new Set(facts);
   const sharedCapabilities = evaluateSharedCapabilities(profile, {

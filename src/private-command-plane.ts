@@ -9,7 +9,7 @@ import {
 import { type FastifyInstance } from "fastify";
 import { getHeimdallRuntimeContext, verifyRefreshToken } from "./app.js";
 import { executeHeimdallAccessPlugin, HEIMDALL_ACCESS_PLUGIN_ID, type EvePluginAbiRequest } from "./access-plugin.js";
-import { appSlugs, oauthModes, providers, type AppSlug, type OAuthEntitlementPolicy, type OAuthMode, type Provider } from "./contracts.js";
+import { isAppSlug, oauthModes, providers, type AppSlug, type OAuthEntitlementPolicy, type OAuthMode, type Provider } from "./contracts.js";
 import { type HeimdallConfig } from "./config.js";
 import { openPrivateEnvelope, sealPrivateEnvelope, type HeimdallPrivateEnvelope } from "./private-command-security.js";
 
@@ -61,7 +61,7 @@ export async function startHeimdallPrivateCommandPlane(
           throw new Error("Heimdall private commands require the typed encrypted MessagePack envelope.");
         }
         const envelope = decode(Buffer.from(request.payload, "base64")) as HeimdallPrivateEnvelope;
-        if (!appSlugs.includes(envelope.appSlug as AppSlug)) throw new Error("Unknown Heimdall app binding.");
+        if (!isAppSlug(envelope.appSlug)) throw new Error("Unknown Heimdall app binding.");
         const appSlug = envelope.appSlug as AppSlug;
         const secret = config.appSharedSecrets[appSlug];
         if (!secret) throw new Error("Heimdall app binding has no private command secret.");

@@ -1,4 +1,18 @@
 export const CREATE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS registered_apps (
+  slug TEXT PRIMARY KEY,
+  display_name TEXT NOT NULL,
+  profile_version TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL,
+  identity_providers JSONB NOT NULL,
+  entitlement_sources JSONB NOT NULL,
+  managed_connection_providers JSONB NOT NULL,
+  capabilities_json JSONB NOT NULL,
+  redirect_uris JSONB NOT NULL,
+  client_secret_hash TEXT
+);
+
 CREATE TABLE IF NOT EXISTS accounts (
   id TEXT PRIMARY KEY,
   created_at TIMESTAMPTZ NOT NULL,

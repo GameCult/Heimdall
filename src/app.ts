@@ -8,6 +8,7 @@ import {
   oauthHandoffKinds,
   oauthModes,
   providers,
+  isAppSlug,
   type AppSlug,
   type OAuthHandoff,
   type OAuthEntitlementPolicy,
@@ -21,7 +22,15 @@ import {
   type Provider,
 } from "./contracts.js";
 import { mapIssueClaimRequest, issueAccessClaim, type IssueAccessClaimInput } from "./claims.js";
-import { getAppProfile, serializeAppProfile, supportsProvider } from "./app-profiles.js";
+import { builtInAppProfiles, getAppProfile, serializeAppProfile, supportsProvider } from "./app-profiles.js";
+import {
+  AppRegistrationError,
+  listAppProfiles,
+  registerApp,
+  registeredAppToProfile,
+  resolveAppProfile,
+  type AppRegistrationRequest,
+} from "./app-registry.js";
 import { renderBrowserHandoffPage } from "./browser-handoff.js";
 import { type HeimdallConfig, loadConfig } from "./config.js";
 import { createTokenCustody, type TokenCustody } from "./custody.js";
@@ -76,7 +85,7 @@ function buildDiscovery(config: HeimdallConfig) {
       displayName: providerCatalog[provider].displayName,
       roles: providerCatalog[provider].roles,
     })),
-    apps: appSlugs.map((appSlug) => serializeAppProfile(getAppProfile(appSlug))),
+    apps: Object.values(builtInAppProfiles).map(serializeAppProfile),
   };
 }
 
@@ -156,7 +165,7 @@ function parseOAuthStatePayload(payload: Record<string, unknown>): OAuthStatePay
     typeof payload.provider !== "string" ||
     !providers.includes(payload.provider as Provider) ||
     typeof payload.app_slug !== "string" ||
-    !appSlugs.includes(payload.app_slug as AppSlug) ||
+    !isAppSlug(payload.app_slug) ||
     typeof payload.mode !== "string" ||
     !oauthModes.includes(payload.mode as OAuthMode) ||
     typeof payload.return_to !== "string" ||
@@ -193,7 +202,7 @@ function parseRefreshTokenPayload(payload: Record<string, unknown>): RefreshToke
     payload.typ !== "heimdall_refresh" ||
     typeof payload.iss !== "string" ||
     typeof payload.aud !== "string" ||
-    !appSlugs.includes(payload.aud as AppSlug) ||
+    !isAppSlug(payload.aud) ||
     typeof payload.sub !== "string" ||
     typeof payload.sid !== "string" ||
     typeof payload.jti !== "string" ||
@@ -330,6 +339,11 @@ function getSharedSecret(request: { headers: Record<string, string | string[] | 
   return Array.isArray(header) ? header[0] : header;
 }
 
+function getRegistrationSecret(request: { headers: Record<string, unknown> }): string | undefined {
+  const header = request.headers["x-heimdall-registration-secret"];
+  return typeof header === "string" ? header : undefined;
+}
+
 function secretMatches(expected: string | undefined, provided: string | undefined): boolean {
   if (!expected || !provided) {
     return false;
@@ -434,7 +448,10 @@ async function evaluateStoredEntitlements(options: {
   entitlementPolicies: OAuthEntitlementPolicy[];
   now: string;
 }): Promise<string[]> {
-  const profile = getAppProfile(options.appSlug);
+  const profile = await resolveAppProfile(options.store, options.appSlug);
+  if (!profile) {
+    throw new Error(`Unknown app '${options.appSlug}'.`);
+  }
   const linkedIdentities = await options.store.listStoredLinkedIdentitiesForAccount(options.accountId);
   const facts: string[] = [];
 
@@ -552,8 +569,55 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   app.get("/.well-known/heimdall-configuration", async () => buildDiscovery(config));
 
   app.get("/v1/apps", async () => ({
-    apps: appSlugs.map((appSlug) => serializeAppProfile(getAppProfile(appSlug))),
+    apps: (await listAppProfiles(store)).map(serializeAppProfile),
   }));
+
+  // POST /v1/apps registration.
+  //
+  // Gated on an operator secret rather than open. Heimdall is an OAuth
+  // provider: an unauthenticated registration endpoint lets anyone create a
+  // client that starts Discord and Patreon flows under this instance identity,
+  // which is a phishing surface wearing the operator name. Registration is
+  // closed until an operator sets one, so a fresh instance is not accidentally
+  // open.
+  app.post<{ Body: AppRegistrationRequest }>("/v1/apps", async (request, reply) => {
+    if (!config.appRegistrationSecret) {
+      reply.code(404);
+      return {
+        error: "registration_closed",
+        detail: "Runtime app registration is not enabled on this instance.",
+      };
+    }
+    if (!secretMatches(config.appRegistrationSecret, getRegistrationSecret(request))) {
+      reply.code(401);
+      return { error: "unauthorized", detail: "A valid registration secret is required." };
+    }
+
+    try {
+      const { app: registered, clientSecret } = await registerApp(store, request.body);
+      reply.code(201);
+      // RFC 7591 response shape, so an ordinary OAuth client library can read
+      // it. client_secret is returned exactly once; only its hash is stored.
+      return {
+        client_id: registered.slug,
+        client_secret: clientSecret,
+        client_name: registered.displayName,
+        redirect_uris: registered.redirectUris,
+        client_id_issued_at: Math.floor(Date.parse(registered.createdAt) / 1000),
+        profile: serializeAppProfile(registeredAppToProfile(registered)),
+      };
+    } catch (error) {
+      if (error instanceof AppRegistrationError) {
+        reply.code(400);
+        return {
+          error: "invalid_client_metadata",
+          detail: "App registration was rejected.",
+          problems: error.problems,
+        };
+      }
+      throw error;
+    }
+  });
 
   app.get<{ Params: { appSlug: AppSlug } }>(
     "/v1/apps/:appSlug",
@@ -564,12 +628,19 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           required: ["appSlug"],
           additionalProperties: false,
           properties: {
-            appSlug: { type: "string", enum: [...appSlugs] },
+            appSlug: { type: "string" },
           },
         },
       },
     },
-    async (request) => serializeAppProfile(getAppProfile(request.params.appSlug))
+    async (request, reply) => {
+      const profile = await resolveAppProfile(store, request.params.appSlug);
+      if (!profile) {
+        reply.code(404);
+        return { error: "unknown_app", detail: `No app '${request.params.appSlug}' is registered.` };
+      }
+      return serializeAppProfile(profile);
+    }
   );
 
   app.post<{ Params: { provider: Provider }; Body: OAuthStartRequest }>(
@@ -651,7 +722,11 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     },
     async (request, reply) => {
       const { provider } = request.params;
-      const profile = getAppProfile(request.body.appSlug);
+      const profile = await resolveAppProfile(store, request.body.appSlug);
+      if (!profile) {
+        reply.code(404);
+        return { error: "unknown_app", detail: `No app '${request.body.appSlug}' is registered.` };
+      }
 
       if (!supportsProvider(profile, provider)) {
         reply.code(400);
@@ -1519,7 +1594,11 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       },
     },
     async (request, reply) => {
-      const profile = getAppProfile(request.params.appSlug);
+      const profile = await resolveAppProfile(store, request.params.appSlug);
+      if (!profile) {
+        reply.code(404);
+        return { error: "unknown_app", detail: `No app '${request.params.appSlug}' is registered.` };
+      }
       const providedSecret = getSharedSecret(request);
 
       if (!secretMatches(config.appSharedSecrets[profile.slug], providedSecret)) {
@@ -1668,7 +1747,11 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       },
     },
     async (request, reply) => {
-      const profile = getAppProfile(request.params.appSlug);
+      const profile = await resolveAppProfile(store, request.params.appSlug);
+      if (!profile) {
+        reply.code(404);
+        return { error: "unknown_app", detail: `No app '${request.params.appSlug}' is registered.` };
+      }
       const providedSecret = getSharedSecret(request);
 
       if (!secretMatches(config.appSharedSecrets[profile.slug], providedSecret)) {

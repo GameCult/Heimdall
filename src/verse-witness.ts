@@ -243,8 +243,7 @@ export function buildHeimdallProviderAdvertisement(options: { updatedAt: string 
         },
       };
     }),
-    appProfiles: appSlugs.map((appSlug) => {
-      const profile = appProfiles[appSlug];
+    appProfiles: Object.values(appProfiles).map((profile) => {
       return {
         slug: profile.slug,
         displayName: profile.displayName,
