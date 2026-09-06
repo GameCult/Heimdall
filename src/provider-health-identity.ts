@@ -10,7 +10,7 @@ import {
 import { readFileSync } from "node:fs";
 import { chmod, readFile } from "node:fs/promises";
 import { SingleFileMessagePackBackingStore, type CultCacheEnvelope } from "cultcache-ts";
-import { readIdunnStoreRecord } from "./idunn-store.js";
+import { readPrivateStoreRecord } from "./idunn-store.js";
 
 const PRIVATE_SCHEMA = "gamecult.provider_health_identity.private.v1";
 const PRIVATE_KEY = "gamecult-provider-health-identity";
@@ -130,7 +130,7 @@ export async function openProviderHealthIdentity(
     return openOrEnrollProviderHealthIdentity(path);
   }
 
-  const payload = readIdunnStoreRecord(
+  const payload = readPrivateStoreRecord(
     readFileSync(descriptor),
     "Idunn runtime presence identity"
   );

@@ -1,8 +1,9 @@
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 import { encode } from "@msgpack/msgpack";
+import { SingleFileMessagePackBackingStore } from "cultcache-ts";
 import { describe, expect, it } from "vitest";
 
 import { resolveWriteLease } from "../src/process-write-lease.js";
@@ -13,11 +14,16 @@ import { resolveWriteLease } from "../src/process-write-lease.js";
  * the tests exercise the same bytes the daemon will actually be handed rather
  * than a convenient object.
  */
-function envelope(key: string, type: string, payload: Uint8Array): Uint8Array {
-  // cultcache-rs writes positional envelopes: [key, type, payload, stored_at,
-  // schema_id]. Building the fixture the way Idunn actually writes it is the
-  // point -- an object-shaped fixture agrees with a wrong reader.
-  return encode([[key, type, payload, "2026-09-06T00:00:00.000Z", type]]);
+async function writeStore(file: string, type: string, payload: Uint8Array): Promise<void> {
+  // Written with the CultCache client, the same way Idunn writes these. A
+  // hand-built fixture only proves the reader agrees with the fixture.
+  await new SingleFileMessagePackBackingStore(file).push({
+    key: "heimdall",
+    type,
+    schemaId: type,
+    storedAt: "2026-09-06T00:00:00.000Z",
+    payload,
+  });
 }
 
 function expectedIncarnation(target: string, incarnationId: string): Uint8Array {
@@ -48,15 +54,12 @@ async function bundleWith(
   await mkdir(bundle, { recursive: true });
 
   if (expectedBytes) {
-    await writeFile(
-      path.join(bundle, "expected.cc"),
-      envelope("heimdall", "idunn.expected_incarnation", expectedBytes)
-    );
+    await writeStore(path.join(bundle, "expected.cc"), "idunn.expected_incarnation", expectedBytes);
   }
 
   const lease = path.join(root, "process-write-lease.cc");
   if (leaseBytes) {
-    await writeFile(lease, envelope("heimdall", "idunn.process_write_lease", leaseBytes));
+    await writeStore(lease, "idunn.process_write_lease", leaseBytes);
   }
 
   return { bundle, lease };

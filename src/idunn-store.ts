@@ -1,59 +1,64 @@
 /**
- * Reading the `.cc` stores Idunn writes.
+ * Reading the two `.cc` shapes Idunn hands a target.
  *
- * Idunn writes with `cultcache-rs`, which lays a single-file store out as a
- * bare MessagePack array of positional envelopes:
+ * Most Idunn-written stores — the control store, the runtime bundle's
+ * `expected.cc`, the process write lease — are ordinary CultCache stores in the
+ * standard framing, and `cultcache-ts` reads them directly. Verified against
+ * Idunn's live control store on yggdrasil: 36 records, no complaint.
  *
- *     [ [key, type, payload, stored_at, schema_id], ... ]
+ * Service identity *private* stores are the exception. `cultnet-rs` writes
+ * those with `atomic_create_private_store`, a deliberately minimal container
+ * holding one bare positional envelope:
  *
- * `cultcache-ts` writes a different shape — `[formatVersion, catalog, records]`
- * with envelopes as named objects — and **cannot read the Rust layout at all**;
- * its schema rejects it with "expected object, received array". So Heimdall
- * cannot use its own CultCache client to read an Idunn-written store, and this
- * module exists to read exactly that one layout.
+ *     [ [key, type, payload, stored_at, schema_id] ]
  *
- * That divergence is a defect in CultLib, not a property of the format, and
- * this module is a consumer-side reader for as long as it stands. If the two
- * forks are reconciled, delete this and use the client.
+ * That is not a fork divergence, it is a different writer for a different job —
+ * a private key container rather than a record store — and `cultcache-ts`
+ * cannot parse it. `readPrivateStoreRecord` exists for that one shape.
  */
 import { decode } from "@msgpack/msgpack";
+import { SingleFileMessagePackBackingStore } from "cultcache-ts";
 
 const ENVELOPE_FIELD_COUNT = 5;
 const ENVELOPE_PAYLOAD = 2;
 
 /**
- * Decode the payloads of every envelope in an Idunn-written store, in order.
- *
- * Accepts bytes rather than a path so callers can read from a file, or from a
- * file descriptor systemd passed them.
+ * Read the single record from a service identity private store, given its
+ * bytes. Takes bytes rather than a path because this store is handed over as
+ * an open file descriptor, not a filename.
  */
-export function readIdunnStorePayloads(bytes: Uint8Array, label: string): Uint8Array[] {
+export function readPrivateStoreRecord(bytes: Uint8Array, label: string): Uint8Array {
   const store = decode(bytes);
-  if (!Array.isArray(store)) {
-    throw new Error(`${label} is not a cultcache-rs single-file store`);
+  if (!Array.isArray(store) || store.length !== 1) {
+    throw new Error(`${label} is not a single-record private store`);
   }
 
-  return store.map((envelope, index) => {
-    if (!Array.isArray(envelope) || envelope.length !== ENVELOPE_FIELD_COUNT) {
-      throw new Error(
-        `${label} envelope ${index} is not the ${ENVELOPE_FIELD_COUNT}-field positional contract`
-      );
-    }
+  const envelope = store[0];
+  if (!Array.isArray(envelope) || envelope.length !== ENVELOPE_FIELD_COUNT) {
+    throw new Error(
+      `${label} envelope is not the ${ENVELOPE_FIELD_COUNT}-field positional contract`
+    );
+  }
 
-    const payload = envelope[ENVELOPE_PAYLOAD];
-    if (!(payload instanceof Uint8Array)) {
-      throw new Error(`${label} envelope ${index} has no binary payload`);
-    }
+  const payload = envelope[ENVELOPE_PAYLOAD];
+  if (!(payload instanceof Uint8Array)) {
+    throw new Error(`${label} envelope has no binary payload`);
+  }
 
-    return payload;
-  });
+  return payload;
 }
 
-/** The single record an Idunn-written store is expected to hold. */
-export function readIdunnStoreRecord(bytes: Uint8Array, label: string): Uint8Array {
-  const payloads = readIdunnStorePayloads(bytes, label);
-  if (payloads.length !== 1) {
-    throw new Error(`${label} must contain exactly one record, found ${payloads.length}`);
+/**
+ * Read the single record from an ordinary Idunn-written CultCache store.
+ *
+ * Uses the CultCache client rather than decoding by hand: this is the standard
+ * framing, and hand-decoding it is how a reader ends up agreeing with its own
+ * fixtures instead of with the writer.
+ */
+export async function readIdunnStoreRecord(file: string, label: string): Promise<Uint8Array> {
+  const records = await new SingleFileMessagePackBackingStore(file).pullAll();
+  if (records.length !== 1) {
+    throw new Error(`${label} must contain exactly one record, found ${records.length}`);
   }
-  return payloads[0]!;
+  return records[0]!.payload;
 }

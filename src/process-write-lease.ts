@@ -16,7 +16,7 @@
  * configured and the answer is an unconditional yes, because there is no second
  * generation to collide with.
  */
-import { readFile } from "node:fs/promises";
+
 import path from "node:path";
 
 import { decode } from "@msgpack/msgpack";
@@ -86,7 +86,7 @@ function stringField(fields: unknown[], index: number, label: string): string {
  * `idunn-store.ts`.
  */
 async function readEnvelopePayload(file: string, label: string): Promise<Uint8Array> {
-  return readIdunnStoreRecord(await readFile(file), label);
+  return readIdunnStoreRecord(file, label);
 }
 
 /**
