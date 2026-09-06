@@ -77,6 +77,41 @@ function readBoolean(envValue: string | undefined, fallback: boolean): boolean {
   return fallback;
 }
 
+/**
+ * Parse `GAMECULT_IDUNN_CANDIDATE_BIND`, the loopback socket Idunn assigns to
+ * a candidate incarnation. Returns undefined when unset, so a developer run
+ * and a plain systemd unit keep using HOST/PORT.
+ *
+ * Loopback is required: the candidate is reached through Idunn's route, never
+ * directly. A non-loopback or zero-port value means the launch inputs are
+ * wrong, and starting anyway would expose an unrouted generation.
+ */
+function readIdunnCandidateBind(
+  value: string | undefined
+): { host: string; port: number } | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const separator = value.lastIndexOf(":");
+  if (separator <= 0) {
+    throw new Error(`GAMECULT_IDUNN_CANDIDATE_BIND is not host:port: ${value}`);
+  }
+
+  const host = value.slice(0, separator).replace(/^\[|\]$/g, "");
+  const port = Number(value.slice(separator + 1));
+
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`GAMECULT_IDUNN_CANDIDATE_BIND has no usable port: ${value}`);
+  }
+
+  if (host !== "127.0.0.1" && host !== "::1" && host !== "localhost") {
+    throw new Error(`GAMECULT_IDUNN_CANDIDATE_BIND must be loopback: ${value}`);
+  }
+
+  return { host, port };
+}
+
 function readProviderConfig(env: NodeJS.ProcessEnv, provider: Provider): ProviderClientConfig {
   const prefix = `GC_ACCESS_PROVIDER_${provider.toUpperCase()}`;
   const config: ProviderClientConfig = {};
@@ -106,8 +141,24 @@ function readOptionalString(envValue: string | undefined): string | undefined {
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): HeimdallConfig {
   const sourceRoot = fileURLToPath(new URL("../", import.meta.url));
   const workspaceRoot = path.resolve(sourceRoot, "..");
-  const host = env.HOST ?? "127.0.0.1";
-  const port = readInt(env.PORT, 4100);
+  // Where Heimdall listens and what Heimdall advertises are two different
+  // authorities, and Idunn is the reason they must not be conflated. Under
+  // Idunn a candidate and the incumbent run at once, so the candidate is told
+  // which loopback socket to take; that address is ephemeral by design. The
+  // advertised base URL builds the OAuth callback registered with each
+  // provider, and cannot move.
+  const candidateBind = readIdunnCandidateBind(env.GAMECULT_IDUNN_CANDIDATE_BIND);
+  const host = candidateBind?.host ?? env.HOST ?? "127.0.0.1";
+  const port = candidateBind?.port ?? readInt(env.PORT, 4100);
+
+  if (candidateBind && !env.GC_ACCESS_BASE_URL) {
+    throw new Error(
+      "GC_ACCESS_BASE_URL is required when GAMECULT_IDUNN_CANDIDATE_BIND is set: " +
+        "deriving the public base URL from an Idunn candidate socket would advertise " +
+        "an ephemeral port as the provider-registered OAuth callback."
+    );
+  }
+
   const publicBaseUrl = trimTrailingSlash(env.GC_ACCESS_BASE_URL ?? `http://${host}:${port}`);
   const issuer = trimTrailingSlash(env.GC_ACCESS_ISSUER ?? publicBaseUrl);
   const dataRoot = env.GC_ACCESS_DATA_ROOT ?? path.join(workspaceRoot, ".heimdall-data");

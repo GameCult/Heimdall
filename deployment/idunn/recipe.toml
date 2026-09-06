@@ -1,16 +1,17 @@
-# NOT YET DEPLOYABLE. This recipe is correct and `idunn validate` accepts it,
-# but the service does not yet implement the runtime contract it declares.
+# NOT YET DEPLOYABLE, but closer. Status 2026-09-06:
 #
-# src/index.ts binds `config.port` (4100, fixed). Idunn's warm-then-cutover
-# requires a candidate to bind where it is told, via GAMECULT_IDUNN_CANDIDATE_BIND,
-# because the candidate and the incumbent must run at once under distinct UIDs
-# and namespaces. A service hardcoded to one port cannot warm alongside itself.
-# GAMECULT_IDUNN_PROCESS_WRITE_LEASE and GAMECULT_IDUNN_RUNTIME_BUNDLE are
-# likewise declared and unread; `grep -r GAMECULT_IDUNN src/` returns nothing.
+#   done     GAMECULT_IDUNN_CANDIDATE_BIND -- src/config.ts takes the candidate
+#            socket over HOST/PORT, requires loopback and a usable port, and
+#            refuses to start unless GC_ACCESS_BASE_URL is set explicitly, so
+#            an ephemeral candidate port can never become the provider-
+#            registered OAuth callback.
+#   pending  GAMECULT_IDUNN_PROCESS_WRITE_LEASE -- declared here because the
+#            state slot below is process-bound-single-writer, and unread by the
+#            service. Two generations could both open heimdall.service.cc.
+#   pending  GAMECULT_IDUNN_RUNTIME_BUNDLE -- declared and unread.
 #
-# Odin, Ghostlight and CodexConnector each read these. Heimdall publishes Idunn
-# health already (src/idunn-rudp-health.ts) but stops short of the rest.
-# Implement the contract before the first `idunn up heimdall`.
+# Do not `idunn up heimdall` until the write lease is honoured. Health
+# publication already exists in src/idunn-rudp-health.ts.
 
 schema = "gamecult.idunn.target_declaration.v1"
 target = "heimdall"
@@ -94,9 +95,8 @@ required_environment = [
   "GAMECULT_IDUNN_RUNTIME_BUNDLE",
   "GAMECULT_IDUNN_CANDIDATE_BIND",
   "GAMECULT_IDUNN_PROCESS_WRITE_LEASE",
-  "HEIMDALL_DATABASE_URL",
-  "HOST",
-  "PORT",
+  "GC_ACCESS_BASE_URL",
+  "GC_ACCESS_DATABASE_URL",
 ]
 
 [service.health]
