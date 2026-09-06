@@ -14,7 +14,10 @@ import { resolveWriteLease } from "../src/process-write-lease.js";
  * than a convenient object.
  */
 function envelope(key: string, type: string, payload: Uint8Array): Uint8Array {
-  return encode([{ key, type, payload, storedAt: "2026-09-06T00:00:00.000Z" }]);
+  // cultcache-rs writes positional envelopes: [key, type, payload, stored_at,
+  // schema_id]. Building the fixture the way Idunn actually writes it is the
+  // point -- an object-shaped fixture agrees with a wrong reader.
+  return encode([[key, type, payload, "2026-09-06T00:00:00.000Z", type]]);
 }
 
 function expectedIncarnation(target: string, incarnationId: string): Uint8Array {

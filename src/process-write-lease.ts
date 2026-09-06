@@ -20,6 +20,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 import { decode } from "@msgpack/msgpack";
+import { readIdunnStoreRecord } from "./idunn-store.js";
 
 const WRITE_LEASE_SCHEMA = "idunn.process_write_lease.v1";
 const EXPECTED_INCARNATION_SCHEMA = "idunn.expected_incarnation.v2";
@@ -78,27 +79,14 @@ function stringField(fields: unknown[], index: number, label: string): string {
 }
 
 /**
- * Envelopes are `{ key, type, payload, storedAt }`; only the payload carries
- * the positional record. Read the file directly rather than through the store
- * helper: this must work on a store owned by another UID, and it must never
- * create the file it is inspecting.
+ * Read the record out of an Idunn-written store. Reads the file directly
+ * rather than through the CultCache client: this must work on a store owned by
+ * another UID, it must never create the file it is inspecting, and
+ * `cultcache-ts` cannot parse the layout `cultcache-rs` writes anyway — see
+ * `idunn-store.ts`.
  */
 async function readEnvelopePayload(file: string, label: string): Promise<Uint8Array> {
-  const bytes = await readFile(file);
-  const entries = decode(bytes);
-  const envelopes = Array.isArray(entries) ? entries : [entries];
-  const last = envelopes[envelopes.length - 1];
-
-  if (!last || typeof last !== "object") {
-    throw new Error(`${label} holds no CultCache envelope`);
-  }
-
-  const payload = (last as Record<string, unknown>).payload;
-  if (!(payload instanceof Uint8Array)) {
-    throw new Error(`${label} envelope has no binary payload`);
-  }
-
-  return payload;
+  return readIdunnStoreRecord(await readFile(file), label);
 }
 
 /**

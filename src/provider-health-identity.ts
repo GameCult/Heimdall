@@ -10,6 +10,7 @@ import {
 import { readFileSync } from "node:fs";
 import { chmod, readFile } from "node:fs/promises";
 import { SingleFileMessagePackBackingStore, type CultCacheEnvelope } from "cultcache-ts";
+import { readIdunnStoreRecord } from "./idunn-store.js";
 
 const PRIVATE_SCHEMA = "gamecult.provider_health_identity.private.v1";
 const PRIVATE_KEY = "gamecult-provider-health-identity";
@@ -129,18 +130,10 @@ export async function openProviderHealthIdentity(
     return openOrEnrollProviderHealthIdentity(path);
   }
 
-  const store = decode(readFileSync(descriptor));
-  const envelopes = Array.isArray(store) ? store : [store];
-  if (envelopes.length !== 1) {
-    throw new Error(
-      "Idunn runtime presence identity must contain exactly one record."
-    );
-  }
-
-  const payload = (envelopes[0] as Record<string, unknown>)?.payload;
-  if (!(payload instanceof Uint8Array)) {
-    throw new Error("Idunn runtime presence identity has no binary payload.");
-  }
+  const payload = readIdunnStoreRecord(
+    readFileSync(descriptor),
+    "Idunn runtime presence identity"
+  );
 
   return decodePrivateIdentity(payload, await readMachineId());
 }
