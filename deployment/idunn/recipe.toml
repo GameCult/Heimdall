@@ -33,50 +33,50 @@ required_gitlinks = ["vendor/CultLib"]
 id = "install-cultlib"
 phase = "build"
 runner = "node-build"
-required_environment = ["NPM_CONFIG_CACHE", "HOME"]
+required_environment = ["NPM_CONFIG_CACHE", "HOME", "COREPACK_HOME"]
 argv = ["npm", "ci", "--ignore-scripts", "--prefix", "vendor/CultLib"]
 
 [[steps]]
 id = "build-cultcache-ts"
 phase = "build"
 runner = "node-build"
-required_environment = ["NPM_CONFIG_CACHE", "HOME"]
+required_environment = ["NPM_CONFIG_CACHE", "HOME", "COREPACK_HOME"]
 argv = ["npm", "run", "build", "--prefix", "vendor/CultLib", "--workspace=cultcache-ts"]
 
 [[steps]]
 id = "build-cultnet-ts"
 phase = "build"
 runner = "node-build"
-required_environment = ["NPM_CONFIG_CACHE", "HOME"]
+required_environment = ["NPM_CONFIG_CACHE", "HOME", "COREPACK_HOME"]
 argv = ["npm", "run", "build", "--prefix", "vendor/CultLib", "--workspace=cultnet-ts"]
 
 [[steps]]
 id = "build-cultmesh-ts"
 phase = "build"
 runner = "node-build"
-required_environment = ["NPM_CONFIG_CACHE", "HOME"]
+required_environment = ["NPM_CONFIG_CACHE", "HOME", "COREPACK_HOME"]
 argv = ["npm", "run", "build", "--prefix", "vendor/CultLib", "--workspace=cultmesh-ts"]
 
 [[steps]]
 id = "install-heimdall"
 phase = "build"
 runner = "node-build"
-required_environment = ["NPM_CONFIG_CACHE", "HOME"]
-argv = ["pnpm", "install", "--frozen-lockfile"]
+required_environment = ["NPM_CONFIG_CACHE", "HOME", "COREPACK_HOME"]
+argv = ["corepack", "pnpm", "install", "--frozen-lockfile"]
 
 [[steps]]
 id = "test-heimdall"
 phase = "test"
 runner = "node-build"
-required_environment = ["NPM_CONFIG_CACHE", "HOME"]
-argv = ["pnpm", "test"]
+required_environment = ["NPM_CONFIG_CACHE", "HOME", "COREPACK_HOME"]
+argv = ["corepack", "pnpm", "test"]
 
 [[steps]]
 id = "build-heimdall"
 phase = "build"
 runner = "node-build"
-required_environment = ["NPM_CONFIG_CACHE", "HOME"]
-argv = ["pnpm", "build"]
+required_environment = ["NPM_CONFIG_CACHE", "HOME", "COREPACK_HOME"]
+argv = ["corepack", "pnpm", "build"]
 
 # The unit runs dist/src/index.js, and Node resolves its imports at runtime, so
 # the release is the compiled output plus the production dependency tree. These
