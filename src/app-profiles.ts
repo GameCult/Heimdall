@@ -1,15 +1,12 @@
+import {
+  evaluateCapabilityRules,
+  type CapabilityDefinition,
+  type CapabilityMode,
+} from "./capability-rules.js";
 import { type AppSlug, type LinkedIdentityInput, type Provider } from "./contracts.js";
 import { entitlementFacts, grantFacts, identityFacts } from "./facts.js";
 
-export type CapabilityMode = "shared" | "hybrid";
-
-export interface CapabilityDefinition {
-  key: string;
-  mode: CapabilityMode;
-  summary: string;
-  sharedRule?: string;
-  localRequirement?: string;
-}
+export type { CapabilityDefinition, CapabilityMode };
 
 export interface ClaimEvaluationContext {
   accountId: string;
@@ -17,6 +14,15 @@ export interface ClaimEvaluationContext {
   identities: LinkedIdentityInput[];
 }
 
+/**
+ * An app's auth profile. Entirely data.
+ *
+ * It used to carry an evaluateSharedCapabilities function beside a sharedRule
+ * string that described what the function did — two representations of one rule,
+ * free to drift, and the reason a profile could not arrive at runtime. Every
+ * rule was a disjunction over a closed vocabulary, so anyOf now carries it and
+ * evaluation is a free function over the data.
+ */
 export interface AppProfile {
   slug: AppSlug;
   displayName: string;
@@ -25,12 +31,14 @@ export interface AppProfile {
   entitlementSources: Provider[];
   managedConnectionProviders: Provider[];
   capabilities: CapabilityDefinition[];
-  evaluateSharedCapabilities(context: ClaimEvaluationContext): string[];
 }
 
-function hasAnyFact(facts: Set<string>, values: readonly string[]): boolean {
-  return values.some((value) => facts.has(value));
-}
+/** The membership signal shared by every app that gates on GameCult membership. */
+const gameCultMembership = [
+  entitlementFacts.appAccess,
+  grantFacts.globalMember,
+  grantFacts.appAccess,
+];
 
 const repixelizerProfile: AppProfile = {
   slug: "repixelizer",
@@ -44,13 +52,13 @@ const repixelizerProfile: AppProfile = {
       key: "app_access",
       mode: "shared",
       summary: "May load the protected hosted GUI.",
-      sharedRule: "entitlement.app_access || grant.global_member || grant.app_access",
+      anyOf: gameCultMembership,
     },
     {
       key: "queue_submit",
       mode: "shared",
       summary: "May create a repixelizer job.",
-      sharedRule: "app_access",
+      anyOf: ["app_access"],
     },
     {
       key: "job_read_own",
@@ -68,27 +76,9 @@ const repixelizerProfile: AppProfile = {
       key: "admin_access",
       mode: "shared",
       summary: "May inspect grant/admin surfaces.",
-      sharedRule: "grant.operator || grant.admin_access",
+      anyOf: [grantFacts.operator, grantFacts.adminAccess],
     },
   ],
-  evaluateSharedCapabilities(context) {
-    const capabilities: string[] = [];
-    const appAccess = hasAnyFact(context.facts, [
-      entitlementFacts.appAccess,
-      grantFacts.globalMember,
-      grantFacts.appAccess,
-    ]);
-
-    if (appAccess) {
-      capabilities.push("app_access", "queue_submit");
-    }
-
-    if (hasAnyFact(context.facts, [grantFacts.operator, grantFacts.adminAccess])) {
-      capabilities.push("admin_access");
-    }
-
-    return capabilities;
-  },
 };
 
 const streampixelsProfile: AppProfile = {
@@ -103,7 +93,7 @@ const streampixelsProfile: AppProfile = {
       key: "viewer_access",
       mode: "shared",
       summary: "Authenticated viewer session for control-plane surfaces.",
-      sharedRule: identityFacts.authenticated,
+      anyOf: [identityFacts.authenticated],
     },
     {
       key: "creator_access",
@@ -123,22 +113,9 @@ const streampixelsProfile: AppProfile = {
       key: "operator_access",
       mode: "shared",
       summary: "Global operator access.",
-      sharedRule: grantFacts.operator,
+      anyOf: [grantFacts.operator],
     },
   ],
-  evaluateSharedCapabilities(context) {
-    const capabilities: string[] = [];
-
-    if (context.facts.has(identityFacts.authenticated)) {
-      capabilities.push("viewer_access");
-    }
-
-    if (context.facts.has(grantFacts.operator)) {
-      capabilities.push("operator_access");
-    }
-
-    return capabilities;
-  },
 };
 
 const bifrostProfile: AppProfile = {
@@ -153,18 +130,9 @@ const bifrostProfile: AppProfile = {
       key: "member_access",
       mode: "shared",
       summary: "May enter the Bifrost member alpha through a Heimdall-verified GameCult membership signal.",
-      sharedRule: "entitlement.app_access || grant.global_member || grant.app_access",
+      anyOf: gameCultMembership,
     },
   ],
-  evaluateSharedCapabilities(context) {
-    return hasAnyFact(context.facts, [
-      entitlementFacts.appAccess,
-      grantFacts.globalMember,
-      grantFacts.appAccess,
-    ])
-      ? ["member_access"]
-      : [];
-  },
 };
 
 const ghostlightProfile: AppProfile = {
@@ -179,7 +147,7 @@ const ghostlightProfile: AppProfile = {
       key: "app_access",
       mode: "shared",
       summary: "May enter Ghostlight Dungeon after Heimdall verifies the app-supplied GameCult Discord role policy.",
-      sharedRule: "entitlement.app_access || grant.global_member || grant.app_access",
+      anyOf: gameCultMembership,
     },
     {
       key: "campaign_play",
@@ -188,24 +156,28 @@ const ghostlightProfile: AppProfile = {
       localRequirement: "Ghostlight must combine app_access with local campaign ownership.",
     },
   ],
-  evaluateSharedCapabilities(context) {
-    return hasAnyFact(context.facts, [
-      entitlementFacts.appAccess,
-      grantFacts.globalMember,
-      grantFacts.appAccess,
-    ]) ? ["app_access"] : [];
-  },
 };
 
-export const appProfiles: Record<AppSlug, AppProfile> = {
+/**
+ * Profiles that ship with Heimdall. These are seed data, not special cases:
+ * a registered app produces the same shape and is evaluated by the same code.
+ */
+export const builtInAppProfiles: Record<AppSlug, AppProfile> = {
   repixelizer: repixelizerProfile,
   streampixels: streampixelsProfile,
   bifrost: bifrostProfile,
   ghostlight: ghostlightProfile,
 };
 
+export const appProfiles = builtInAppProfiles;
+
 export function getAppProfile(appSlug: AppSlug): AppProfile {
   return appProfiles[appSlug];
+}
+
+/** Shared capabilities the account holds for this app, from the profile's rules. */
+export function evaluateSharedCapabilities(profile: AppProfile, context: ClaimEvaluationContext): string[] {
+  return evaluateCapabilityRules(profile.capabilities, context.facts);
 }
 
 export function serializeAppProfile(profile: AppProfile): Record<string, unknown> {

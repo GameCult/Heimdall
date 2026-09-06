@@ -6,7 +6,7 @@ import {
   type LinkedIdentityInput,
   type RefreshTokenPayload,
 } from "./contracts.js";
-import { getAppProfile } from "./app-profiles.js";
+import { evaluateSharedCapabilities, getAppProfile } from "./app-profiles.js";
 import { type HeimdallConfig } from "./config.js";
 import { identityFacts } from "./facts.js";
 import { signJwt, type RuntimeKeyMaterial } from "./signing.js";
@@ -78,7 +78,7 @@ export async function issueAccessClaim(options: {
   const profile = getAppProfile(options.input.appSlug);
   const facts = normalizeFacts(options.input.accountId, options.input.linkedIdentities, options.input.facts);
   const factSet = new Set(facts);
-  const sharedCapabilities = profile.evaluateSharedCapabilities({
+  const sharedCapabilities = evaluateSharedCapabilities(profile, {
     accountId: options.input.accountId,
     facts: factSet,
     identities: options.input.linkedIdentities,
