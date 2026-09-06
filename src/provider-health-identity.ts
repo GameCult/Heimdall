@@ -7,6 +7,7 @@ import {
   sign,
   type KeyObject,
 } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { chmod, readFile } from "node:fs/promises";
 import { SingleFileMessagePackBackingStore, type CultCacheEnvelope } from "cultcache-ts";
 
@@ -70,6 +71,78 @@ export async function openOrEnrollProviderHealthIdentity(path: string): Promise<
     throw new Error("Provider-health identity store must contain exactly one record.");
   }
   return decodePrivateIdentity(existing[0]!.payload, await readMachineId());
+}
+
+const PRESENCE_IDENTITY_FD_NAME = "gamecult-runtime-presence-identity";
+const SYSTEMD_LISTEN_FDS_START = 3;
+
+/**
+ * Locate the runtime presence identity among the file descriptors systemd
+ * passed us, using the LISTEN_FDS convention: descriptors begin at 3 and
+ * LISTEN_FDNAMES names them in order, colon-separated.
+ *
+ * Idunn passes this identity as a parent-only descriptor rather than a path or
+ * a credential file, deliberately: the workload runs under DynamicUser and
+ * cannot open the 0600 root-owned store, and a descriptor cannot be re-read by
+ * anything that did not inherit it.
+ */
+function presenceIdentityDescriptor(
+  env: NodeJS.ProcessEnv,
+  pid: number
+): number | undefined {
+  const names = env.LISTEN_FDNAMES;
+  if (!names) {
+    return undefined;
+  }
+
+  // LISTEN_PID guards against consuming descriptors meant for a parent or a
+  // sibling; systemd sets it to the intended recipient.
+  if (env.LISTEN_PID && Number(env.LISTEN_PID) !== pid) {
+    return undefined;
+  }
+
+  const index = names.split(":").indexOf(PRESENCE_IDENTITY_FD_NAME);
+  return index === -1 ? undefined : SYSTEMD_LISTEN_FDS_START + index;
+}
+
+/**
+ * Open the identity Heimdall signs provider health with.
+ *
+ * Under Idunn the identity is enrolled by the operator, bound to this machine,
+ * and its public key is registered in Idunn's daemon-health trust store. Taking
+ * it from the passed descriptor is what makes published health admissible. If
+ * Heimdall instead enrolled its own key here it would sign with a key Idunn
+ * does not trust: health would be refused, warming presence would never be
+ * observed, and a deployment would hang at promotion with a service that looks
+ * healthy from every other angle.
+ *
+ * Outside Idunn there is no descriptor and no trust store, and the ordinary
+ * self-enrolling path applies.
+ */
+export async function openProviderHealthIdentity(
+  path: string,
+  env: NodeJS.ProcessEnv = process.env,
+  pid: number = process.pid
+): Promise<PrivateIdentity> {
+  const descriptor = presenceIdentityDescriptor(env, pid);
+  if (descriptor === undefined) {
+    return openOrEnrollProviderHealthIdentity(path);
+  }
+
+  const store = decode(readFileSync(descriptor));
+  const envelopes = Array.isArray(store) ? store : [store];
+  if (envelopes.length !== 1) {
+    throw new Error(
+      "Idunn runtime presence identity must contain exactly one record."
+    );
+  }
+
+  const payload = (envelopes[0] as Record<string, unknown>)?.payload;
+  if (!(payload instanceof Uint8Array)) {
+    throw new Error("Idunn runtime presence identity has no binary payload.");
+  }
+
+  return decodePrivateIdentity(payload, await readMachineId());
 }
 
 export function signProviderHealthPayload(identity: PrivateIdentity, payload: Uint8Array): Uint8Array {

@@ -11,7 +11,7 @@ import {
 } from "cultnet-ts";
 import type { HeimdallConfig } from "./config.js";
 import {
-  openOrEnrollProviderHealthIdentity,
+  openProviderHealthIdentity,
   signProviderHealthPayload,
 } from "./provider-health-identity.js";
 
@@ -92,7 +92,7 @@ async function publishIdunnRudpHealthOnce(
 }
 
 async function buildSignedDocumentPutPayload(config: HeimdallConfig, health: IdunnHealthInput): Promise<Uint8Array> {
-  const identity = await openOrEnrollProviderHealthIdentity(config.providerHealthIdentityPath);
+  const identity = await openProviderHealthIdentity(config.providerHealthIdentityPath);
   publisherSequence += 1;
   const unsigned = [
     SIGNED_DAEMON_HEALTH_SCHEMA,
