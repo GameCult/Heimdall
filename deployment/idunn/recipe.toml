@@ -62,7 +62,7 @@ id = "install-heimdall"
 phase = "build"
 runner = "node-build"
 required_environment = ["NPM_CONFIG_CACHE", "HOME", "COREPACK_HOME"]
-argv = ["corepack", "pnpm", "install", "--frozen-lockfile", "--node-linker=hoisted"]
+argv = ["corepack", "pnpm", "install", "--frozen-lockfile", "--config.node-linker=hoisted"]
 
 [[steps]]
 id = "test-heimdall"
