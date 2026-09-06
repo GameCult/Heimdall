@@ -78,29 +78,31 @@ runner = "node-build"
 required_environment = ["NPM_CONFIG_CACHE", "HOME", "COREPACK_HOME"]
 argv = ["corepack", "pnpm", "build"]
 
+# The release is one self-contained executable. node_modules is a build
+# input, not an artifact: pnpm lays it out as symlinks into .pnpm, which
+# Idunn refuses to seal, and shipping a dependency tree to run a service is
+# a larger liability than bundling it.
+[[steps]]
+id = "bundle-heimdall"
+phase = "build"
+runner = "node-build"
+required_environment = ["NPM_CONFIG_CACHE", "HOME", "COREPACK_HOME"]
+argv = ["corepack", "pnpm", "bundle"]
+
 # The unit runs dist/src/index.js, and Node resolves its imports at runtime, so
 # the release is the compiled output plus the production dependency tree. These
 # are the two artifacts; nothing else from the build tree is installed.
 [[artifacts]]
-id = "heimdall-dist"
+id = "heimdall"
 source_kind = "runner-output"
 runner = "node-build"
-source = "dist"
-destination = "dist"
-executable = false
-
-[[artifacts]]
-id = "heimdall-node-modules"
-source_kind = "runner-output"
-runner = "node-build"
-source = "node_modules"
-destination = "node_modules"
-executable = false
+source = "dist/heimdall"
+destination = "heimdall"
+executable = true
 
 [service]
-executable_artifact = "heimdall-dist"
+executable_artifact = "heimdall"
 arguments = [
-  { kind = "literal", value = "dist/src/index.js" },
   { kind = "literal", value = "--state-root" },
   { kind = "binding", name = "state_root" },
 ]

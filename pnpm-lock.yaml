@@ -43,6 +43,9 @@ importers:
       '@types/pg':
         specifier: ^8.20.0
         version: 8.20.0
+      esbuild:
+        specifier: ^0.27.7
+        version: 0.27.7
       pg-mem:
         specifier: ^3.0.14
         version: 3.0.14

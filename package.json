@@ -13,7 +13,8 @@
     "test": "vitest run --config vitest.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "export:provider-health-public-key": "tsx src/export-provider-health-public-key.ts",
-    "export:provider-advertisement": "tsx src/export-provider-advertisement.ts --pretty"
+    "export:provider-advertisement": "tsx src/export-provider-advertisement.ts --pretty",
+    "bundle": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node24 --outfile=dist/heimdall --external:pg-native --banner:js=\"#!/usr/bin/env node\nimport{createRequire}from'node:module';const require=createRequire(import.meta.url);\""
   },
   "dependencies": {
     "@fastify/cors": "^11.2.0",
@@ -31,7 +32,8 @@
     "pg-mem": "^3.0.14",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.5"
+    "vitest": "^4.1.5",
+    "esbuild": "^0.27.7"
   },
   "pnpm": {
     "overrides": {
