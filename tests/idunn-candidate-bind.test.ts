@@ -1,3 +1,4 @@
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { loadConfig } from "../src/config.js";
@@ -63,5 +64,35 @@ describe("Idunn candidate bind", () => {
 
     expect(config.host).toBe("::1");
     expect(config.port).toBe(18833);
+  });
+});
+
+describe("Idunn state root argument", () => {
+  it("takes --state-root over GC_ACCESS_DATA_ROOT", () => {
+    // Idunn owns where state lives: the recipe declares slots relative to
+    // state_root and the binding supplies the absolute path as a launch
+    // argument. The env var remains for runs outside Idunn.
+    const config = loadConfig({ GC_ACCESS_DATA_ROOT: "/tmp/ignored" }, [
+      "--state-root",
+      "/var/lib/gamecult/heimdall",
+    ]);
+
+    expect(config.dataRoot).toBe("/var/lib/gamecult/heimdall");
+    expect(config.cultCachePath).toContain("heimdall.service.cc");
+    expect(config.cultCachePath).toBe(
+      path.join(config.dataRoot, "cultcache", "heimdall.service.cc")
+    );
+  });
+
+  it("falls back to GC_ACCESS_DATA_ROOT when the argument is absent", () => {
+    expect(loadConfig({ GC_ACCESS_DATA_ROOT: "/srv/heimdall/state" }, []).dataRoot).toBe(
+      "/srv/heimdall/state"
+    );
+  });
+
+  it("rejects a missing or relative --state-root", () => {
+    expect(() => loadConfig({}, ["--state-root"])).toThrow(/requires a path/);
+    expect(() => loadConfig({}, ["--state-root", "--other"])).toThrow(/requires a path/);
+    expect(() => loadConfig({}, ["--state-root", "relative/path"])).toThrow(/must be absolute/);
   });
 });

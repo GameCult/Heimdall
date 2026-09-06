@@ -140,9 +140,38 @@ function readOptionalString(envValue: string | undefined): string | undefined {
   return value ? value : undefined;
 }
 
-export function loadConfig(env: NodeJS.ProcessEnv = process.env): HeimdallConfig {
+/**
+ * `--state-root PATH`, the directory Idunn assigns for this target's persistent
+ * state. Idunn owns that location: the recipe declares state slots relative to
+ * it and the operator binding supplies the absolute path, so the service is
+ * told rather than choosing. Absent outside Idunn, where GC_ACCESS_DATA_ROOT
+ * and the repo-local default still apply.
+ */
+function readStateRootArgument(argv: readonly string[]): string | undefined {
+  const index = argv.indexOf("--state-root");
+  if (index === -1) {
+    return undefined;
+  }
+
+  const value = argv[index + 1];
+  if (!value || value.startsWith("--")) {
+    throw new Error("--state-root requires a path");
+  }
+
+  if (!path.isAbsolute(value)) {
+    throw new Error(`--state-root must be absolute: ${value}`);
+  }
+
+  return value;
+}
+
+export function loadConfig(
+  env: NodeJS.ProcessEnv = process.env,
+  argv: readonly string[] = process.argv.slice(2)
+): HeimdallConfig {
   const sourceRoot = fileURLToPath(new URL("../", import.meta.url));
   const workspaceRoot = path.resolve(sourceRoot, "..");
+  const stateRootArgument = readStateRootArgument(argv);
   // Where Heimdall listens and what Heimdall advertises are two different
   // authorities, and Idunn is the reason they must not be conflated. Under
   // Idunn a candidate and the incumbent run at once, so the candidate is told
@@ -163,7 +192,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): HeimdallConfig
 
   const publicBaseUrl = trimTrailingSlash(env.GC_ACCESS_BASE_URL ?? `http://${host}:${port}`);
   const issuer = trimTrailingSlash(env.GC_ACCESS_ISSUER ?? publicBaseUrl);
-  const dataRoot = env.GC_ACCESS_DATA_ROOT ?? path.join(workspaceRoot, ".heimdall-data");
+  const dataRoot =
+    stateRootArgument ?? env.GC_ACCESS_DATA_ROOT ?? path.join(workspaceRoot, ".heimdall-data");
   const storageBackend =
     env.GC_ACCESS_STORAGE_BACKEND === "postgres" || env.GC_ACCESS_DATABASE_URL ? "postgres" : "memory";
   const providersConfig = Object.fromEntries(

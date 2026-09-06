@@ -94,9 +94,12 @@ executable = false
 executable_artifact = "heimdall-dist"
 arguments = [
   { kind = "literal", value = "dist/src/index.js" },
+  { kind = "literal", value = "--state-root" },
+  { kind = "binding", name = "state_root" },
 ]
-transport = "rudp"
+transport = "http"
 route_required = true
+optional_environment = []
 required_environment = [
   "GAMECULT_IDUNN_RUNTIME_BUNDLE",
   "GAMECULT_IDUNN_CANDIDATE_BIND",
