@@ -34,6 +34,12 @@ try {
   verseTimer.unref?.();
 } catch (error) {
   await privateCommands?.close().catch(() => undefined);
+  // Write to stderr directly as well as through the logger. Pino buffers, and
+  // setting exitCode lets the process exit before that buffer flushes, so a
+  // startup failure logged only through app.log disappears entirely. Under a
+  // supervisor that is the worst possible failure: the unit dies, the journal
+  // holds nothing, and the operator is told only that it is not running.
+  console.error("Heimdall failed to start:", error);
   app.log.error(error);
   process.exitCode = 1;
 }
