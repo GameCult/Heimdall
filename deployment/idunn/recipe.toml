@@ -92,17 +92,40 @@ argv = ["corepack", "pnpm", "bundle"]
 # The unit runs dist/src/index.js, and Node resolves its imports at runtime, so
 # the release is the compiled output plus the production dependency tree. These
 # are the two artifacts; nothing else from the build tree is installed.
+[[steps]]
+id = "stage-node"
+phase = "build"
+runner = "node-build"
+required_environment = ["NPM_CONFIG_CACHE", "HOME", "COREPACK_HOME"]
+argv = ["node", "-e", "require('fs').copyFileSync(process.execPath, 'dist/node')"]
+
+# Idunn compares the running process's executable inode against the sealed
+# artifact, so the executed inode must live inside the release. A shebang script
+# cannot satisfy that: the kernel execs the interpreter, and the process's
+# executable is /usr/bin/node rather than anything sealed. Shipping the runner
+# image's own node as the executable brings the interpreter inside the seal and
+# pins it to the runner image digest, which is a stronger guarantee than
+# depending on whatever node the host happens to have.
 [[artifacts]]
-id = "heimdall"
+id = "node"
+source_kind = "runner-output"
+runner = "node-build"
+source = "dist/node"
+destination = "node"
+executable = true
+
+[[artifacts]]
+id = "heimdall-bundle"
 source_kind = "runner-output"
 runner = "node-build"
 source = "dist/heimdall"
-destination = "heimdall"
-executable = true
+destination = "heimdall.mjs"
+executable = false
 
 [service]
-executable_artifact = "heimdall"
+executable_artifact = "node"
 arguments = [
+  { kind = "literal", value = "heimdall.mjs" },
   { kind = "literal", value = "--state-root" },
   { kind = "binding", name = "state_root" },
 ]
