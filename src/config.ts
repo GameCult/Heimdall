@@ -22,6 +22,8 @@ export interface HeimdallConfig {
   workspaceRoot: string;
   dataRoot: string;
   cultCachePath: string;
+  idunnWriteLeasePath?: string | undefined;
+  idunnRuntimeBundlePath?: string | undefined;
   publicBaseUrl: string;
   issuer: string;
   daemonId: string;
@@ -200,6 +202,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): HeimdallConfig
     privateCommandPort: readInt(env.GC_ACCESS_PRIVATE_COMMAND_PORT, 4101),
     workspaceRoot,
     dataRoot,
+    idunnWriteLeasePath: env.GAMECULT_IDUNN_PROCESS_WRITE_LEASE,
+    idunnRuntimeBundlePath: env.GAMECULT_IDUNN_RUNTIME_BUNDLE,
     cultCachePath: env.GC_ACCESS_CULTCACHE_PATH ?? path.join(dataRoot, "cultcache", "heimdall.service.cc"),
     publicBaseUrl,
     issuer,

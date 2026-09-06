@@ -1,3 +1,4 @@
+import { resolveWriteLease, WriteLeaseNotHeldError } from "./process-write-lease.js";
 import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { encode } from "@msgpack/msgpack";
@@ -39,6 +40,19 @@ export function createHeimdallRuntimePulse(config: HeimdallConfig, updatedAt = n
 }
 
 export async function publishHeimdallVerseState(config: HeimdallConfig, pulse: HeimdallRuntimePulse): Promise<void> {
+  // Under Idunn a warming candidate shares this store's path with the running
+  // incumbent. Writing without the lease would let two generations overwrite
+  // one another's snapshot, so a candidate stays quiet until it is granted the
+  // lease — which is also the state it is in for most of its warming window.
+  const lease = await resolveWriteLease({
+    leasePath: config.idunnWriteLeasePath,
+    runtimeBundlePath: config.idunnRuntimeBundlePath,
+  });
+
+  if (!lease.mayWrite) {
+    throw new WriteLeaseNotHeldError(lease.reason);
+  }
+
   const records: CultCacheRecord[] = [
     ...buildHeimdallVerseRecords(config, pulse),
     {

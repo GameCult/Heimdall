@@ -1,3 +1,4 @@
+import { resolveWriteLease, WriteLeaseNotHeldError } from "./process-write-lease.js";
 import { buildApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { publishIdunnRudpHealth } from "./idunn-rudp-health.js";
@@ -39,16 +40,44 @@ try {
 
 async function publishVerseState(): Promise<void> {
   const pulse = createHeimdallRuntimePulse(config);
-  await publishHeimdallVerseState(config, pulse);
+  try {
+    await publishHeimdallVerseState(config, pulse);
+  } catch (error) {
+    // A warming candidate does not hold the write lease, and will not until
+    // Idunn fences the incumbent. That is the expected state for most of a
+    // deployment, not a fault: decline the write, say so once per pulse at
+    // info, and keep serving. Health publication continues either way, which
+    // is what lets Idunn observe the candidate and promote it.
+    if (error instanceof WriteLeaseNotHeldError) {
+      app.log.info(error.message);
+      return;
+    }
+    throw error;
+  }
   await publishHeimdallOdinState(config, pulse);
 }
 
 async function publishHealthState(): Promise<void> {
   const pulse = createHeimdallRuntimePulse(config);
+
+  // "active" is a claim about owning the target's state, not about having
+  // started. A candidate that has not been granted the write lease is serving
+  // but is not the owner, and Idunn must observe `warming` before it fences the
+  // incumbent — a candidate that reports active from its first pulse cannot be
+  // promoted correctly, because the warming evidence the transaction needs
+  // never appears.
+  const lease = await resolveWriteLease({
+    leasePath: config.idunnWriteLeasePath,
+    runtimeBundlePath: config.idunnRuntimeBundlePath,
+  });
+  const detail = lease.mayWrite
+    ? buildHeimdallHealthDetail(config, pulse)
+    : `Heimdall candidate warming; ${lease.reason}`;
+
   await publishIdunnRudpHealth(config, {
     daemonId: config.daemonId,
-    state: "active",
-    detail: buildHeimdallHealthDetail(config, pulse),
+    state: lease.mayWrite ? "active" : "warming",
+    detail,
     observedAt: pulse.updatedAt,
   });
 }

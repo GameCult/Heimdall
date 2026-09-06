@@ -1,17 +1,23 @@
-# NOT YET DEPLOYABLE, but closer. Status 2026-09-06:
+# The runtime contract below is implemented as of 2026-09-06.
 #
-#   done     GAMECULT_IDUNN_CANDIDATE_BIND -- src/config.ts takes the candidate
-#            socket over HOST/PORT, requires loopback and a usable port, and
-#            refuses to start unless GC_ACCESS_BASE_URL is set explicitly, so
-#            an ephemeral candidate port can never become the provider-
-#            registered OAuth callback.
-#   pending  GAMECULT_IDUNN_PROCESS_WRITE_LEASE -- declared here because the
-#            state slot below is process-bound-single-writer, and unread by the
-#            service. Two generations could both open heimdall.service.cc.
-#   pending  GAMECULT_IDUNN_RUNTIME_BUNDLE -- declared and unread.
+#   GAMECULT_IDUNN_CANDIDATE_BIND       src/config.ts takes the candidate socket
+#                                       over HOST/PORT, requires loopback and a
+#                                       usable port, and refuses to start unless
+#                                       GC_ACCESS_BASE_URL is set, so an
+#                                       ephemeral port can never become the
+#                                       provider-registered OAuth callback.
+#   GAMECULT_IDUNN_PROCESS_WRITE_LEASE  src/process-write-lease.ts. The single
+#                                       writer of heimdall.service.cc declines
+#                                       unless the lease names this incarnation.
+#   GAMECULT_IDUNN_RUNTIME_BUNDLE       read for expected.cc, which is how the
+#                                       process learns which incarnation it is.
 #
-# Do not `idunn up heimdall` until the write lease is honoured. Health
-# publication already exists in src/idunn-rudp-health.ts.
+# Health reports `warming` until the lease is held and `active` after, because
+# Idunn must observe warming presence before it fences the incumbent.
+#
+# Still untested against a live Idunn: nothing here has been through an actual
+# `idunn up heimdall`, and the daemon on yggdrasil is still the previous
+# generation. Treat the first deployment as the real verification.
 
 schema = "gamecult.idunn.target_declaration.v1"
 target = "heimdall"
