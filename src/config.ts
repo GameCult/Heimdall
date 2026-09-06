@@ -53,6 +53,13 @@ function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
 }
 
+/**
+ * Distance from a candidate's assigned HTTP port to its private command port.
+ * Large enough that the derived ports cannot land inside the route's candidate
+ * range and collide with another generation's HTTP listener.
+ */
+const PRIVATE_COMMAND_PORT_OFFSET = 1000;
+
 function readInt(envValue: string | undefined, fallback: number): number {
   if (!envValue) {
     return fallback;
@@ -229,7 +236,16 @@ export function loadConfig(
     host,
     port,
     privateCommandHost: env.GC_ACCESS_PRIVATE_COMMAND_HOST ?? "127.0.0.1",
-    privateCommandPort: readInt(env.GC_ACCESS_PRIVATE_COMMAND_PORT, 4101),
+    // The private command plane is a second listener belonging to the same
+    // generation as the HTTP one, so under Idunn its port has to move with the
+    // candidate too. A fixed port makes two generations impossible: the
+    // candidate collides with the incumbent on bind and the deployment dies
+    // before it can warm. Offsetting from the assigned candidate port keeps
+    // each generation's pair together and keeps the published command-boundary
+    // endpoint truthful, since it reads this same value.
+    privateCommandPort: candidateBind
+      ? candidateBind.port + PRIVATE_COMMAND_PORT_OFFSET
+      : readInt(env.GC_ACCESS_PRIVATE_COMMAND_PORT, 4101),
     workspaceRoot,
     dataRoot,
     idunnWriteLeasePath: env.GAMECULT_IDUNN_PROCESS_WRITE_LEASE,

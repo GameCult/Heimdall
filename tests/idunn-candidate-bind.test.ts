@@ -96,3 +96,27 @@ describe("Idunn state root argument", () => {
     expect(() => loadConfig({}, ["--state-root", "relative/path"])).toThrow(/must be absolute/);
   });
 });
+
+describe("private command plane port", () => {
+  it("moves with the candidate so two generations can coexist", () => {
+    // The incumbent holds the configured port. A candidate that reuses it dies
+    // on bind before it can warm, which is how the first sealed release failed.
+    const config = loadConfig(
+      {
+        GAMECULT_IDUNN_CANDIDATE_BIND: "127.0.0.1:14103",
+        GC_ACCESS_BASE_URL: "https://heimdall.gamecult.org",
+        GC_ACCESS_PRIVATE_COMMAND_PORT: "4101",
+      },
+      []
+    );
+
+    expect(config.port).toBe(14103);
+    expect(config.privateCommandPort).toBe(15103);
+  });
+
+  it("keeps the configured port when not launched by Idunn", () => {
+    expect(
+      loadConfig({ GC_ACCESS_PRIVATE_COMMAND_PORT: "4101" }, []).privateCommandPort
+    ).toBe(4101);
+  });
+});
