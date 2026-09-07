@@ -1,4 +1,4 @@
-import { defineDocumentType } from "cultcache-ts";
+import { defineDocumentType } from "@gamecult/cultcache-ts";
 import { defineCultNetDocumentBinding } from "cultnet-ts";
 import { CultMesh, type CultMeshRudpEndpoint } from "cultmesh-ts";
 import { z } from "zod";

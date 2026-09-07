@@ -17,7 +17,7 @@
  * cannot parse it. `readPrivateStoreRecord` exists for that one shape.
  */
 import { decode } from "@msgpack/msgpack";
-import { SingleFileMessagePackBackingStore } from "cultcache-ts";
+import { SingleFileMessagePackBackingStore } from "@gamecult/cultcache-ts";
 
 const ENVELOPE_FIELD_COUNT = 5;
 const ENVELOPE_PAYLOAD = 2;

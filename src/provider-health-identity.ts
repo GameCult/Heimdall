@@ -9,7 +9,7 @@ import {
 } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { chmod, readFile } from "node:fs/promises";
-import { SingleFileMessagePackBackingStore, type CultCacheEnvelope } from "cultcache-ts";
+import { SingleFileMessagePackBackingStore, type CultCacheEnvelope } from "@gamecult/cultcache-ts";
 import { readPrivateStoreRecord } from "./idunn-store.js";
 
 const PRIVATE_SCHEMA = "gamecult.provider_health_identity.private.v1";

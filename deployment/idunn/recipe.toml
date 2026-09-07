@@ -41,21 +41,21 @@ id = "build-cultcache-ts"
 phase = "build"
 runner = "node-build"
 required_environment = ["NPM_CONFIG_CACHE", "HOME", "COREPACK_HOME"]
-argv = ["npm", "run", "build", "--prefix", "vendor/CultLib", "--workspace=cultcache-ts"]
+argv = ["npm", "run", "build", "--prefix", "vendor/CultLib", "--workspace=packages/cultcache-ts"]
 
 [[steps]]
 id = "build-cultnet-ts"
 phase = "build"
 runner = "node-build"
 required_environment = ["NPM_CONFIG_CACHE", "HOME", "COREPACK_HOME"]
-argv = ["npm", "run", "build", "--prefix", "vendor/CultLib", "--workspace=cultnet-ts"]
+argv = ["npm", "run", "build", "--prefix", "vendor/CultLib", "--workspace=packages/cultnet-ts"]
 
 [[steps]]
 id = "build-cultmesh-ts"
 phase = "build"
 runner = "node-build"
 required_environment = ["NPM_CONFIG_CACHE", "HOME", "COREPACK_HOME"]
-argv = ["npm", "run", "build", "--prefix", "vendor/CultLib", "--workspace=cultmesh-ts"]
+argv = ["npm", "run", "build", "--prefix", "vendor/CultLib", "--workspace=packages/cultmesh-ts"]
 
 [[steps]]
 id = "install-heimdall"

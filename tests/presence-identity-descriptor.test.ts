@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { encode } from "@msgpack/msgpack";
-import { SingleFileMessagePackBackingStore } from "cultcache-ts";
+import { SingleFileMessagePackBackingStore } from "@gamecult/cultcache-ts";
 import { describe, expect, it } from "vitest";
 
 import {
