@@ -1,3 +1,4 @@
+import path from "node:path";
 import { resolveWriteLease, WriteLeaseNotHeldError } from "./process-write-lease.js";
 import { buildApp } from "./app.js";
 import { loadConfig } from "./config.js";
@@ -6,6 +7,12 @@ import { publishHeimdallOdinState } from "./odin-publication.js";
 import { startHeimdallPrivateCommandPlane } from "./private-command-plane.js";
 import type { CultNetOperationServer } from "cultnet-ts";
 import { createHeimdallRuntimePulse, buildHeimdallHealthDetail, publishHeimdallVerseState } from "./verse-state.js";
+import {
+  buildPresenceStatement,
+  nextPublisherSequence,
+  readRuntimeBundleFacts,
+  type RuntimeBundleFacts,
+} from "./runtime-presence.js";
 
 const config = loadConfig();
 const app = await buildApp({ config });
@@ -63,6 +70,13 @@ async function publishVerseState(): Promise<void> {
   await publishHeimdallOdinState(config, pulse);
 }
 
+/**
+ * Read once and keep: the bundle is Idunn's immutable record of this launch and
+ * cannot change while the process lives, so re-reading it every pulse would be
+ * work that can only ever return the same answer or fail.
+ */
+let runtimeBundleFacts: RuntimeBundleFacts | undefined;
+
 async function publishHealthState(): Promise<void> {
   const pulse = createHeimdallRuntimePulse(config);
 
@@ -80,11 +94,35 @@ async function publishHealthState(): Promise<void> {
     ? buildHeimdallHealthDetail(config, pulse)
     : `Heimdall candidate warming; ${lease.reason}`;
 
+  if (!config.idunnRuntimeBundlePath) {
+    // Outside Idunn there is no launch to attest and nothing that admits the
+    // statement; publishing is simply not part of that world.
+    return;
+  }
+  runtimeBundleFacts ??= await readRuntimeBundleFacts(config.idunnRuntimeBundlePath);
+
+  const observedAtUnixMillis = Date.parse(pulse.updatedAt);
+  const presence = await buildPresenceStatement({
+    bundle: runtimeBundleFacts,
+    state: lease.mayWrite ? "active" : "warming",
+    detail,
+    boundEndpoint: `http://${config.host}:${config.port}`,
+    // A warming candidate holds no lease and must not claim one; the contract
+    // refuses the pair, and Idunn needs the warming statement to promote it.
+    writeLeaseSha256: null,
+    observedAtUnixMillis,
+    publisherSequence: await nextPublisherSequence(
+      path.join(config.dataRoot, "runtime-presence-sequence"),
+    ),
+    providerHealthIdentityPath: config.providerHealthIdentityPath,
+  });
+
   await publishIdunnRudpHealth(config, {
     daemonId: config.daemonId,
     state: lease.mayWrite ? "active" : "warming",
     detail,
     observedAt: pulse.updatedAt,
+    presence,
   });
 }
 

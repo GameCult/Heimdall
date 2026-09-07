@@ -1,7 +1,7 @@
 import dgram from "node:dgram";
-import { randomUUID } from "node:crypto";
 import { encode } from "@msgpack/msgpack";
 import {
+  GAMECULT_RUNTIME_PRESENCE_HEALTH_SCHEMA,
   CultNetRudpSession,
   decodeRudpPacket,
   encodeCultNetMessageForWire,
@@ -10,19 +10,13 @@ import {
   type CultNetRudpPacket,
 } from "cultnet-ts";
 import type { HeimdallConfig } from "./config.js";
-import {
-  openProviderHealthIdentity,
-  signProviderHealthPayload,
-} from "./provider-health-identity.js";
+import type { PresenceStatement } from "./runtime-presence.js";
 
 const CULTNET_RUDP_PROTOCOL_ID = "cultnet.transport.rudp.v0";
 const IDUNN_HEALTH_RUDP_CONNECTION_ID = 0x1d0d0001;
 const RUDP_HEALTH_CONNECT_ATTEMPTS = 3;
 const RUDP_ACCEPT_TIMEOUT_MS = 2_000;
 const RUDP_ACK_TIMEOUT_MS = 1_000;
-const SIGNED_DAEMON_HEALTH_SCHEMA = "idunn.signed_daemon_health.v1";
-const publisherIncarnationId = randomUUID();
-let publisherSequence = 0;
 
 type Endpoint = {
   host: string;
@@ -34,6 +28,8 @@ type IdunnHealthInput = {
   state: string;
   detail: string;
   observedAt: string;
+  /** The dual-proved statement, already built and signed. */
+  presence: PresenceStatement;
 };
 
 export async function publishIdunnRudpHealth(config: HeimdallConfig, health: IdunnHealthInput): Promise<void> {
@@ -91,42 +87,25 @@ async function publishIdunnRudpHealthOnce(
   }
 }
 
-async function buildSignedDocumentPutPayload(config: HeimdallConfig, health: IdunnHealthInput): Promise<Uint8Array> {
-  const identity = await openProviderHealthIdentity(config.providerHealthIdentityPath);
-  publisherSequence += 1;
-  const unsigned = [
-    SIGNED_DAEMON_HEALTH_SCHEMA,
-    health.daemonId,
-    config.idunnHealthContract,
-    "heimdall-service",
-    health.state,
-    health.detail,
-    identity.identityId,
-    publisherIncarnationId,
-    publisherSequence,
-    Date.parse(health.observedAt),
-    null,
-    null,
-    null,
-    null,
-    "ed25519",
-    new Uint8Array(),
-    false,
-  ];
-  const signature = signProviderHealthPayload(identity, encode(unsigned));
-  const recordPayload = encode([...unsigned.slice(0, 15), signature, false]);
+async function buildSignedDocumentPutPayload(
+  config: HeimdallConfig,
+  health: IdunnHealthInput,
+): Promise<Uint8Array> {
+  // The record key must equal the target the statement signs. Odin refuses the
+  // pair when they differ, and it is the one part of the envelope the transport
+  // cannot infer from the payload without decoding it.
   const message: CultNetDocumentPutRawMessage = {
     schemaVersion: "cultnet.document_put_raw.v0",
-    messageId: `heimdall-health:${health.daemonId}:${health.observedAt.replace(/[:.]/g, "-")}`,
+    messageId: `heimdall-presence:${health.presence.target}:${health.observedAt.replace(/[:.]/g, "-")}`,
     document: {
-      schemaId: SIGNED_DAEMON_HEALTH_SCHEMA,
-      recordKey: health.daemonId,
+      schemaId: GAMECULT_RUNTIME_PRESENCE_HEALTH_SCHEMA,
+      recordKey: health.presence.target,
       storedAt: health.observedAt,
       payloadEncoding: "messagepack",
-      payload: recordPayload,
-      sourceRuntimeId: "heimdall-service",
-      sourceAgentId: identity.identityId,
-      sourceRole: "daemon-health-publisher",
+      payload: health.presence.payload,
+      sourceRuntimeId: config.idunnHealthContract,
+      sourceAgentId: health.presence.target,
+      sourceRole: "runtime-presence-publisher",
       tags: [CULTNET_RUDP_PROTOCOL_ID],
     },
   };

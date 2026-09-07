@@ -62,11 +62,21 @@ describe("Heimdall Idunn health publication", () => {
       });
       const observedAt = "2026-08-22T00:45:00.000Z";
 
+      // The transport is handed an already-signed statement; building one is
+      // the presence module's job and is covered against the Rust vectors in
+      // cultnet-ts. What this asserts is that the envelope keys the document by
+      // the signed target, which is the pairing Odin refuses when it differs.
+      const presence = {
+        target: "heimdall",
+        payload: new Uint8Array([0x01, 0x02, 0x03]),
+      };
+
       await publishIdunnRudpHealth(config, {
         daemonId: "yggdrasil-heimdall",
         state: "active",
         detail: "private-command-plane-ready",
         observedAt,
+        presence,
       });
       const frame = await frameReceived;
       const message = parseCultNetMessage(decode(frame.payload), "cultnet.schema.v0");
@@ -76,17 +86,10 @@ describe("Heimdall Idunn health publication", () => {
       if (message.schemaVersion !== "cultnet.document_put_raw.v0") {
         throw new Error("Expected raw document publication.");
       }
-      expect(message.document.schemaId).toBe("idunn.signed_daemon_health.v1");
-      expect(message.document.recordKey).toBe("yggdrasil-heimdall");
-      expect(message.document.sourceRuntimeId).toBe("heimdall-service");
-      expect(message.document.sourceRole).toBe("daemon-health-publisher");
-      const statement = decode(message.document.payload) as unknown[];
-      expect(statement).toHaveLength(17);
-      expect(statement[0]).toBe("idunn.signed_daemon_health.v1");
-      expect(statement[1]).toBe("yggdrasil-heimdall");
-      expect(statement[15]).toBeInstanceOf(Uint8Array);
-      expect((statement[15] as Uint8Array).byteLength).toBe(64);
-      expect(statement[16]).toBe(false);
+      expect(message.document.schemaId).toBe("gamecult.runtime_presence_health.v2");
+      expect(message.document.recordKey).toBe(presence.target);
+      expect(message.document.sourceRole).toBe("runtime-presence-publisher");
+      expect(Buffer.from(message.document.payload)).toEqual(Buffer.from(presence.payload));
     } finally {
       server.close();
     }

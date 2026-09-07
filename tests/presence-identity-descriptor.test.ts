@@ -63,8 +63,7 @@ describe.skipIf(!machineIdAvailable)("presence identity from a passed descriptor
 
       const opened = await openProviderHealthIdentity(
         path.join(dir, "would-be-self-enrolled.cc"),
-        { LISTEN_FDNAMES: names, LISTEN_PID: String(process.pid) },
-        process.pid
+        { LISTEN_FDNAMES: names, LISTEN_PID: String(process.pid) }
       );
 
       // Same key means it came from the descriptor. A fresh self-enrolment
@@ -82,24 +81,25 @@ describe.skipIf(!machineIdAvailable)("presence identity from a passed descriptor
 describe("presence identity descriptor selection", () => {
   const dir = os.tmpdir();
 
-  it("ignores descriptors addressed to another process", async () => {
-    // LISTEN_PID naming a different process means these descriptors are not
-    // ours; consuming them would read a sibling's identity. The call must take
-    // the path branch, so it must not fail with a descriptor-read error.
-    await openProviderHealthIdentity(
-      path.join(dir, `heimdall-wrong-pid-${process.pid}.cc`),
-      { LISTEN_FDNAMES: "gamecult-runtime-presence-identity", LISTEN_PID: String(process.pid + 1) },
-      process.pid
-    ).catch((error) => {
-      expect(String(error)).not.toContain("Idunn runtime presence identity");
-    });
+  it("takes the named descriptor even when LISTEN_PID is another namespace's pid", async () => {
+    // Idunn launches candidates with PrivatePIDs=yes, so systemd sets
+    // LISTEN_PID to the pid it knows in the outer namespace while this process
+    // sees a namespace-local one. They never match. Refusing the descriptor on
+    // that basis sent Heimdall down the self-enrolling path, where it signed
+    // health with a key nothing trusts and warmed forever -- so the descriptor
+    // must still be taken, and the attempt to read it is the proof.
+    await expect(
+      openProviderHealthIdentity(path.join(dir, `heimdall-outer-pid-${process.pid}.cc`), {
+        LISTEN_FDNAMES: "gamecult-runtime-presence-identity",
+        LISTEN_PID: String(process.pid + 1),
+      })
+    ).rejects.toThrow();
   });
 
   it("ignores a descriptor set that does not name the presence identity", async () => {
     await openProviderHealthIdentity(
       path.join(dir, `heimdall-other-fd-${process.pid}.cc`),
-      { LISTEN_FDNAMES: "some-other-credential", LISTEN_PID: String(process.pid) },
-      process.pid
+      { LISTEN_FDNAMES: "some-other-credential", LISTEN_PID: String(process.pid) }
     ).catch((error) => {
       expect(String(error)).not.toContain("Idunn runtime presence identity");
     });

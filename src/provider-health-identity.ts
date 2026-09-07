@@ -20,7 +20,7 @@ const SIGNING_PURPOSE = Buffer.from("idunn.signed_daemon_health.v1");
 const PROTECTOR_CONTEXT = "gamecult-provider-health-identity-v1";
 const PKCS8_ED25519_SEED_PREFIX = Buffer.from("302e020100300506032b657004220420", "hex");
 
-type PrivateIdentity = {
+export type PrivateIdentity = {
   identityId: string;
   publicKey: Uint8Array;
   privateKey: KeyObject;
@@ -87,22 +87,24 @@ const SYSTEMD_LISTEN_FDS_START = 3;
  * cannot open the 0600 root-owned store, and a descriptor cannot be re-read by
  * anything that did not inherit it.
  */
-function presenceIdentityDescriptor(
-  env: NodeJS.ProcessEnv,
-  pid: number
+export function passedDescriptor(
+  descriptorName: string,
+  env: NodeJS.ProcessEnv
 ): number | undefined {
   const names = env.LISTEN_FDNAMES;
   if (!names) {
     return undefined;
   }
 
-  // LISTEN_PID guards against consuming descriptors meant for a parent or a
-  // sibling; systemd sets it to the intended recipient.
-  if (env.LISTEN_PID && Number(env.LISTEN_PID) !== pid) {
-    return undefined;
-  }
-
-  const index = names.split(":").indexOf(PRESENCE_IDENTITY_FD_NAME);
+  // LISTEN_PID cannot be compared to our own pid. Idunn launches candidates
+  // with PrivatePIDs=yes, and systemd sets LISTEN_PID to the pid it knows,
+  // which is in the *outer* namespace; inside, process.pid is the
+  // namespace-local one. The comparison could never hold, and because this
+  // function answers "undefined" rather than throwing, the caller quietly
+  // enrolled a self-signed identity instead -- exactly the failure the next
+  // doc comment warns about, and one that shows up only as health nobody
+  // admits. What identifies the descriptor is its name in LISTEN_FDNAMES.
+  const index = names.split(":").indexOf(descriptorName);
   return index === -1 ? undefined : SYSTEMD_LISTEN_FDS_START + index;
 }
 
@@ -122,10 +124,9 @@ function presenceIdentityDescriptor(
  */
 export async function openProviderHealthIdentity(
   path: string,
-  env: NodeJS.ProcessEnv = process.env,
-  pid: number = process.pid
+  env: NodeJS.ProcessEnv = process.env
 ): Promise<PrivateIdentity> {
-  const descriptor = presenceIdentityDescriptor(env, pid);
+  const descriptor = passedDescriptor(PRESENCE_IDENTITY_FD_NAME, env);
   if (descriptor === undefined) {
     return openOrEnrollProviderHealthIdentity(path);
   }
@@ -146,6 +147,17 @@ export function signProviderHealthPayload(identity: PrivateIdentity, payload: Ui
     u64be(payload.length),
     payload,
   ]);
+  return sign(null, message, identity.privateKey);
+}
+
+/**
+ * Sign an already domain-separated message with this identity.
+ *
+ * The domain and purpose belong to the contract being signed, not to the key,
+ * so they are built by the caller from the shared CultNet helpers rather than
+ * assumed here.
+ */
+export function signWithIdentity(identity: PrivateIdentity, message: Buffer): Uint8Array {
   return sign(null, message, identity.privateKey);
 }
 
