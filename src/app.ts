@@ -23,14 +23,7 @@ import {
 } from "./contracts.js";
 import { issueAccessClaim, type IssueAccessClaimInput } from "./claims.js";
 import { builtInAppProfiles, getAppProfile, serializeAppProfile, supportsProvider } from "./app-profiles.js";
-import {
-  AppRegistrationError,
-  listAppProfiles,
-  registerApp,
-  registeredAppToProfile,
-  resolveAppProfile,
-  type AppRegistrationRequest,
-} from "./app-registry.js";
+import { listAppProfiles, resolveAppProfile } from "./app-registry.js";
 import { renderBrowserHandoffPage } from "./browser-handoff.js";
 import { type HeimdallConfig, loadConfig } from "./config.js";
 import { createTokenCustody, type TokenCustody } from "./custody.js";
@@ -338,11 +331,6 @@ function getSharedSecret(request: { headers: Record<string, string | string[] | 
   return Array.isArray(header) ? header[0] : header;
 }
 
-function getRegistrationSecret(request: { headers: Record<string, unknown> }): string | undefined {
-  const header = request.headers["x-heimdall-registration-secret"];
-  return typeof header === "string" ? header : undefined;
-}
-
 function secretMatches(expected: string | undefined, provided: string | undefined): boolean {
   if (!expected || !provided) {
     return false;
@@ -562,53 +550,6 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   app.get("/v1/apps", async () => ({
     apps: (await listAppProfiles(store)).map(serializeAppProfile),
   }));
-
-  // POST /v1/apps registration.
-  //
-  // Gated on an operator secret rather than open. Heimdall is an OAuth
-  // provider: an unauthenticated registration endpoint lets anyone create a
-  // client that starts Discord and Patreon flows under this instance identity,
-  // which is a phishing surface wearing the operator name. Registration is
-  // closed until an operator sets one, so a fresh instance is not accidentally
-  // open.
-  app.post<{ Body: AppRegistrationRequest }>("/v1/apps", async (request, reply) => {
-    if (!config.appRegistrationSecret) {
-      reply.code(404);
-      return {
-        error: "registration_closed",
-        detail: "Runtime app registration is not enabled on this instance.",
-      };
-    }
-    if (!secretMatches(config.appRegistrationSecret, getRegistrationSecret(request))) {
-      reply.code(401);
-      return { error: "unauthorized", detail: "A valid registration secret is required." };
-    }
-
-    try {
-      const { app: registered, clientSecret } = await registerApp(store, request.body);
-      reply.code(201);
-      // RFC 7591 response shape, so an ordinary OAuth client library can read
-      // it. client_secret is returned exactly once; only its hash is stored.
-      return {
-        client_id: registered.slug,
-        client_secret: clientSecret,
-        client_name: registered.displayName,
-        redirect_uris: registered.redirectUris,
-        client_id_issued_at: Math.floor(Date.parse(registered.createdAt) / 1000),
-        profile: serializeAppProfile(registeredAppToProfile(registered)),
-      };
-    } catch (error) {
-      if (error instanceof AppRegistrationError) {
-        reply.code(400);
-        return {
-          error: "invalid_client_metadata",
-          detail: "App registration was rejected.",
-          problems: error.problems,
-        };
-      }
-      throw error;
-    }
-  });
 
   app.get<{ Params: { appSlug: AppSlug } }>(
     "/v1/apps/:appSlug",

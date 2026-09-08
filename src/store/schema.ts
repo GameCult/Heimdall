@@ -9,9 +9,13 @@ CREATE TABLE IF NOT EXISTS registered_apps (
   entitlement_sources JSONB NOT NULL,
   managed_connection_providers JSONB NOT NULL,
   capabilities_json JSONB NOT NULL,
-  redirect_uris JSONB NOT NULL,
-  client_secret_hash TEXT
+  redirect_uris JSONB NOT NULL
 );
+
+-- Runtime app registration (POST /v1/apps) minted a client_secret_hash that
+-- nothing ever verified. Deleted with the caller-identity cut; drop the
+-- column on any store built before this schema too.
+ALTER TABLE registered_apps DROP COLUMN IF EXISTS client_secret_hash;
 
 CREATE TABLE IF NOT EXISTS accounts (
   id TEXT PRIMARY KEY,

@@ -75,7 +75,6 @@ interface RegisteredAppRow extends QueryResultRow {
   managed_connection_providers: Provider[];
   capabilities_json: CapabilityDefinition[];
   redirect_uris: string[];
-  client_secret_hash: string | null;
 }
 
 interface SessionRow extends QueryResultRow {
@@ -308,9 +307,9 @@ export class PostgresStore implements HeimdallStore {
       INSERT INTO registered_apps (
         slug, display_name, profile_version, created_at, updated_at,
         identity_providers, entitlement_sources, managed_connection_providers,
-        capabilities_json, redirect_uris, client_secret_hash
+        capabilities_json, redirect_uris
       )
-      VALUES ($1, $2, $3, $4, $4, $5, $6, $7, $8, $9, $10)
+      VALUES ($1, $2, $3, $4, $4, $5, $6, $7, $8, $9)
       ON CONFLICT (slug)
       DO UPDATE SET
         display_name = EXCLUDED.display_name,
@@ -320,8 +319,7 @@ export class PostgresStore implements HeimdallStore {
         entitlement_sources = EXCLUDED.entitlement_sources,
         managed_connection_providers = EXCLUDED.managed_connection_providers,
         capabilities_json = EXCLUDED.capabilities_json,
-        redirect_uris = EXCLUDED.redirect_uris,
-        client_secret_hash = COALESCE(EXCLUDED.client_secret_hash, registered_apps.client_secret_hash)
+        redirect_uris = EXCLUDED.redirect_uris
       RETURNING *
       `,
       [
@@ -334,7 +332,6 @@ export class PostgresStore implements HeimdallStore {
         JSON.stringify(input.managedConnectionProviders),
         JSON.stringify(input.capabilities),
         JSON.stringify(input.redirectUris),
-        input.clientSecretHash,
       ],
     );
     return mapRegisteredApp(result.rows[0]!);
@@ -860,6 +857,5 @@ function mapRegisteredApp(row: RegisteredAppRow): StoredRegisteredApp {
     managedConnectionProviders: row.managed_connection_providers,
     capabilities: row.capabilities_json,
     redirectUris: row.redirect_uris,
-    clientSecretHash: row.client_secret_hash,
   };
 }

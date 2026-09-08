@@ -44,8 +44,6 @@ export interface HeimdallConfig {
   appRuntimeIds?: Partial<Record<AppSlug, string[]>>;
   appBackendCallbacks: Partial<Record<AppSlug, string[]>>;
   bifrostPatronSupportEndpoint?: string;
-  /** Operator secret gating runtime app registration. Unset means registration is closed. */
-  appRegistrationSecret?: string;
   bifrostPatronSupportSecret?: string;
   storage: StorageConfig;
   providers: Record<Provider, ProviderClientConfig>;
@@ -302,9 +300,6 @@ export function loadConfig(
   }
 
   if (env.GC_ACCESS_BIFROST_PATRON_SUPPORT_SECRET) {
-    if (env.GC_ACCESS_APP_REGISTRATION_SECRET) {
-      config.appRegistrationSecret = env.GC_ACCESS_APP_REGISTRATION_SECRET;
-    }
     config.bifrostPatronSupportSecret = env.GC_ACCESS_BIFROST_PATRON_SUPPORT_SECRET;
   }
 

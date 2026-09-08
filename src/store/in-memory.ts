@@ -63,7 +63,6 @@ export class InMemoryStore implements HeimdallStore {
       managedConnectionProviders: [...input.managedConnectionProviders],
       capabilities: structuredClone(input.capabilities),
       redirectUris: [...input.redirectUris],
-      clientSecretHash: input.clientSecretHash,
     };
     this.registeredApps.set(record.slug, record);
     return structuredClone(record);

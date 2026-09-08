@@ -10,8 +10,6 @@
 // profile, which is what stops a registration from granting itself something
 // Heimdall never decided was true.
 
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-
 import { builtInAppProfiles, type AppProfile } from "./app-profiles.js";
 import { validateCapabilityRules, type CapabilityDefinition } from "./capability-rules.js";
 import { providers, type Provider } from "./contracts.js";
@@ -34,12 +32,6 @@ export interface AppRegistrationRequest {
 export interface RegistrationProblem {
   field: string;
   reason: string;
-}
-
-export interface AppRegistrationResult {
-  app: StoredRegisteredApp;
-  /** Returned once, at registration. Only its hash is stored. */
-  clientSecret: string;
 }
 
 export function isBuiltInApp(slug: string): boolean {
@@ -120,47 +112,6 @@ export function validateAppRegistration(request: AppRegistrationRequest): Regist
   }
 
   return problems;
-}
-
-export function hashClientSecret(secret: string): string {
-  // A generated 256-bit secret does not need a slow KDF; it needs to not be
-  // stored in the clear. Passwords would be a different question.
-  return createHash("sha256").update(secret, "utf8").digest("hex");
-}
-
-export function verifyClientSecret(secret: string, storedHash: string | null): boolean {
-  if (!storedHash) return false;
-  const candidate = Buffer.from(hashClientSecret(secret), "hex");
-  const expected = Buffer.from(storedHash, "hex");
-  if (candidate.length !== expected.length) return false;
-  return timingSafeEqual(candidate, expected);
-}
-
-export async function registerApp(
-  store: HeimdallStore,
-  request: AppRegistrationRequest,
-  registeredAt: string = new Date().toISOString(),
-): Promise<AppRegistrationResult> {
-  const problems = validateAppRegistration(request);
-  if (problems.length > 0) {
-    throw new AppRegistrationError(problems);
-  }
-
-  const clientSecret = randomBytes(32).toString("base64url");
-  const app = await store.registerApp({
-    slug: request.slug,
-    displayName: request.displayName.trim(),
-    profileVersion: request.profileVersion?.trim() || registeredAt.slice(0, 10),
-    registeredAt,
-    identityProviders: request.identityProviders as Provider[],
-    entitlementSources: (request.entitlementSources ?? []) as Provider[],
-    managedConnectionProviders: (request.managedConnectionProviders ?? []) as Provider[],
-    capabilities: request.capabilities,
-    redirectUris: request.redirectUris,
-    clientSecretHash: hashClientSecret(clientSecret),
-  });
-
-  return { app, clientSecret };
 }
 
 export class AppRegistrationError extends Error {

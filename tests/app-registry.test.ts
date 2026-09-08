@@ -1,17 +1,14 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
-  AppRegistrationError,
-  hashClientSecret,
   isBuiltInApp,
   listAppProfiles,
-  registerApp,
   resolveAppProfile,
   validateAppRegistration,
-  verifyClientSecret,
   type AppRegistrationRequest,
 } from "../src/app-registry.js";
 import { evaluateCapabilityRules } from "../src/capability-rules.js";
+import { type Provider } from "../src/contracts.js";
 import { entitlementFacts, grantFacts, identityFacts } from "../src/facts.js";
 import { InMemoryStore } from "../src/store/in-memory.js";
 
@@ -30,6 +27,28 @@ let store: InMemoryStore;
 beforeEach(() => {
   store = new InMemoryStore();
 });
+
+/**
+ * There is no runtime registration authority anymore (deleted with the
+ * caller-identity cut: registerApp minted a client_secret nobody verified).
+ * `registered_apps` remains a profile store, so tests that need a resolvable
+ * profile write the row directly through the store primitive, the same way
+ * production code would seed one outside the deleted HTTP surface.
+ */
+async function seedRegisteredApp(overrides: Partial<AppRegistrationRequest> = {}, registeredAt = "2026-01-01T00:00:00.000Z") {
+  const req = request(overrides);
+  return store.registerApp({
+    slug: req.slug,
+    displayName: req.displayName.trim(),
+    profileVersion: req.profileVersion?.trim() || registeredAt.slice(0, 10),
+    registeredAt,
+    identityProviders: req.identityProviders as Provider[],
+    entitlementSources: (req.entitlementSources ?? []) as Provider[],
+    managedConnectionProviders: (req.managedConnectionProviders ?? []) as Provider[],
+    capabilities: req.capabilities,
+    redirectUris: req.redirectUris,
+  });
+}
 
 describe("validateAppRegistration", () => {
   it("accepts a well-formed registration", () => {
@@ -100,45 +119,9 @@ describe("validateAppRegistration", () => {
   });
 });
 
-describe("registerApp", () => {
-  it("stores the app and returns a secret exactly once", async () => {
-    const { app, clientSecret } = await registerApp(store, request());
-
-    expect(app.slug).toBe("erycina");
-    expect(clientSecret).toBeTruthy();
-    // The secret is returned, never stored.
-    expect(app).not.toHaveProperty("clientSecret");
-    expect(app.clientSecretHash).toBe(hashClientSecret(clientSecret));
-  });
-
-  it("refuses an invalid registration rather than storing a broken profile", async () => {
-    await expect(registerApp(store, request({ slug: "bifrost" }))).rejects.toBeInstanceOf(AppRegistrationError);
-    expect(await store.findRegisteredApp("bifrost")).toBeNull();
-  });
-
-  it("keeps the original creation time when an app re-registers", async () => {
-    const first = await registerApp(store, request(), "2026-01-01T00:00:00.000Z");
-    const second = await registerApp(store, request({ displayName: "Erycina v2" }), "2026-06-01T00:00:00.000Z");
-
-    expect(second.app.createdAt).toBe(first.app.createdAt);
-    expect(second.app.updatedAt).toBe("2026-06-01T00:00:00.000Z");
-    expect(second.app.displayName).toBe("Erycina v2");
-  });
-});
-
-describe("verifyClientSecret", () => {
-  it("accepts the issued secret and rejects anything else", async () => {
-    const { app, clientSecret } = await registerApp(store, request());
-
-    expect(verifyClientSecret(clientSecret, app.clientSecretHash)).toBe(true);
-    expect(verifyClientSecret("not-the-secret", app.clientSecretHash)).toBe(false);
-    expect(verifyClientSecret(clientSecret, null)).toBe(false);
-  });
-});
-
 describe("resolveAppProfile", () => {
   it("resolves a registered app", async () => {
-    await registerApp(store, request());
+    await seedRegisteredApp();
     const profile = await resolveAppProfile(store, "erycina");
 
     expect(profile?.displayName).toBe("Erycina");
@@ -165,7 +148,6 @@ describe("resolveAppProfile", () => {
       managedConnectionProviders: [],
       capabilities: [],
       redirectUris: [],
-      clientSecretHash: null,
     });
 
     expect((await resolveAppProfile(store, "bifrost"))?.displayName).toBe("Bifrost");
@@ -174,15 +156,12 @@ describe("resolveAppProfile", () => {
 
 describe("a registered profile evaluates like a built-in", () => {
   it("grants capabilities through the same evaluator", async () => {
-    await registerApp(
-      store,
-      request({
-        capabilities: [
-          { key: "member_access", mode: "shared", summary: "member", anyOf: [entitlementFacts.appAccess, grantFacts.globalMember] },
-          { key: "post_create", mode: "shared", summary: "post", anyOf: ["member_access"] },
-        ],
-      }),
-    );
+    await seedRegisteredApp({
+      capabilities: [
+        { key: "member_access", mode: "shared", summary: "member", anyOf: [entitlementFacts.appAccess, grantFacts.globalMember] },
+        { key: "post_create", mode: "shared", summary: "post", anyOf: ["member_access"] },
+      ],
+    });
     const profile = await resolveAppProfile(store, "erycina");
 
     expect(evaluateCapabilityRules(profile!.capabilities, new Set([grantFacts.globalMember]))).toEqual([
@@ -195,7 +174,7 @@ describe("a registered profile evaluates like a built-in", () => {
 
 describe("listAppProfiles", () => {
   it("lists built-ins alongside registered apps", async () => {
-    await registerApp(store, request());
+    await seedRegisteredApp();
     const slugs = (await listAppProfiles(store)).map((profile) => profile.slug);
 
     expect(slugs).toContain("bifrost");
@@ -203,7 +182,7 @@ describe("listAppProfiles", () => {
   });
 
   it("lists each app once", async () => {
-    await registerApp(store, request());
+    await seedRegisteredApp();
     const slugs = (await listAppProfiles(store)).map((profile) => profile.slug);
 
     expect(new Set(slugs).size).toBe(slugs.length);

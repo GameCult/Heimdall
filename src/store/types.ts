@@ -11,8 +11,9 @@ import {
  * An app registered at runtime.
  *
  * The built-in profiles are seed data of the same shape; nothing here is
- * special-cased for them. clientSecretHash is stored rather than the secret,
- * so a database read cannot impersonate a registered app.
+ * special-cased for them. There is no runtime registration authority anymore
+ * (deleted with the auth-hole cut: a minted client_secret nobody verified);
+ * this remains a profile store consulted by resolveAppProfile.
  */
 export interface StoredRegisteredApp {
   slug: string;
@@ -25,7 +26,6 @@ export interface StoredRegisteredApp {
   managedConnectionProviders: Provider[];
   capabilities: CapabilityDefinition[];
   redirectUris: string[];
-  clientSecretHash: string | null;
 }
 
 export interface RegisterAppInput {
@@ -38,7 +38,6 @@ export interface RegisterAppInput {
   managedConnectionProviders: Provider[];
   capabilities: CapabilityDefinition[];
   redirectUris: string[];
-  clientSecretHash: string | null;
 }
 
 export interface StoredAccount {
