@@ -196,6 +196,12 @@ export const builtInAppProfiles: Record<AppSlug, AppProfile> = {
 export const appProfiles = builtInAppProfiles;
 
 export function getAppProfile(appSlug: AppSlug): AppProfile | undefined {
+  // Own keys only. `GET /v1/apps/:appSlug` is the one profile route without a
+  // slug enum, so a bare index answered 200 for `__proto__`, `constructor` and
+  // every other Object.prototype key.
+  if (!Object.hasOwn(appProfiles, appSlug)) {
+    return undefined;
+  }
   return appProfiles[appSlug];
 }
 

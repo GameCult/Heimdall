@@ -1341,7 +1341,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         reply.code(502);
         return {
           error: "oauth_callback_failed",
-          detail: message,
+          // Deliberately not `message`: this path catches store failures, and a
+          // Postgres unique violation would otherwise hand the caller a
+          // constraint name. The full text is in the audit event above.
+          detail: "The provider callback could not be completed.",
           provider: request.params.provider,
           appSlug: statePayload.app_slug,
           returnTo: statePayload.return_to,

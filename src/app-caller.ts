@@ -35,7 +35,9 @@ export interface AppCaller {
 const mintedCallers = new WeakSet<object>();
 
 function brandCaller(appSlug: AppSlug): AppCaller {
-  const caller: AppCaller = { appSlug, [callerBrand]: true };
+  // Frozen: the brand survives mutation, so without this a legitimately held
+  // caller for one app could be re-slugged into another and stay branded.
+  const caller: AppCaller = Object.freeze({ appSlug, [callerBrand]: true as const });
   mintedCallers.add(caller);
   return caller;
 }

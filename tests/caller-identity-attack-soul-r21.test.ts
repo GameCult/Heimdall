@@ -407,20 +407,28 @@ describe("R21.2: the WeakSet brand at every consumer", () => {
     expect(brandSymbol).toBeDefined();
 
     const symbolCopy = { appSlug: "ghostlight", [brandSymbol as symbol]: true };
-    const chained = Object.assign(Object.create(real) as object, { appSlug: "ghostlight" });
+    // defineProperty, not assign: `real` is frozen, so shadowing its
+    // non-writable `appSlug` by assignment throws before the forgery exists.
+    const chained = Object.defineProperty(Object.create(real) as object, "appSlug", {
+      value: "ghostlight",
+      enumerable: true,
+    });
     const proxied = new Proxy(real, { get: (target, key) => (key === "appSlug" ? "ghostlight" : Reflect.get(target, key)) });
     const spread = { ...real, appSlug: "ghostlight" };
     const cloned = structuredClone({ appSlug: real.appSlug });
     for (const forgery of [symbolCopy, chained, proxied, spread, cloned]) {
       expect(isAppCaller(forgery)).toBe(false);
     }
-    // The real object is mutable in principle, but its slug is readonly by
-    // type and there is no setter; a mutated real object would still be
-    // branded. Record that as the one forgery the WeakSet cannot see.
-    const mutated = real as { appSlug: string };
-    mutated.appSlug = "ghostlight";
-    expect(isAppCaller(mutated)).toBe(true);
-    expect(Object.isFrozen(real)).toBe(false);
+    // Frozen at mint, so the last forgery the WeakSet could not see is gone:
+    // a legitimately held caller cannot be re-slugged into another app and
+    // keep its brand. Modules are strict, so the write throws rather than
+    // silently no-opping.
+    expect(Object.isFrozen(real)).toBe(true);
+    expect(() => {
+      (real as { appSlug: string }).appSlug = "ghostlight";
+    }).toThrow(TypeError);
+    expect(real.appSlug).toBe("repixelizer");
+    expect(isAppCaller(real)).toBe(true);
   });
 });
 
@@ -492,13 +500,17 @@ describe("duplicate-handle error surfacing through the callback route", () => {
     const first = await completeAs(app, state, "victim");
     expect(first.statusCode).toBe(201);
     const replay = await completeAs(app, state, "victim");
-    // Nothing consumed the state's jti: the second exchange runs, reaches
-    // createAuthCompletion, and the store's duplicate-handle throw is
-    // caught by the route's generic catch (app.ts ~1290) as a 502 whose
-    // `detail` is the raw store message. Postgres would put its constraint
-    // name there instead (see the live block below).
+    // Nothing consumed the state's jti, so the second exchange still runs and
+    // reaches createAuthCompletion, where the unique index refuses it. The
+    // route's catch (app.ts ~1290) now answers with a fixed detail rather than
+    // the store's own text, so a Postgres 23505 cannot hand the caller a
+    // constraint name. The full text stays in the audit event.
     expect(replay.statusCode, replay.body).toBe(502);
-    expect(replay.json()).toMatchObject({ error: "oauth_callback_failed", detail: "Attempt handle already has an unconsumed completion." });
+    expect(replay.json()).toMatchObject({
+      error: "oauth_callback_failed",
+      detail: "The provider callback could not be completed.",
+    });
+    expect(JSON.stringify(replay.json())).not.toContain("unconsumed completion");
     // The failed replay must not have damaged the real completion.
     expect((await store.findAuthAttempt("ghostlight", handle))?.status).toBe("completed");
     expect(await store.consumeAuthCompletionByAttempt("ghostlight", handle, new Date().toISOString())).toBeTruthy();
@@ -506,23 +518,20 @@ describe("duplicate-handle error surfacing through the callback route", () => {
 });
 
 describe("R21.3: sync getAppProfile at the seven former resolveAppProfile sites", () => {
-  it("getAppProfile is a plain object index: prototype keys resolve to non-profiles", () => {
+  it("getAppProfile resolves own keys only, so prototype members are not profiles", () => {
     expect(getAppProfile("nope" as AppSlug)).toBeUndefined();
-    // Object.prototype members leak through a bare `record[key]` lookup.
+    // Object.hasOwn guards the lookup; a bare `record[key]` index handed these
+    // back as objects that then serialised as an empty profile.
     for (const key of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
-      const value = getAppProfile(key as AppSlug);
-      expect(value, key).toBeDefined();
-      expect(typeof (value as { slug?: unknown }).slug, key).not.toBe("string");
+      expect(getAppProfile(key as AppSlug), key).toBeUndefined();
     }
   });
 
-  // Open hole, inherited from main: the pre-R21.3 resolveAppProfile did the
-  // same bare `builtInAppProfiles[slug]` index, and this is the one route
-  // whose params schema has no slug enum. `constructor` returns 200 `{}`
-  // because serializeAppProfile(Object) serialises undefined fields. Fix is
-  // Object.hasOwn in getAppProfile (or the enum on this route); promote when
-  // closed.
-  it.fails("GET /v1/apps/:appSlug is the one route without the slug enum; a prototype key must still be a 404", async () => {
+  // Was an open hole inherited from main: this is the one route whose params
+  // schema has no slug enum, and the bare index made `constructor` a 200 `{}`
+  // because serializeAppProfile(Object) serialises undefined fields. Closed by
+  // Object.hasOwn in getAppProfile.
+  it("GET /v1/apps/:appSlug is the one route without the slug enum; a prototype key must still be a 404", async () => {
     const { app } = await harness();
     // Null prototype so the "__proto__" key is a key, not a setter.
     const statuses: Record<string, string> = Object.create(null) as Record<string, string>;
