@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import {
   openOrEnrollProviderHealthIdentity,
   openProviderHealthIdentity,
+  passedDescriptor,
   providerHealthPublicIdentity,
 } from "../src/provider-health-identity.js";
 
@@ -81,19 +82,25 @@ describe.skipIf(!machineIdAvailable)("presence identity from a passed descriptor
 describe("presence identity descriptor selection", () => {
   const dir = os.tmpdir();
 
-  it("takes the named descriptor even when LISTEN_PID is another namespace's pid", async () => {
+  it("takes the named descriptor even when LISTEN_PID is another namespace's pid", () => {
     // Idunn launches candidates with PrivatePIDs=yes, so systemd sets
     // LISTEN_PID to the pid it knows in the outer namespace while this process
     // sees a namespace-local one. They never match. Refusing the descriptor on
     // that basis sent Heimdall down the self-enrolling path, where it signed
-    // health with a key nothing trusts and warmed forever -- so the descriptor
-    // must still be taken, and the attempt to read it is the proof.
-    await expect(
-      openProviderHealthIdentity(path.join(dir, `heimdall-outer-pid-${process.pid}.cc`), {
+    // health with a key nothing trusts and warmed forever.
+    //
+    // This asserts the *selection*, not a read. An earlier version of this test
+    // called openProviderHealthIdentity, which then did readFileSync on fd 3 --
+    // a live handle inside the vitest worker. On Windows that blocks instead of
+    // throwing, which hung the worker and took the whole suite with it. The
+    // decision under test is which descriptor gets chosen; reading a real one
+    // is not part of it.
+    expect(
+      passedDescriptor("gamecult-runtime-presence-identity", {
         LISTEN_FDNAMES: "gamecult-runtime-presence-identity",
         LISTEN_PID: String(process.pid + 1),
       })
-    ).rejects.toThrow();
+    ).toBe(3);
   });
 
   it("ignores a descriptor set that does not name the presence identity", async () => {
