@@ -1,6 +1,7 @@
-import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import cors from "@fastify/cors";
 import Fastify, { type FastifyInstance } from "fastify";
+import { type AppCaller, resolveAppCaller } from "./app-caller.js";
 import { deliverBackendHandoff, type BackendHandoffPayload } from "./backend-handoff.js";
 import {
   appSlugs,
@@ -326,21 +327,6 @@ function entitlementPolicyProvider(policy: OAuthEntitlementPolicy): Provider {
   return policy.kind === "discord_role_access" ? "discord" : "patreon";
 }
 
-function getSharedSecret(request: { headers: Record<string, string | string[] | undefined> }): string | undefined {
-  const header = request.headers["x-heimdall-app-secret"];
-  return Array.isArray(header) ? header[0] : header;
-}
-
-function secretMatches(expected: string | undefined, provided: string | undefined): boolean {
-  if (!expected || !provided) {
-    return false;
-  }
-
-  const expectedBuffer = Buffer.from(expected);
-  const providedBuffer = Buffer.from(provided);
-  return expectedBuffer.length === providedBuffer.length && timingSafeEqual(expectedBuffer, providedBuffer);
-}
-
 function signBifrostPatronSupportPayload(secret: string, body: string): string {
   const signature = createHmac("sha256", secret).update(body).digest("hex");
   return `sha256=${signature}`;
@@ -507,6 +493,209 @@ async function maybeDeliverBackendHandoff(handoff: OAuthHandoff, payload: Backen
   await deliverBackendHandoff(handoff.callbackUrl, payload);
 }
 
+export interface HandlerResult {
+  statusCode: number;
+  body: unknown;
+}
+
+/**
+ * OAuth start, extracted so the HTTP route and the private command plane's
+ * `beginAuth` reach the same authority through the same function instead of
+ * the plane forging an HTTP self-call with a header only it can set.
+ */
+export async function startOAuthFlow(
+  ctx: Pick<HeimdallRuntimeContext, "config" | "keys" | "store">,
+  provider: Provider,
+  caller: AppCaller | null,
+  input: OAuthStartRequest
+): Promise<HandlerResult> {
+  const { config, keys, store } = ctx;
+  const profile = await resolveAppProfile(store, input.appSlug);
+  if (!profile) {
+    return { statusCode: 404, body: { error: "unknown_app", detail: `No app '${input.appSlug}' is registered.` } };
+  }
+
+  if (!supportsProvider(profile, provider)) {
+    return {
+      statusCode: 400,
+      body: { error: "provider_not_supported_for_app", provider, appSlug: profile.slug },
+    };
+  }
+
+  let handoff: OAuthHandoff;
+  try {
+    handoff = normalizeOAuthHandoff(input.handoff);
+  } catch (error) {
+    return {
+      statusCode: 400,
+      body: {
+        error: "invalid_handoff",
+        detail: error instanceof Error ? error.message : "Invalid OAuth handoff definition.",
+      },
+    };
+  }
+  let entitlementPolicy: OAuthEntitlementPolicy | undefined;
+  try {
+    entitlementPolicy = normalizeEntitlementPolicy(input.entitlementPolicy);
+  } catch (error) {
+    return {
+      statusCode: 400,
+      body: {
+        error: "invalid_entitlement_policy",
+        detail: error instanceof Error ? error.message : "Invalid entitlement policy definition.",
+      },
+    };
+  }
+  if (handoff.kind === "backend_callback" && !acceptsBackendCallback(config, profile.slug, handoff)) {
+    return {
+      statusCode: 400,
+      body: {
+        error: "untrusted_backend_callback",
+        detail: "Backend callback handoffs are only accepted for configured app callback URLs.",
+      },
+    };
+  }
+  if (entitlementPolicy && (!caller || caller.appSlug !== profile.slug)) {
+    return { statusCode: 401, body: { error: "app_auth_required" } };
+  }
+
+  const providerConfig = config.providers[provider];
+  if (!providerConfig.clientId) {
+    return {
+      statusCode: 503,
+      body: { error: "provider_not_configured", provider, expectedEnv: providerExpectedEnv(provider) },
+    };
+  }
+
+  const callbackUrl = `${config.publicBaseUrl}/v1/oauth/${provider}/callback`;
+  const state = buildOAuthStateToken({
+    config,
+    provider,
+    appSlug: profile.slug,
+    mode: input.mode,
+    returnTo: input.returnTo,
+    connection: input.connection,
+    handoff,
+    entitlementPolicy,
+    keys,
+  });
+
+  return {
+    statusCode: 201,
+    body: {
+      provider,
+      appSlug: profile.slug,
+      mode: input.mode,
+      callbackUrl,
+      authorizationUrl: buildAuthorizationUrl({
+        provider,
+        clientId: providerConfig.clientId,
+        redirectUri: callbackUrl,
+        state: state.token,
+        requestedScopes: input.requestedScopes,
+      }),
+      handoff,
+      stateToken: state.token,
+      stateExpiresAt: state.expiresAt,
+    },
+  };
+}
+
+/**
+ * Session refresh, extracted for the same reason as startOAuthFlow: the HTTP
+ * route and the plane's `refreshAuth` (which owns Ghostlight identity) call
+ * this directly with an envelope-derived AppCaller instead of the plane
+ * forging an HTTP self-call.
+ */
+export async function refreshAppSession(
+  ctx: HeimdallRuntimeContext,
+  appSlug: AppSlug,
+  caller: AppCaller | null,
+  input: RefreshSessionRequest
+): Promise<HandlerResult> {
+  const { config, keys, store, tokenCustody, oauthRuntimes } = ctx;
+  let entitlementPolicies: OAuthEntitlementPolicy[];
+  try {
+    entitlementPolicies = normalizeEntitlementPolicies(input.entitlementPolicies);
+    const legacyPolicy = normalizeEntitlementPolicy(input.entitlementPolicy);
+    if (legacyPolicy) {
+      entitlementPolicies.push(legacyPolicy);
+    }
+  } catch (error) {
+    return {
+      statusCode: 400,
+      body: {
+        error: "invalid_entitlement_policy",
+        detail: error instanceof Error ? error.message : "Invalid entitlement policy definition.",
+      },
+    };
+  }
+  if (entitlementPolicies.length > 0 && (!caller || caller.appSlug !== appSlug)) {
+    return { statusCode: 401, body: { error: "app_auth_required" } };
+  }
+
+  const refreshClaim = verifyRefreshToken(input.refreshToken, appSlug, config, keys);
+  if (!refreshClaim) {
+    return { statusCode: 401, body: { error: "invalid_or_expired_refresh_token" } };
+  }
+
+  const nowIso = new Date().toISOString();
+  const persistedSession = await store.findSession(appSlug, refreshClaim.sid);
+  if (
+    !persistedSession ||
+    persistedSession.accountId !== refreshClaim.account_id ||
+    persistedSession.accessRevision !== refreshClaim.access_revision ||
+    Date.parse(persistedSession.expiresAt) <= Date.parse(nowIso)
+  ) {
+    return { statusCode: 401, body: { error: "revoked_or_stale_refresh_token" } };
+  }
+  const account = await store.findAccountById(refreshClaim.account_id);
+  const linkedIdentities = await store.listLinkedIdentitiesForAccount(refreshClaim.account_id);
+  const grants = await store.listActiveGrants(refreshClaim.account_id, appSlug, nowIso);
+  const entitlementFactList = await evaluateStoredEntitlements({
+    config,
+    store,
+    tokenCustody,
+    oauthRuntimes,
+    appSlug,
+    accountId: refreshClaim.account_id,
+    entitlementPolicies,
+    now: nowIso,
+  });
+  const issueInput: IssueAccessClaimInput = {
+    appSlug,
+    accountId: refreshClaim.account_id,
+    sessionId: refreshClaim.sid,
+    accessRevision: refreshClaim.access_revision,
+    linkedIdentities,
+    facts: [...entitlementFactList, ...buildGrantFacts(grants)],
+  };
+  if (account?.displayName !== undefined) {
+    issueInput.displayName = account.displayName;
+  }
+
+  const issued = await issueAccessClaim({
+    config,
+    keys,
+    store,
+    input: issueInput,
+  });
+
+  await store.createAuditEvent({
+    accountId: refreshClaim.account_id,
+    sessionId: refreshClaim.sid,
+    appSlug,
+    eventType: "session_refreshed",
+    eventPayloadJson: {
+      grantedFacts: issued.claimSet.facts,
+      sharedCapabilities: issued.sharedCapabilities,
+    },
+    createdAt: nowIso,
+  });
+
+  return { statusCode: 201, body: issued };
+}
+
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
   const config = options.config ?? loadConfig();
   const store = options.store ?? (await createStore(config));
@@ -653,98 +842,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       },
     },
     async (request, reply) => {
-      const { provider } = request.params;
-      const profile = await resolveAppProfile(store, request.body.appSlug);
-      if (!profile) {
-        reply.code(404);
-        return { error: "unknown_app", detail: `No app '${request.body.appSlug}' is registered.` };
-      }
-
-      if (!supportsProvider(profile, provider)) {
-        reply.code(400);
-        return {
-          error: "provider_not_supported_for_app",
-          provider,
-          appSlug: profile.slug,
-        };
-      }
-
-      let handoff: OAuthHandoff;
-      try {
-        handoff = normalizeOAuthHandoff(request.body.handoff);
-      } catch (error) {
-        reply.code(400);
-        return {
-          error: "invalid_handoff",
-          detail: error instanceof Error ? error.message : "Invalid OAuth handoff definition.",
-        };
-      }
-      let entitlementPolicy: OAuthEntitlementPolicy | undefined;
-      try {
-        entitlementPolicy = normalizeEntitlementPolicy(request.body.entitlementPolicy);
-      } catch (error) {
-        reply.code(400);
-        return {
-          error: "invalid_entitlement_policy",
-          detail: error instanceof Error ? error.message : "Invalid entitlement policy definition.",
-        };
-      }
-      if (handoff.kind === "backend_callback" && !acceptsBackendCallback(config, profile.slug, handoff)) {
-        reply.code(400);
-        return {
-          error: "untrusted_backend_callback",
-          detail: "Backend callback handoffs are only accepted for configured app callback URLs.",
-        };
-      }
-      const trustedAppCaller = secretMatches(config.appSharedSecrets[profile.slug], getSharedSecret(request));
-      if (entitlementPolicy && handoff.kind !== "backend_callback" && !trustedAppCaller) {
-        reply.code(400);
-        return {
-          error: "untrusted_entitlement_policy",
-          detail: "Caller-supplied entitlement policy is only accepted for trusted backend callback handoffs.",
-        };
-      }
-
-      const providerConfig = config.providers[provider];
-      if (!providerConfig.clientId) {
-        reply.code(503);
-        return {
-          error: "provider_not_configured",
-          provider,
-          expectedEnv: providerExpectedEnv(provider),
-        };
-      }
-
-      const callbackUrl = `${config.publicBaseUrl}/v1/oauth/${provider}/callback`;
-      const state = buildOAuthStateToken({
-        config,
-        provider,
-        appSlug: profile.slug,
-        mode: request.body.mode,
-        returnTo: request.body.returnTo,
-        connection: request.body.connection,
-        handoff,
-        entitlementPolicy,
-        keys,
-      });
-
-      reply.code(201);
-      return {
-        provider,
-        appSlug: profile.slug,
-        mode: request.body.mode,
-        callbackUrl,
-        authorizationUrl: buildAuthorizationUrl({
-          provider,
-          clientId: providerConfig.clientId,
-          redirectUri: callbackUrl,
-          state: state.token,
-          requestedScopes: request.body.requestedScopes,
-        }),
-        handoff,
-        stateToken: state.token,
-        stateExpiresAt: state.expiresAt,
-      };
+      const caller = resolveAppCaller(config, request.body.appSlug, request.headers);
+      const result = await startOAuthFlow({ config, keys, store }, request.params.provider, caller, request.body);
+      reply.code(result.statusCode);
+      return result.body;
     }
   );
 
@@ -1347,91 +1448,15 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       },
     },
     async (request, reply) => {
-      let entitlementPolicies: OAuthEntitlementPolicy[];
-      try {
-        entitlementPolicies = normalizeEntitlementPolicies(request.body.entitlementPolicies);
-        const legacyPolicy = normalizeEntitlementPolicy(request.body.entitlementPolicy);
-        if (legacyPolicy) {
-          entitlementPolicies.push(legacyPolicy);
-        }
-      } catch (error) {
-        reply.code(400);
-        return {
-          error: "invalid_entitlement_policy",
-          detail: error instanceof Error ? error.message : "Invalid entitlement policy definition.",
-        };
-      }
-      const trustedGhostlightRefresh = request.params.appSlug === "ghostlight"
-        && request.headers["x-heimdall-app-secret"] === config.appSharedSecrets.ghostlight;
-      if (entitlementPolicies.length > 0 && request.params.appSlug !== "repixelizer" && !trustedGhostlightRefresh) {
-        reply.code(400);
-        return {
-          error: "untrusted_entitlement_policy",
-          detail: "Caller-supplied entitlement policy is only accepted for Repixelizer session refresh.",
-        };
-      }
-
-      const refreshClaim = verifyRefreshToken(request.body.refreshToken, request.params.appSlug, config, keys);
-      if (!refreshClaim) {
-        reply.code(401);
-        return { error: "invalid_or_expired_refresh_token" };
-      }
-
-      const nowIso = new Date().toISOString();
-      const persistedSession = await store.findSession(request.params.appSlug, refreshClaim.sid);
-      if (!persistedSession
-        || persistedSession.accountId !== refreshClaim.account_id
-        || persistedSession.accessRevision !== refreshClaim.access_revision
-        || Date.parse(persistedSession.expiresAt) <= Date.parse(nowIso)) {
-        reply.code(401);
-        return { error: "revoked_or_stale_refresh_token" };
-      }
-      const account = await store.findAccountById(refreshClaim.account_id);
-      const linkedIdentities = await store.listLinkedIdentitiesForAccount(refreshClaim.account_id);
-      const grants = await store.listActiveGrants(refreshClaim.account_id, request.params.appSlug, nowIso);
-      const entitlementFactList = await evaluateStoredEntitlements({
-        config,
-        store,
-        tokenCustody,
-        oauthRuntimes,
-        appSlug: request.params.appSlug,
-        accountId: refreshClaim.account_id,
-        entitlementPolicies,
-        now: nowIso,
-      });
-      const issueInput: IssueAccessClaimInput = {
-        appSlug: request.params.appSlug,
-        accountId: refreshClaim.account_id,
-        sessionId: refreshClaim.sid,
-        accessRevision: refreshClaim.access_revision,
-        linkedIdentities,
-        facts: [...entitlementFactList, ...buildGrantFacts(grants)],
-      };
-      if (account?.displayName !== undefined) {
-        issueInput.displayName = account.displayName;
-      }
-
-      const issued = await issueAccessClaim({
-        config,
-        keys,
-        store,
-        input: issueInput,
-      });
-
-      await store.createAuditEvent({
-        accountId: refreshClaim.account_id,
-        sessionId: refreshClaim.sid,
-        appSlug: request.params.appSlug,
-        eventType: "session_refreshed",
-        eventPayloadJson: {
-          grantedFacts: issued.claimSet.facts,
-          sharedCapabilities: issued.sharedCapabilities,
-        },
-        createdAt: nowIso,
-      });
-
-      reply.code(201);
-      return issued;
+      const caller = resolveAppCaller(config, request.params.appSlug, request.headers);
+      const result = await refreshAppSession(
+        { config, keys, store, tokenCustody, oauthRuntimes },
+        request.params.appSlug,
+        caller,
+        request.body
+      );
+      reply.code(result.statusCode);
+      return result.body;
     }
   );
 
@@ -1474,9 +1499,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         reply.code(404);
         return { error: "unknown_app", detail: `No app '${request.params.appSlug}' is registered.` };
       }
-      const providedSecret = getSharedSecret(request);
-
-      if (!secretMatches(config.appSharedSecrets[profile.slug], providedSecret)) {
+      if (!resolveAppCaller(config, profile.slug, request.headers)) {
         reply.code(401);
         return { error: "app_auth_required" };
       }
@@ -1627,9 +1650,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         reply.code(404);
         return { error: "unknown_app", detail: `No app '${request.params.appSlug}' is registered.` };
       }
-      const providedSecret = getSharedSecret(request);
-
-      if (!secretMatches(config.appSharedSecrets[profile.slug], providedSecret)) {
+      if (!resolveAppCaller(config, profile.slug, request.headers)) {
         reply.code(401);
         return { error: "app_auth_required" };
       }

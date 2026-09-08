@@ -7,7 +7,7 @@ import {
   type CultNetOperationServer,
 } from "cultnet-ts";
 import { type FastifyInstance } from "fastify";
-import { getHeimdallRuntimeContext, verifyRefreshToken } from "./app.js";
+import { getHeimdallRuntimeContext, refreshAppSession, startOAuthFlow, verifyRefreshToken } from "./app.js";
 import { executeHeimdallAccessPlugin, HEIMDALL_ACCESS_PLUGIN_ID, type EvePluginAbiRequest } from "./access-plugin.js";
 import { isAppSlug, oauthModes, providers, type AppSlug, type OAuthEntitlementPolicy, type OAuthMode, type Provider } from "./contracts.js";
 import { type HeimdallConfig } from "./config.js";
@@ -162,7 +162,7 @@ async function executePrivateCommand(
 ): Promise<{ status: string; payloadSchema: string; payload: Record<string, unknown> }> {
   if (operation === "heimdall.auth.begin") return await beginAuth(app, config, appSlug, payload);
   if (operation === "heimdall.auth.complete") return await completeAuth(app, appSlug, payload);
-  if (operation === "heimdall.auth.refresh") return await refreshAuth(app, config, appSlug, payload);
+  if (operation === "heimdall.auth.refresh") return await refreshAuth(app, appSlug, payload);
   if (operation === "heimdall.auth.logout") return await logoutAuth(app, config, appSlug, payload);
   throw new Error(`Unsupported Heimdall private operation '${operation}'.`);
 }
@@ -212,7 +212,6 @@ async function logoutAuth(
 
 async function refreshAuth(
   app: FastifyInstance,
-  config: HeimdallConfig,
   appSlug: AppSlug,
   payload: Record<string, unknown>,
 ): Promise<{ status: string; payloadSchema: string; payload: Record<string, unknown> }> {
@@ -222,17 +221,17 @@ async function refreshAuth(
   if (appSlug === "ghostlight" && (!entitlementPolicy || entitlementPolicy.kind !== "discord_role_access")) {
     throw new Error("Ghostlight refresh requires its caller-owned Discord role policy.");
   }
-  const refreshed = await app.inject({
-    method: "POST",
-    url: `/v1/apps/${appSlug}/sessions/refresh`,
-    headers: { "x-heimdall-app-secret": config.appSharedSecrets[appSlug] ?? "" },
-    payload: {
-      refreshToken,
-      ...(entitlementPolicy ? { entitlementPolicy } : {}),
-    },
+  // The plane already authenticated this call as `appSlug` by opening the
+  // envelope with that app's shared secret and checking sourceRuntimeId; it
+  // constructs the AppCaller directly and calls the same handler function the
+  // HTTP route uses, rather than forging the HTTP header back at itself.
+  const context = getHeimdallRuntimeContext(app);
+  const result = await refreshAppSession(context, appSlug, { appSlug }, {
+    refreshToken,
+    ...(entitlementPolicy ? { entitlementPolicy } : {}),
   });
-  const refreshedPayload = refreshed.json<Record<string, unknown>>();
-  if (refreshed.statusCode !== 201) {
+  const refreshedPayload = result.body as Record<string, unknown>;
+  if (result.statusCode !== 201) {
     return {
       status: "accepted",
       payloadSchema: "heimdall.auth_refresh_receipt.v1",
@@ -274,21 +273,20 @@ async function beginAuth(
     createdAt: now.toISOString(),
     expiresAt: new Date(now.getTime() + config.stateTtlSeconds * 1000).toISOString(),
   });
-  const start = await app.inject({
-    method: "POST",
-    url: `/v1/oauth/${provider}/start`,
-    headers: { "x-heimdall-app-secret": config.appSharedSecrets[appSlug] ?? "" },
-    payload: {
-      appSlug,
-      mode,
-      returnTo,
-      handoff: { kind: "browser_completion", attemptId: attempt.handle },
-      ...(entitlementPolicy ? { entitlementPolicy } : {}),
-    },
+  // Same authority, same non-HTTP entry as refreshAuth above: the plane
+  // constructs the AppCaller it already authenticated the envelope for and
+  // calls startOAuthFlow directly instead of forging the HTTP header.
+  const context = getHeimdallRuntimeContext(app);
+  const start = await startOAuthFlow({ config: context.config, keys: context.keys, store: context.store }, provider, { appSlug }, {
+    appSlug,
+    mode,
+    returnTo,
+    handoff: { kind: "browser_completion", attemptId: attempt.handle },
+    ...(entitlementPolicy ? { entitlementPolicy } : {}),
   });
-  const startPayload = start.json<Record<string, unknown>>();
+  const startPayload = start.body as Record<string, unknown>;
   if (start.statusCode !== 201) {
-    await getHeimdallRuntimeContext(app).store.updateAuthAttempt(appSlug, attempt.handle, {
+    await context.store.updateAuthAttempt(appSlug, attempt.handle, {
       status: "denied",
       at: new Date().toISOString(),
       denialCode: String(startPayload.error ?? "oauth_start_denied"),
