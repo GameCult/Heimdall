@@ -1,7 +1,7 @@
 import { createHmac, randomUUID } from "node:crypto";
 import cors from "@fastify/cors";
 import Fastify, { type FastifyInstance } from "fastify";
-import { type AppCaller, resolveAppCaller } from "./app-caller.js";
+import { type AppCaller, isAppCaller, resolveAppCaller } from "./app-caller.js";
 import { deliverBackendHandoff, type BackendHandoffPayload } from "./backend-handoff.js";
 import {
   appSlugs,
@@ -586,7 +586,7 @@ export async function startOAuthFlow(
   if (options?.trustedBrowserAttemptId && handoff.kind === "browser_completion") {
     handoff = { kind: "browser_completion", attemptId: options.trustedBrowserAttemptId };
   }
-  if (entitlementPolicy && (!caller || caller.appSlug !== profile.slug)) {
+  if (entitlementPolicy && (!isAppCaller(caller) || caller.appSlug !== profile.slug)) {
     return { statusCode: 401, body: { error: "app_auth_required" } };
   }
 
@@ -661,7 +661,7 @@ export async function refreshAppSession(
       },
     };
   }
-  if (entitlementPolicies.length > 0 && (!caller || caller.appSlug !== appSlug)) {
+  if (entitlementPolicies.length > 0 && (!isAppCaller(caller) || caller.appSlug !== appSlug)) {
     return { statusCode: 401, body: { error: "app_auth_required" } };
   }
 

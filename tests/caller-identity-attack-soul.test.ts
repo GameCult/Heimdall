@@ -340,15 +340,14 @@ describe("isAllowedReturnOrigin: origin comparison, not string matching", () => 
   });
 });
 
-describe("AppCaller brand: compile-time only", () => {
-  // Hole, by construction rather than by accident: the symbol brand stops a
-  // TypeScript importer from writing `{ appSlug }`, and nothing else. No
-  // handler inspects the brand at runtime, so a forged literal that reaches
-  // refreshAppSession via `as unknown as AppCaller`, plain JS, or a JSON
-  // round-trip is honoured. The barrier is type-checking plus the two
-  // constructor call sites, and the grep test in caller-identity-soul.test.ts
-  // is what stands guard over those call sites.
-  it.fails("a forged caller literal is refused at runtime", async () => {
+describe("AppCaller brand: enforced by a module-private WeakSet (R21.2)", () => {
+  // Closed. brandCaller (app-caller.ts) registers every AppCaller it mints in
+  // a WeakSet that never leaves the module; isAppCaller is the only way a
+  // consumer may trust one, and startOAuthFlow / refreshAppSession now call
+  // it instead of trusting the AppCaller | null type alone. A forged literal
+  // — even one carrying the callerBrand symbol key by hand — was never added
+  // to the set and is rejected regardless of shape or cast.
+  it("a forged caller literal is refused at runtime", async () => {
     const { app } = await harness();
     const context = (app as unknown as { heimdallContext: Parameters<typeof refreshAppSession>[0] }).heimdallContext;
     const forged = { appSlug: "repixelizer" } as unknown as AppCaller;

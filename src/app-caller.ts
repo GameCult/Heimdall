@@ -18,10 +18,13 @@ import { type HeimdallConfig } from "./config.js";
 
 // `{ appSlug }` used to satisfy this type structurally, so any module could
 // construct a caller by writing the literal — nothing but grep discipline
-// stopped an importer from forging one. The brand is a symbol that never
-// leaves this module, so only the two constructors below (resolveAppCaller
-// for HTTP, callerFromOpenedEnvelope for the private command plane) can
-// produce a value TypeScript will accept as an AppCaller.
+// stopped an importer from forging one. The symbol brand stops that at
+// compile time, but a cast (`as unknown as AppCaller`) or a JSON round-trip
+// defeats a type-level check trivially; nothing enforced it at runtime. The
+// module-private WeakSet below is the enforcement: brandCaller registers
+// every value it mints, and isAppCaller is the only way a consumer may trust
+// one. A forged literal — even one carrying the symbol key by hand — was
+// never added to the set and is rejected.
 const callerBrand = Symbol("AppCaller");
 
 export interface AppCaller {
@@ -29,8 +32,23 @@ export interface AppCaller {
   readonly [callerBrand]: true;
 }
 
+const mintedCallers = new WeakSet<object>();
+
 function brandCaller(appSlug: AppSlug): AppCaller {
-  return { appSlug, [callerBrand]: true };
+  const caller: AppCaller = { appSlug, [callerBrand]: true };
+  mintedCallers.add(caller);
+  return caller;
+}
+
+/**
+ * The runtime half of the brand. `startOAuthFlow` and `refreshAppSession`
+ * call this instead of trusting the `AppCaller | null` type alone — a value
+ * that is not exactly the object `resolveAppCaller` or
+ * `callerFromOpenedEnvelope` returned is never in the set, regardless of
+ * shape or cast.
+ */
+export function isAppCaller(value: unknown): value is AppCaller {
+  return typeof value === "object" && value !== null && mintedCallers.has(value);
 }
 
 /**
