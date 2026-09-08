@@ -29,6 +29,8 @@ function createTestConfig(): HeimdallConfig {
     tokenEncryptionKeyBase64: Buffer.alloc(32, 7).toString("base64"),
     appSharedSecrets: {
       streampixels: "streampixels-secret",
+      repixelizer: "repixelizer-secret",
+      bifrost: "bifrost-secret",
     },
     appBackendCallbacks: {
       bifrost: ["https://bifrost.gamecult.org/auth/heimdall/callback"],
@@ -214,7 +216,10 @@ describe("Heimdall service", () => {
     }
   });
 
-  it("rejects caller-owned entitlement policy for browser completion handoffs", async () => {
+  it("rejects caller-owned entitlement policy without a caller, regardless of handoff kind", async () => {
+    // Policy trust is decided by resolveAppCaller alone now (R5, fork 1B):
+    // handoff.kind no longer substitutes for identity, so the same 401 applies
+    // to a browser-completion start as it would to a backend-callback one.
     const app = await buildApp({ config: createTestConfig() });
     apps.push(app);
 
@@ -233,8 +238,34 @@ describe("Heimdall service", () => {
       },
     });
 
-    expect(response.statusCode).toBe(400);
-    expect(response.json()).toEqual(expect.objectContaining({ error: "untrusted_entitlement_policy" }));
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toEqual(expect.objectContaining({ error: "app_auth_required" }));
+  });
+
+  it("accepts caller-owned entitlement policy for a browser completion handoff when the caller is trusted", async () => {
+    // The other half of the same pin: a caller holding the secret may attach
+    // policy even without a backend_callback handoff, because identity no
+    // longer rides on handoff kind.
+    const app = await buildApp({ config: createTestConfig() });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/oauth/discord/start",
+      headers: { "x-heimdall-app-secret": "repixelizer-secret" },
+      payload: {
+        appSlug: "repixelizer",
+        mode: "sign_in",
+        returnTo: "https://repixelizer.gamecult.org/app/",
+        entitlementPolicy: {
+          kind: "discord_role_access",
+          guildId: "gamecult-guild",
+          allowedRoleIds: ["role-repixelizer"],
+        },
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
   });
 
   it("accepts caller-owned entitlement policy for trusted backend handoffs", async () => {
@@ -244,6 +275,7 @@ describe("Heimdall service", () => {
     const response = await app.inject({
       method: "POST",
       url: "/v1/oauth/discord/start",
+      headers: { "x-heimdall-app-secret": "repixelizer-secret" },
       payload: {
         appSlug: "repixelizer",
         mode: "sign_in",
@@ -290,6 +322,7 @@ describe("Heimdall service", () => {
     const response = await app.inject({
       method: "POST",
       url: "/v1/oauth/patreon/start",
+      headers: { "x-heimdall-app-secret": "repixelizer-secret" },
       payload: {
         appSlug: "repixelizer",
         mode: "sign_in",
@@ -336,6 +369,7 @@ describe("Heimdall service", () => {
     const response = await app.inject({
       method: "POST",
       url: "/v1/oauth/discord/start",
+      headers: { "x-heimdall-app-secret": "bifrost-secret" },
       payload: {
         appSlug: "bifrost",
         mode: "sign_in",
@@ -382,6 +416,7 @@ describe("Heimdall service", () => {
     const response = await app.inject({
       method: "POST",
       url: "/v1/oauth/patreon/start",
+      headers: { "x-heimdall-app-secret": "bifrost-secret" },
       payload: {
         appSlug: "bifrost",
         mode: "sign_in",
@@ -715,6 +750,7 @@ describe("Heimdall service", () => {
     const refreshResponse = await app.inject({
       method: "POST",
       url: "/v1/apps/repixelizer/sessions/refresh",
+      headers: { "x-heimdall-app-secret": "repixelizer-secret" },
       payload: {
         refreshToken,
         entitlementPolicies: [
@@ -925,6 +961,46 @@ describe("Heimdall service", () => {
 
     expect(response.statusCode).toBe(400);
     expect(response.json()).toEqual(expect.objectContaining({ error: "untrusted_backend_callback" }));
+  });
+
+  it("requires the app secret uniformly, with no slug special-cased", async () => {
+    // resolveAppCaller is the only identity decision left; it must behave
+    // identically for every built-in slug rather than special-casing one.
+    const app = await buildApp({ config: createTestConfig() });
+    apps.push(app);
+
+    for (const appSlug of ["repixelizer", "streampixels", "bifrost", "ghostlight"] as const) {
+      const denied = await app.inject({
+        method: "POST",
+        url: `/v1/apps/${appSlug}/managed-credentials/resolve`,
+        payload: { accountId: "acct-1", provider: "discord" },
+      });
+      expect(denied.statusCode, appSlug).toBe(401);
+      expect(denied.json()).toEqual(expect.objectContaining({ error: "app_auth_required" }));
+    }
+  });
+
+  it("uses only the timing-safe comparator: a near-miss secret is rejected, an exact one is accepted", async () => {
+    const app = await buildApp({ config: createTestConfig() });
+    apps.push(app);
+
+    const nearMiss = await app.inject({
+      method: "POST",
+      url: "/v1/apps/streampixels/managed-credentials/resolve",
+      headers: { "x-heimdall-app-secret": "streampixels-secretX" },
+      payload: { accountId: "acct-1", provider: "twitch" },
+    });
+    expect(nearMiss.statusCode).toBe(401);
+
+    const exact = await app.inject({
+      method: "POST",
+      url: "/v1/apps/streampixels/managed-credentials/resolve",
+      headers: { "x-heimdall-app-secret": "streampixels-secret" },
+      payload: { accountId: "acct-1", provider: "twitch" },
+    });
+    // Past the identity gate: the credential itself doesn't exist in this
+    // fixture, but that is a 404, not a 401 -- proof the secret was accepted.
+    expect(exact.statusCode).toBe(404);
   });
 
   it("resolves app-managed provider credentials without exposing refresh custody", async () => {
