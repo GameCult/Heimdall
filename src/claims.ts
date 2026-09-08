@@ -5,8 +5,7 @@ import {
   type LinkedIdentityInput,
   type RefreshTokenPayload,
 } from "./contracts.js";
-import { evaluateSharedCapabilities, type AppProfile } from "./app-profiles.js";
-import { resolveAppProfile } from "./app-registry.js";
+import { evaluateSharedCapabilities, getAppProfile, type AppProfile } from "./app-profiles.js";
 import { type HeimdallConfig } from "./config.js";
 import { identityFacts } from "./facts.js";
 import { signJwt, type RuntimeKeyMaterial } from "./signing.js";
@@ -75,7 +74,7 @@ export async function issueAccessClaim(options: {
   store: HeimdallStore;
   input: IssueAccessClaimInput;
 }): Promise<IssuedAccessClaimResult> {
-  const profile = await resolveAppProfile(options.store, options.input.appSlug);
+  const profile = getAppProfile(options.input.appSlug);
   if (!profile) {
     // An unregistered audience must not receive a signed claim: the token
     // would name an app no verifier can resolve a profile for.

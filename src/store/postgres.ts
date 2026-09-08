@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient, type QueryResultRow } from "pg";
-import { type CapabilityDefinition } from "../capability-rules.js";
 import { type AppSlug, type HeimdallAuthAttemptStatus, type LinkedIdentityInput, type Provider } from "../contracts.js";
 import { CREATE_SCHEMA_SQL } from "./schema.js";
 import {
@@ -18,7 +17,6 @@ import {
   type StoredAuthCompletion,
   type StoredCapabilityGrant,
   type StoredLinkedIdentity,
-  type StoredRegisteredApp,
   type StoredSession,
   type StoredPrivateCommandReceipt,
   type UpsertLinkedIdentityInput,
@@ -61,19 +59,6 @@ interface GrantRow extends QueryResultRow {
   note: string | null;
   created_at: string;
   updated_at: string;
-}
-
-interface RegisteredAppRow extends QueryResultRow {
-  slug: string;
-  display_name: string;
-  profile_version: string;
-  created_at: string;
-  updated_at: string;
-  identity_providers: Provider[];
-  entitlement_sources: Provider[];
-  managed_connection_providers: Provider[];
-  capabilities_json: CapabilityDefinition[];
-  redirect_uris: string[];
 }
 
 interface SessionRow extends QueryResultRow {
@@ -301,28 +286,6 @@ function mapAuthAttemptRow(row: AuthAttemptRow): StoredAuthAttempt {
 
 export class PostgresStore implements HeimdallStore {
   constructor(private readonly pool: Pick<Pool, "query" | "end">) {}
-
-  // There is no production writer for registered_apps anymore (the
-  // caller-identity cut deleted the runtime registration surface that minted
-  // a client_secret nobody verified). A row can still be provisioned by
-  // direct SQL against this table; findRegisteredApp/listRegisteredApps below
-  // keep reading it as a profile source beneath the built-in profiles.
-
-  async findRegisteredApp(slug: string): Promise<StoredRegisteredApp | null> {
-    const result = await this.pool.query<RegisteredAppRow>(
-      `SELECT * FROM registered_apps WHERE slug = $1`,
-      [slug],
-    );
-    const row = result.rows[0];
-    return row ? mapRegisteredApp(row) : null;
-  }
-
-  async listRegisteredApps(): Promise<StoredRegisteredApp[]> {
-    const result = await this.pool.query<RegisteredAppRow>(
-      `SELECT * FROM registered_apps ORDER BY slug ASC`,
-    );
-    return result.rows.map(mapRegisteredApp);
-  }
 
   async ensureSchema(): Promise<void> {
     await this.pool.query(CREATE_SCHEMA_SQL);
@@ -833,19 +796,4 @@ export function createPostgresStore(databaseUrl: string): HeimdallStore {
     connectionString: databaseUrl,
   });
   return new PostgresStore(pool);
-}
-
-function mapRegisteredApp(row: RegisteredAppRow): StoredRegisteredApp {
-  return {
-    slug: row.slug,
-    displayName: row.display_name,
-    profileVersion: row.profile_version,
-    createdAt: new Date(row.created_at).toISOString(),
-    updatedAt: new Date(row.updated_at).toISOString(),
-    identityProviders: row.identity_providers,
-    entitlementSources: row.entitlement_sources,
-    managedConnectionProviders: row.managed_connection_providers,
-    capabilities: row.capabilities_json,
-    redirectUris: row.redirect_uris,
-  };
 }

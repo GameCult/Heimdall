@@ -1,4 +1,3 @@
-import { type CapabilityDefinition } from "../capability-rules.js";
 import {
   type AppSlug,
   type HeimdallAuthAttemptStatus,
@@ -6,27 +5,6 @@ import {
   type OAuthMode,
   type Provider,
 } from "../contracts.js";
-
-/**
- * An app registered at runtime.
- *
- * The built-in profiles are seed data of the same shape; nothing here is
- * special-cased for them. There is no runtime registration authority anymore
- * (deleted with the auth-hole cut: a minted client_secret nobody verified);
- * this remains a profile store consulted by resolveAppProfile.
- */
-export interface StoredRegisteredApp {
-  slug: string;
-  displayName: string;
-  profileVersion: string;
-  createdAt: string;
-  updatedAt: string;
-  identityProviders: Provider[];
-  entitlementSources: Provider[];
-  managedConnectionProviders: Provider[];
-  capabilities: CapabilityDefinition[];
-  redirectUris: string[];
-}
 
 export interface StoredAccount {
   id: string;
@@ -225,16 +203,6 @@ export interface StoredPrivateCommandReceipt {
 export type CreatePrivateCommandReceiptInput = StoredPrivateCommandReceipt;
 
 export interface HeimdallStore {
-  /**
-   * There is no runtime writer for this table anymore (the caller-identity
-   * cut deleted the registration surface that minted a client_secret nobody
-   * verified). A profile row can still be provisioned directly against the
-   * store outside the app, which is how the InMemoryStore test double and any
-   * future ops-side seeding populate it; `resolveAppProfile` keeps consulting
-   * it below the built-in profiles.
-   */
-  findRegisteredApp(slug: string): Promise<StoredRegisteredApp | null>;
-  listRegisteredApps(): Promise<StoredRegisteredApp[]>;
   ensureSchema(): Promise<void>;
   close(): Promise<void>;
   createAccount(input: CreateAccountInput): Promise<StoredAccount>;

@@ -178,8 +178,13 @@ const ghostlightProfile: AppProfile = {
 };
 
 /**
- * Profiles that ship with Heimdall. These are seed data, not special cases:
- * a registered app produces the same shape and is evaluated by the same code.
+ * Profiles that ship with Heimdall. This is the whole set: runtime app
+ * registration (POST /v1/apps, and the `registered_apps` table it fed) was
+ * deleted with the caller-identity cut (R21.3) after Soul showed it was
+ * unreachable dead code — every HTTP route already enumerates these four
+ * slugs in its own JSON schema, so a registered row could never be resolved
+ * from a request. A future app with a genuine dynamic-registration need adds
+ * that back as a designed, authenticated feature, not by resurrecting this.
  */
 export const builtInAppProfiles: Record<AppSlug, AppProfile> = {
   repixelizer: repixelizerProfile,
@@ -190,11 +195,6 @@ export const builtInAppProfiles: Record<AppSlug, AppProfile> = {
 
 export const appProfiles = builtInAppProfiles;
 
-/**
- * Built-in profiles only, and it can miss: an app registered at runtime is
- * resolved through the registry, which needs a store. Callers with a store
- * should prefer resolveAppProfile.
- */
 export function getAppProfile(appSlug: AppSlug): AppProfile | undefined {
   return appProfiles[appSlug];
 }

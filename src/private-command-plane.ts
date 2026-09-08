@@ -9,12 +9,11 @@ import {
 import { type FastifyInstance } from "fastify";
 import { getHeimdallRuntimeContext, refreshAppSession, startOAuthFlow, verifyRefreshToken } from "./app.js";
 import { callerFromOpenedEnvelope } from "./app-caller.js";
-import { resolveAppProfile } from "./app-registry.js";
+import { getAppProfile } from "./app-profiles.js";
 import { executeHeimdallAccessPlugin, HEIMDALL_ACCESS_PLUGIN_ID, type EvePluginAbiRequest } from "./access-plugin.js";
 import { isAppSlug, oauthModes, providers, type AppSlug, type OAuthEntitlementPolicy, type OAuthMode, type Provider } from "./contracts.js";
 import { type HeimdallConfig } from "./config.js";
 import { openPrivateEnvelope, sealPrivateEnvelope, type HeimdallPrivateEnvelope } from "./private-command-security.js";
-import { type HeimdallStore } from "./store/types.js";
 
 export const HEIMDALL_PRIVATE_COMMAND_SERVICE = "heimdall.private.commands";
 export const HEIMDALL_PRIVATE_ENVELOPE_SCHEMA = "heimdall.private_command_envelope.v1";
@@ -228,7 +227,7 @@ async function refreshAuth(
   // handler function the HTTP route uses rather than forging the HTTP header
   // back at itself.
   const context = getHeimdallRuntimeContext(app);
-  await requireEntitlementPolicyIfProfileDemandsIt(context.store, appSlug, entitlementPolicy, "refresh");
+  await requireEntitlementPolicyIfProfileDemandsIt(appSlug, entitlementPolicy, "refresh");
   const result = await refreshAppSession(context, appSlug, callerFromOpenedEnvelope(appSlug), {
     refreshToken,
     ...(entitlementPolicy ? { entitlementPolicy } : {}),
@@ -264,7 +263,7 @@ async function beginAuth(
   if (!providers.includes(provider) || !oauthModes.includes(mode) || !returnTo) throw new Error("Auth begin payload is incomplete.");
   const entitlementPolicy = parseEntitlementPolicy(payload.entitlementPolicy);
   const store = getHeimdallRuntimeContext(app).store;
-  await requireEntitlementPolicyIfProfileDemandsIt(store, appSlug, entitlementPolicy, "authentication");
+  await requireEntitlementPolicyIfProfileDemandsIt(appSlug, entitlementPolicy, "authentication");
   const now = new Date();
   const attempt = await store.createAuthAttempt({
     handle: randomUUID(),
@@ -392,12 +391,11 @@ function parseEntitlementPolicy(value: unknown): OAuthEntitlementPolicy | undefi
  * need declares it in its profile instead of adding another branch.
  */
 async function requireEntitlementPolicyIfProfileDemandsIt(
-  store: HeimdallStore,
   appSlug: AppSlug,
   entitlementPolicy: OAuthEntitlementPolicy | undefined,
   action: "authentication" | "refresh",
 ): Promise<void> {
-  const profile = await resolveAppProfile(store, appSlug);
+  const profile = getAppProfile(appSlug);
   const requiredKind = profile?.requiredEntitlementPolicyKind;
   if (requiredKind && entitlementPolicy?.kind !== requiredKind) {
     throw new Error(`${appSlug} ${action} requires its caller-owned ${requiredKind} policy.`);

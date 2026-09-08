@@ -318,23 +318,13 @@ describe("isAllowedReturnOrigin: origin comparison, not string matching", () => 
     expect(isAllowedReturnOrigin({ ...profile, allowedReturnOrigins: [] }, "https://repixelizer.gamecult.org/")).toBe(false);
   });
 
-  it("a registered app with no parseable redirect URIs cannot start a flow through HTTP at all (slug enum) and gets an empty allowlist", async () => {
-    const store = new InMemoryStore();
-    store.seedRegisteredApp({
-      slug: "newapp",
-      displayName: "New",
-      profileVersion: "1",
-      identityProviders: ["discord"],
-      entitlementSources: [],
-      managedConnectionProviders: [],
-      capabilities: [],
-      redirectUris: ["garbage"],
-      clientSecretHash: "x",
-      createdAt: "2026-01-01T00:00:00.000Z",
-      updatedAt: "2026-01-01T00:00:00.000Z",
-    } as never);
-    const app = await buildApp({ config: testConfig(), store, oauthRuntimes: { discord: identityByCodeRuntime() } });
-    resources.push(app);
+  // The registered-app path this test covered (seedRegisteredApp,
+  // resolveAppProfile's non-built-in branch) was deleted in R21.3: every HTTP
+  // route already enumerates the four built-in slugs in its own JSON schema,
+  // so a registered row could never be reached over HTTP in the first place.
+  // An unknown slug is now refused by that schema directly.
+  it("an unknown appSlug cannot start a flow through HTTP at all (slug enum)", async () => {
+    const { app } = await harness();
     const started = await start(app, { appSlug: "newapp", mode: "sign_in", returnTo: "https://anything.example/" });
     expect(started.statusCode).toBe(400);
   });

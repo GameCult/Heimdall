@@ -1,21 +1,11 @@
 export const CREATE_SCHEMA_SQL = `
-CREATE TABLE IF NOT EXISTS registered_apps (
-  slug TEXT PRIMARY KEY,
-  display_name TEXT NOT NULL,
-  profile_version TEXT NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL,
-  updated_at TIMESTAMPTZ NOT NULL,
-  identity_providers JSONB NOT NULL,
-  entitlement_sources JSONB NOT NULL,
-  managed_connection_providers JSONB NOT NULL,
-  capabilities_json JSONB NOT NULL,
-  redirect_uris JSONB NOT NULL
-);
-
 -- Runtime app registration (POST /v1/apps) minted a client_secret_hash that
--- nothing ever verified. Deleted with the caller-identity cut; drop the
--- column on any store built before this schema too.
-ALTER TABLE registered_apps DROP COLUMN IF EXISTS client_secret_hash;
+-- nothing ever verified, and the registered_apps table it fed was
+-- unreachable dead code even after that writer was deleted: every HTTP route
+-- already enumerates the four built-in app slugs in its own JSON schema, so a
+-- registered row could never be resolved from a request (R21.3). Drop the
+-- table on any store built before this schema too.
+DROP TABLE IF EXISTS registered_apps;
 
 CREATE TABLE IF NOT EXISTS accounts (
   id TEXT PRIMARY KEY,

@@ -15,7 +15,6 @@ import {
   type StoredAuthCompletion,
   type StoredCapabilityGrant,
   type StoredLinkedIdentity,
-  type StoredRegisteredApp,
   type StoredSession,
   type StoredPrivateCommandReceipt,
   type UpsertLinkedIdentityInput,
@@ -38,7 +37,6 @@ function isGrantActive(grant: StoredCapabilityGrant, appSlug: AppSlug, at: strin
 }
 
 export class InMemoryStore implements HeimdallStore {
-  private readonly registeredApps = new Map<string, StoredRegisteredApp>();
   private readonly accounts = new Map<string, StoredAccount>();
   private readonly linkedIdentities = new Map<string, StoredLinkedIdentity>();
   private readonly grants = new Map<string, StoredCapabilityGrant>();
@@ -49,27 +47,6 @@ export class InMemoryStore implements HeimdallStore {
   private readonly authCompletionsByAttempt = new Map<string, string>();
   private readonly entitlementSnapshots = new Map<string, CreateEntitlementSnapshotInput>();
   private readonly auditEvents = new Map<string, CreateAuditEventInput>();
-
-  /**
-   * Test/ops seam only — not part of HeimdallStore. There is no production
-   * writer for `registered_apps` anymore; a real deployment provisions a row
-   * directly against Postgres. This lets fixtures exercise resolveAppProfile's
-   * non-built-in branch the same way.
-   */
-  seedRegisteredApp(record: StoredRegisteredApp): void {
-    this.registeredApps.set(record.slug, structuredClone(record));
-  }
-
-  async findRegisteredApp(slug: string): Promise<StoredRegisteredApp | null> {
-    const record = this.registeredApps.get(slug);
-    return record ? structuredClone(record) : null;
-  }
-
-  async listRegisteredApps(): Promise<StoredRegisteredApp[]> {
-    return [...this.registeredApps.values()]
-      .sort((left, right) => left.slug.localeCompare(right.slug))
-      .map((record) => structuredClone(record));
-  }
 
   async ensureSchema(): Promise<void> {
     return;

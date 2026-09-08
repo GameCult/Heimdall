@@ -24,7 +24,6 @@ import {
 } from "./contracts.js";
 import { issueAccessClaim, type IssueAccessClaimInput } from "./claims.js";
 import { builtInAppProfiles, getAppProfile, isAllowedReturnOrigin, serializeAppProfile, supportsProvider } from "./app-profiles.js";
-import { listAppProfiles, resolveAppProfile } from "./app-registry.js";
 import { renderBrowserHandoffPage } from "./browser-handoff.js";
 import { type HeimdallConfig, loadConfig } from "./config.js";
 import { createTokenCustody, type TokenCustody } from "./custody.js";
@@ -429,7 +428,7 @@ async function evaluateStoredEntitlements(options: {
   entitlementPolicies: OAuthEntitlementPolicy[];
   now: string;
 }): Promise<string[]> {
-  const profile = await resolveAppProfile(options.store, options.appSlug);
+  const profile = getAppProfile(options.appSlug);
   if (!profile) {
     throw new Error(`Unknown app '${options.appSlug}'.`);
   }
@@ -530,8 +529,8 @@ export async function startOAuthFlow(
     trustedBrowserAttemptId?: string;
   }
 ): Promise<HandlerResult> {
-  const { config, keys, store } = ctx;
-  const profile = await resolveAppProfile(store, input.appSlug);
+  const { config, keys } = ctx;
+  const profile = getAppProfile(input.appSlug);
   if (!profile) {
     return { statusCode: 404, body: { error: "unknown_app", detail: `No app '${input.appSlug}' is registered.` } };
   }
@@ -768,7 +767,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   app.get("/.well-known/heimdall-configuration", async () => buildDiscovery(config));
 
   app.get("/v1/apps", async () => ({
-    apps: (await listAppProfiles(store)).map(serializeAppProfile),
+    apps: Object.values(builtInAppProfiles).map(serializeAppProfile),
   }));
 
   app.get<{ Params: { appSlug: AppSlug } }>(
@@ -786,7 +785,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       },
     },
     async (request, reply) => {
-      const profile = await resolveAppProfile(store, request.params.appSlug);
+      const profile = getAppProfile(request.params.appSlug);
       if (!profile) {
         reply.code(404);
         return { error: "unknown_app", detail: `No app '${request.params.appSlug}' is registered.` };
@@ -1539,7 +1538,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       },
     },
     async (request, reply) => {
-      const profile = await resolveAppProfile(store, request.params.appSlug);
+      const profile = getAppProfile(request.params.appSlug);
       if (!profile) {
         reply.code(404);
         return { error: "unknown_app", detail: `No app '${request.params.appSlug}' is registered.` };
@@ -1690,7 +1689,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       },
     },
     async (request, reply) => {
-      const profile = await resolveAppProfile(store, request.params.appSlug);
+      const profile = getAppProfile(request.params.appSlug);
       if (!profile) {
         reply.code(404);
         return { error: "unknown_app", detail: `No app '${request.params.appSlug}' is registered.` };
