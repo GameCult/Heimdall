@@ -23,7 +23,7 @@ import {
   type Provider,
 } from "./contracts.js";
 import { issueAccessClaim, type IssueAccessClaimInput } from "./claims.js";
-import { builtInAppProfiles, getAppProfile, serializeAppProfile, supportsProvider } from "./app-profiles.js";
+import { builtInAppProfiles, getAppProfile, isAllowedReturnOrigin, serializeAppProfile, supportsProvider } from "./app-profiles.js";
 import { listAppProfiles, resolveAppProfile } from "./app-registry.js";
 import { renderBrowserHandoffPage } from "./browser-handoff.js";
 import { type HeimdallConfig, loadConfig } from "./config.js";
@@ -519,6 +519,13 @@ export async function startOAuthFlow(
     return {
       statusCode: 400,
       body: { error: "provider_not_supported_for_app", provider, appSlug: profile.slug },
+    };
+  }
+
+  if (!isAllowedReturnOrigin(profile, input.returnTo)) {
+    return {
+      statusCode: 400,
+      body: { error: "return_to_not_allowed", detail: `returnTo must land on an origin ${profile.slug} owns.` },
     };
   }
 
@@ -1190,8 +1197,15 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         }
 
         const completionExpiresAt = new Date(Date.now() + config.completionTtlSeconds * 1000).toISOString();
+        // The completion code is always minted here, never taken from the
+        // caller. handoff.attemptId is a browser-carried correlation handle,
+        // not a secret: before this cut it was assigned verbatim as the code
+        // (createAuthCompletion({ code: handoff.attemptId })), so anyone who
+        // started the flow could fix the redemption code in advance and
+        // redeem a victim's signed tokens without ever touching the app
+        // secret. It is stored on `attemptId` below purely for correlation.
         const completion = await store.createAuthCompletion({
-          ...(handoff.kind === "browser_completion" && handoff.attemptId ? { code: handoff.attemptId } : {}),
+          ...(handoff.kind === "browser_completion" && handoff.attemptId ? { attemptId: handoff.attemptId } : {}),
           appSlug: statePayload.app_slug,
           provider: request.params.provider,
           mode: statePayload.mode,
@@ -1356,10 +1370,17 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         },
         createdAt: nowIso,
       });
-      await store.updateAuthAttempt(request.params.appSlug, request.body.completionCode, {
-        status: "consumed",
-        at: nowIso,
-      });
+      // completion.attemptId is the browser-carried correlation handle, kept
+      // separate from the redemption code itself (see createAuthCompletion
+      // above); this used to key off the completion code, which only ever
+      // matched an attempt by the coincidence of the pre-fix bug where the
+      // code *was* the caller-chosen attemptId.
+      if (completion.attemptId) {
+        await store.updateAuthAttempt(request.params.appSlug, completion.attemptId, {
+          status: "consumed",
+          at: nowIso,
+        });
+      }
 
       reply.code(201);
       return completion.payloadJson;
