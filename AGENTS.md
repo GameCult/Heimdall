@@ -136,6 +136,15 @@ user did not say so yet:
   `notes/fresh-workspace-handoff.md`, add distilled evidence when future belief
   changed, and make the next action explicit.
 
+## Build And Deploy Target
+
+Heimdall runs as the auth authority behind Yggdrasil-hosted nginx at
+`heimdall.gamecult.org`, on Linux. Idunn owns the deployment transaction. This
+workstation is Windows and is where the shell is, not where the artifact runs:
+a local compile is not evidence about the Linux release, because toolchain,
+linker, filesystem semantics and path handling all differ. Build for the
+target, or let the deploy path's own builder do it, and say which one you used.
+
 ## External Context
 
 - For StreamPixels architecture/auth context, prefer the indexed `StreamPixels`
