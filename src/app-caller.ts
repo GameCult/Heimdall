@@ -16,8 +16,31 @@ import { timingSafeEqual } from "node:crypto";
 import { type AppSlug } from "./contracts.js";
 import { type HeimdallConfig } from "./config.js";
 
+// `{ appSlug }` used to satisfy this type structurally, so any module could
+// construct a caller by writing the literal — nothing but grep discipline
+// stopped an importer from forging one. The brand is a symbol that never
+// leaves this module, so only the two constructors below (resolveAppCaller
+// for HTTP, callerFromOpenedEnvelope for the private command plane) can
+// produce a value TypeScript will accept as an AppCaller.
+const callerBrand = Symbol("AppCaller");
+
 export interface AppCaller {
-  appSlug: AppSlug;
+  readonly appSlug: AppSlug;
+  readonly [callerBrand]: true;
+}
+
+function brandCaller(appSlug: AppSlug): AppCaller {
+  return { appSlug, [callerBrand]: true };
+}
+
+/**
+ * The private command plane already authenticated `appSlug` by opening its
+ * envelope with the app's shared secret and checking sourceRuntimeId before
+ * ever calling this. It has no header to read, so it cannot go through
+ * resolveAppCaller; this is the only other place an AppCaller may be minted.
+ */
+export function callerFromOpenedEnvelope(appSlug: AppSlug): AppCaller {
+  return brandCaller(appSlug);
 }
 
 /** Timing-safe comparator. The only comparator anywhere a shared secret is checked. */
@@ -48,5 +71,5 @@ export function resolveAppCaller(
   appSlug: AppSlug,
   headers: Record<string, string | string[] | undefined>
 ): AppCaller | null {
-  return secretMatches(config.appSharedSecrets[appSlug], getSharedSecretHeader(headers)) ? { appSlug } : null;
+  return secretMatches(config.appSharedSecrets[appSlug], getSharedSecretHeader(headers)) ? brandCaller(appSlug) : null;
 }

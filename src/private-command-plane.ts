@@ -8,10 +8,13 @@ import {
 } from "cultnet-ts";
 import { type FastifyInstance } from "fastify";
 import { getHeimdallRuntimeContext, refreshAppSession, startOAuthFlow, verifyRefreshToken } from "./app.js";
+import { callerFromOpenedEnvelope } from "./app-caller.js";
+import { resolveAppProfile } from "./app-registry.js";
 import { executeHeimdallAccessPlugin, HEIMDALL_ACCESS_PLUGIN_ID, type EvePluginAbiRequest } from "./access-plugin.js";
 import { isAppSlug, oauthModes, providers, type AppSlug, type OAuthEntitlementPolicy, type OAuthMode, type Provider } from "./contracts.js";
 import { type HeimdallConfig } from "./config.js";
 import { openPrivateEnvelope, sealPrivateEnvelope, type HeimdallPrivateEnvelope } from "./private-command-security.js";
+import { type HeimdallStore } from "./store/types.js";
 
 export const HEIMDALL_PRIVATE_COMMAND_SERVICE = "heimdall.private.commands";
 export const HEIMDALL_PRIVATE_ENVELOPE_SCHEMA = "heimdall.private_command_envelope.v1";
@@ -218,15 +221,15 @@ async function refreshAuth(
   const refreshToken = String(payload.refreshToken ?? "");
   if (!refreshToken) throw new Error("Auth refresh requires the app's encrypted refresh claim.");
   const entitlementPolicy = parseEntitlementPolicy(payload.entitlementPolicy);
-  if (appSlug === "ghostlight" && (!entitlementPolicy || entitlementPolicy.kind !== "discord_role_access")) {
-    throw new Error("Ghostlight refresh requires its caller-owned Discord role policy.");
-  }
   // The plane already authenticated this call as `appSlug` by opening the
   // envelope with that app's shared secret and checking sourceRuntimeId; it
-  // constructs the AppCaller directly and calls the same handler function the
-  // HTTP route uses, rather than forging the HTTP header back at itself.
+  // gets its AppCaller from the one other constructor that authority owns
+  // (app-caller.ts) instead of writing the literal here, and calls the same
+  // handler function the HTTP route uses rather than forging the HTTP header
+  // back at itself.
   const context = getHeimdallRuntimeContext(app);
-  const result = await refreshAppSession(context, appSlug, { appSlug }, {
+  await requireEntitlementPolicyIfProfileDemandsIt(context.store, appSlug, entitlementPolicy, "refresh");
+  const result = await refreshAppSession(context, appSlug, callerFromOpenedEnvelope(appSlug), {
     refreshToken,
     ...(entitlementPolicy ? { entitlementPolicy } : {}),
   });
@@ -260,11 +263,10 @@ async function beginAuth(
   const returnTo = String(payload.returnTo ?? "");
   if (!providers.includes(provider) || !oauthModes.includes(mode) || !returnTo) throw new Error("Auth begin payload is incomplete.");
   const entitlementPolicy = parseEntitlementPolicy(payload.entitlementPolicy);
-  if (appSlug === "ghostlight" && (!entitlementPolicy || entitlementPolicy.kind !== "discord_role_access")) {
-    throw new Error("Ghostlight authentication requires its caller-owned Discord role policy.");
-  }
+  const store = getHeimdallRuntimeContext(app).store;
+  await requireEntitlementPolicyIfProfileDemandsIt(store, appSlug, entitlementPolicy, "authentication");
   const now = new Date();
-  const attempt = await getHeimdallRuntimeContext(app).store.createAuthAttempt({
+  const attempt = await store.createAuthAttempt({
     handle: randomUUID(),
     appSlug,
     provider,
@@ -273,11 +275,9 @@ async function beginAuth(
     createdAt: now.toISOString(),
     expiresAt: new Date(now.getTime() + config.stateTtlSeconds * 1000).toISOString(),
   });
-  // Same authority, same non-HTTP entry as refreshAuth above: the plane
-  // constructs the AppCaller it already authenticated the envelope for and
-  // calls startOAuthFlow directly instead of forging the HTTP header.
+  // Same authority, same non-HTTP entry as refreshAuth above.
   const context = getHeimdallRuntimeContext(app);
-  const start = await startOAuthFlow({ config: context.config, keys: context.keys, store: context.store }, provider, { appSlug }, {
+  const start = await startOAuthFlow({ config: context.config, keys: context.keys, store: context.store }, provider, callerFromOpenedEnvelope(appSlug), {
     appSlug,
     mode,
     returnTo,
@@ -330,15 +330,28 @@ async function completeAuth(
   if (attempt.status !== "completed") {
     return authCompletion("denied", { handle, error: attempt.denialCode ?? `attempt_${attempt.status}` });
   }
-  const redemption = await app.inject({
-    method: "POST",
-    url: `/v1/apps/${appSlug}/auth-completions/redeem`,
-    payload: { completionCode: handle },
-  });
-  if (redemption.statusCode !== 201) {
+  // Consume by the attempt handle directly rather than forging an HTTP
+  // self-call into the public redeem route: the plane already authenticated
+  // `appSlug`, and the completion code is a secret this process never needs
+  // to see, let alone pass back through its own front door.
+  const completion = await store.consumeAuthCompletionByAttempt(appSlug, handle, now);
+  if (!completion) {
     return authCompletion("denied", { handle, error: "invalid_or_expired_completion" });
   }
-  return authCompletion("authenticated", { handle, ...redemption.json<Record<string, unknown>>() });
+  await store.createAuditEvent({
+    accountId: completion.accountId,
+    sessionId: completion.sessionId,
+    appSlug: completion.appSlug,
+    eventType: "auth_completion_redeemed",
+    eventPayloadJson: {
+      provider: completion.provider,
+      mode: completion.mode,
+      completionCode: completion.code,
+    },
+    createdAt: now,
+  });
+  await store.updateAuthAttempt(appSlug, handle, { status: "consumed", at: now });
+  return authCompletion("authenticated", { handle, ...completion.payloadJson });
 }
 
 function authCompletion(status: string, values: Record<string, unknown>) {
@@ -363,6 +376,26 @@ function parseEntitlementPolicy(value: unknown): OAuthEntitlementPolicy | undefi
     return { kind: "patreon_membership_access", requiredTierTitle: record.requiredTierTitle };
   }
   return undefined;
+}
+
+/**
+ * Ghostlight requires its caller-owned Discord role policy on every begin and
+ * refresh; that used to be a literal `appSlug === "ghostlight"` branch here.
+ * The requirement is now data on the app's profile
+ * (AppProfile.requiredEntitlementPolicyKind), so a future app with the same
+ * need declares it in its profile instead of adding another branch.
+ */
+async function requireEntitlementPolicyIfProfileDemandsIt(
+  store: HeimdallStore,
+  appSlug: AppSlug,
+  entitlementPolicy: OAuthEntitlementPolicy | undefined,
+  action: "authentication" | "refresh",
+): Promise<void> {
+  const profile = await resolveAppProfile(store, appSlug);
+  const requiredKind = profile?.requiredEntitlementPolicyKind;
+  if (requiredKind && entitlementPolicy?.kind !== requiredKind) {
+    throw new Error(`${appSlug} ${action} requires its caller-owned ${requiredKind} policy.`);
+  }
 }
 
 function response(
