@@ -3,7 +3,7 @@ import {
   type CapabilityDefinition,
   type CapabilityMode,
 } from "./capability-rules.js";
-import { type AppSlug, type LinkedIdentityInput, type Provider } from "./contracts.js";
+import { type AppSlug, type LinkedIdentityInput, type OAuthEntitlementPolicy, type Provider } from "./contracts.js";
 import { entitlementFacts, grantFacts, identityFacts } from "./facts.js";
 
 export type { CapabilityDefinition, CapabilityMode };
@@ -31,6 +31,20 @@ export interface AppProfile {
   entitlementSources: Provider[];
   managedConnectionProviders: Provider[];
   capabilities: CapabilityDefinition[];
+  /**
+   * Origins `returnTo` may land on for this app. A caller-chosen returnTo is
+   * where the browser handoff page postMessages the completion payload
+   * (src/browser-handoff.ts), so an unlisted origin is an exfiltration
+   * primitive, not a convenience. Compared by URL origin, not prefix.
+   */
+  allowedReturnOrigins: readonly string[];
+  /**
+   * Some apps require the caller to supply an entitlement policy of a
+   * specific kind on every begin/refresh (ghostlight's caller-owned Discord
+   * role gate). Data instead of a per-slug branch in the private command
+   * plane; absent for apps with no such requirement.
+   */
+  requiredEntitlementPolicyKind?: OAuthEntitlementPolicy["kind"];
 }
 
 /** The membership signal shared by every app that gates on GameCult membership. */
@@ -47,6 +61,7 @@ const repixelizerProfile: AppProfile = {
   identityProviders: ["discord", "patreon"],
   entitlementSources: ["discord", "patreon"],
   managedConnectionProviders: [],
+  allowedReturnOrigins: ["https://repixelizer.gamecult.org"],
   capabilities: [
     {
       key: "app_access",
@@ -88,6 +103,7 @@ const streampixelsProfile: AppProfile = {
   identityProviders: ["twitch", "youtube"],
   entitlementSources: [],
   managedConnectionProviders: ["twitch", "youtube"],
+  allowedReturnOrigins: ["https://streampixels.gamecult.org"],
   capabilities: [
     {
       key: "viewer_access",
@@ -125,6 +141,7 @@ const bifrostProfile: AppProfile = {
   identityProviders: ["discord", "patreon"],
   entitlementSources: ["discord", "patreon"],
   managedConnectionProviders: [],
+  allowedReturnOrigins: ["https://bifrost.gamecult.org"],
   capabilities: [
     {
       key: "member_access",
@@ -142,6 +159,8 @@ const ghostlightProfile: AppProfile = {
   identityProviders: ["discord"],
   entitlementSources: ["discord"],
   managedConnectionProviders: [],
+  allowedReturnOrigins: ["https://yggdrasil.gamecult.org"],
+  requiredEntitlementPolicyKind: "discord_role_access",
   capabilities: [
     {
       key: "app_access",
@@ -203,4 +222,18 @@ export function supportsProvider(profile: AppProfile, provider: Provider): boole
     profile.managedConnectionProviders.includes(provider) ||
     profile.entitlementSources.includes(provider)
   );
+}
+
+/**
+ * Whether `returnTo` may be handed back to the browser for this app. Origin
+ * comparison only (scheme + host + port) — the allowlist names an app's
+ * origin once rather than every path it might redirect to. An unparseable
+ * URL is refused rather than throwing.
+ */
+export function isAllowedReturnOrigin(profile: AppProfile, returnTo: string): boolean {
+  try {
+    return profile.allowedReturnOrigins.includes(new URL(returnTo).origin);
+  } catch {
+    return false;
+  }
 }
