@@ -275,6 +275,11 @@ describe("attempt-handle binding: the public start route may attach a completion
 
 describe("isAllowedReturnOrigin: origin comparison, not string matching", () => {
   const profile = builtInAppProfiles.repixelizer;
+  // Narrow rather than cast: the lookup is Partial-typed, and a missing
+  // built-in should fail this suite loudly instead of being asserted away.
+  if (!profile) {
+    throw new Error("built-in repixelizer profile is missing");
+  }
   const rejected = [
     "https://repixelizer.gamecult.org.evil.com/",
     "https://evil.com/?x=https://repixelizer.gamecult.org",
