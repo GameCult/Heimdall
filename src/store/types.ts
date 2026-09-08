@@ -28,18 +28,6 @@ export interface StoredRegisteredApp {
   redirectUris: string[];
 }
 
-export interface RegisterAppInput {
-  slug: string;
-  displayName: string;
-  profileVersion: string;
-  registeredAt: string;
-  identityProviders: Provider[];
-  entitlementSources: Provider[];
-  managedConnectionProviders: Provider[];
-  capabilities: CapabilityDefinition[];
-  redirectUris: string[];
-}
-
 export interface StoredAccount {
   id: string;
   createdAt: string;
@@ -163,6 +151,13 @@ export interface CreateAuditEventInput {
 
 export interface StoredAuthCompletion {
   code: string;
+  /**
+   * The browser-carried attempt handle this completion correlates to, if the
+   * handoff supplied one. Correlation only: it is never the redemption
+   * secret, and never used to look up a completion by anyone but the
+   * envelope-authenticated private command plane.
+   */
+  attemptId?: string;
   appSlug: AppSlug;
   provider: Provider;
   mode: OAuthMode;
@@ -176,7 +171,11 @@ export interface StoredAuthCompletion {
 }
 
 export interface CreateAuthCompletionInput {
-  code?: string;
+  /**
+   * Correlation handle only (see StoredAuthCompletion.attemptId). The store
+   * always mints `code` itself; a caller cannot choose it.
+   */
+  attemptId?: string;
   appSlug: AppSlug;
   provider: Provider;
   mode: OAuthMode;
@@ -226,7 +225,14 @@ export interface StoredPrivateCommandReceipt {
 export type CreatePrivateCommandReceiptInput = StoredPrivateCommandReceipt;
 
 export interface HeimdallStore {
-  registerApp(input: RegisterAppInput): Promise<StoredRegisteredApp>;
+  /**
+   * There is no runtime writer for this table anymore (the caller-identity
+   * cut deleted the registration surface that minted a client_secret nobody
+   * verified). A profile row can still be provisioned directly against the
+   * store outside the app, which is how the InMemoryStore test double and any
+   * future ops-side seeding populate it; `resolveAppProfile` keeps consulting
+   * it below the built-in profiles.
+   */
   findRegisteredApp(slug: string): Promise<StoredRegisteredApp | null>;
   listRegisteredApps(): Promise<StoredRegisteredApp[]>;
   ensureSchema(): Promise<void>;
@@ -262,6 +268,13 @@ export interface HeimdallStore {
   findPrivateCommandReceipt(appSlug: AppSlug, idempotencyKey: string): Promise<StoredPrivateCommandReceipt | null>;
   createAuthCompletion(input: CreateAuthCompletionInput): Promise<StoredAuthCompletion>;
   consumeAuthCompletion(appSlug: AppSlug, code: string, at: string): Promise<StoredAuthCompletion | null>;
+  /**
+   * Consume a completion by its correlated attempt handle instead of its
+   * code. The private command plane already authenticated `appSlug` by
+   * opening the envelope; this lets its `completeAuth` redeem the completion
+   * it created without ever needing to know (or forge) the code.
+   */
+  consumeAuthCompletionByAttempt(appSlug: AppSlug, attemptId: string, at: string): Promise<StoredAuthCompletion | null>;
   upsertEntitlementSnapshot(input: CreateEntitlementSnapshotInput): Promise<void>;
   createAuditEvent(input: CreateAuditEventInput): Promise<void>;
 }

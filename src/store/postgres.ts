@@ -18,7 +18,6 @@ import {
   type StoredAuthCompletion,
   type StoredCapabilityGrant,
   type StoredLinkedIdentity,
-  type RegisterAppInput,
   type StoredRegisteredApp,
   type StoredSession,
   type StoredPrivateCommandReceipt,
@@ -90,6 +89,7 @@ interface SessionRow extends QueryResultRow {
 
 interface AuthCompletionRow extends QueryResultRow {
   code: string;
+  attempt_id: string | null;
   app_slug: AppSlug;
   provider: Provider;
   mode: "sign_in" | "link" | "connect";
@@ -258,6 +258,10 @@ function mapAuthCompletionRow(row: AuthCompletionRow): StoredAuthCompletion {
     payloadJson: row.payload_json,
   };
 
+  if (row.attempt_id) {
+    completion.attemptId = row.attempt_id;
+  }
+
   if (row.consumed_at) {
     completion.consumedAt = normalizeTimestamp(row.consumed_at);
   }
@@ -298,44 +302,11 @@ function mapAuthAttemptRow(row: AuthAttemptRow): StoredAuthAttempt {
 export class PostgresStore implements HeimdallStore {
   constructor(private readonly pool: Pick<Pool, "query" | "end">) {}
 
-  async registerApp(input: RegisterAppInput): Promise<StoredRegisteredApp> {
-    // Re-registering an app keeps its original created_at: the record is the
-    // same app being updated, not a new one, and RFC 7592 treats management as
-    // an update to an existing registration.
-    const result = await this.pool.query<RegisteredAppRow>(
-      `
-      INSERT INTO registered_apps (
-        slug, display_name, profile_version, created_at, updated_at,
-        identity_providers, entitlement_sources, managed_connection_providers,
-        capabilities_json, redirect_uris
-      )
-      VALUES ($1, $2, $3, $4, $4, $5, $6, $7, $8, $9)
-      ON CONFLICT (slug)
-      DO UPDATE SET
-        display_name = EXCLUDED.display_name,
-        profile_version = EXCLUDED.profile_version,
-        updated_at = EXCLUDED.updated_at,
-        identity_providers = EXCLUDED.identity_providers,
-        entitlement_sources = EXCLUDED.entitlement_sources,
-        managed_connection_providers = EXCLUDED.managed_connection_providers,
-        capabilities_json = EXCLUDED.capabilities_json,
-        redirect_uris = EXCLUDED.redirect_uris
-      RETURNING *
-      `,
-      [
-        input.slug,
-        input.displayName,
-        input.profileVersion,
-        input.registeredAt,
-        JSON.stringify(input.identityProviders),
-        JSON.stringify(input.entitlementSources),
-        JSON.stringify(input.managedConnectionProviders),
-        JSON.stringify(input.capabilities),
-        JSON.stringify(input.redirectUris),
-      ],
-    );
-    return mapRegisteredApp(result.rows[0]!);
-  }
+  // There is no production writer for registered_apps anymore (the
+  // caller-identity cut deleted the runtime registration surface that minted
+  // a client_secret nobody verified). A row can still be provisioned by
+  // direct SQL against this table; findRegisteredApp/listRegisteredApps below
+  // keep reading it as a profile source beneath the built-in profiles.
 
   async findRegisteredApp(slug: string): Promise<StoredRegisteredApp | null> {
     const result = await this.pool.query<RegisteredAppRow>(
@@ -742,18 +713,20 @@ export class PostgresStore implements HeimdallStore {
   }
 
   async createAuthCompletion(input: CreateAuthCompletionInput): Promise<StoredAuthCompletion> {
-    const code = input.code ?? randomUUID();
+    // The code is always minted here; nothing upstream may choose it.
+    const code = randomUUID();
     const result = await this.pool.query<AuthCompletionRow>(
       `
       INSERT INTO auth_completions (
-        code, app_slug, provider, mode, account_id, session_id,
+        code, attempt_id, app_slug, provider, mode, account_id, session_id,
         return_to, payload_json, created_at, expires_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
       RETURNING *
       `,
       [
         code,
+        input.attemptId ?? null,
         input.appSlug,
         input.provider,
         input.mode,
@@ -784,6 +757,23 @@ export class PostgresStore implements HeimdallStore {
     );
 
     return result.rowCount ? mapAuthCompletionRow(expectRow(result.rows[0], "consumeAuthCompletion")) : null;
+  }
+
+  async consumeAuthCompletionByAttempt(appSlug: AppSlug, attemptId: string, at: string): Promise<StoredAuthCompletion | null> {
+    const result = await this.pool.query<AuthCompletionRow>(
+      `
+      UPDATE auth_completions
+      SET consumed_at = $3
+      WHERE attempt_id = $1
+        AND app_slug = $2
+        AND consumed_at IS NULL
+        AND expires_at > $3
+      RETURNING *
+      `,
+      [attemptId, appSlug, at]
+    );
+
+    return result.rowCount ? mapAuthCompletionRow(expectRow(result.rows[0], "consumeAuthCompletionByAttempt")) : null;
   }
 
   async upsertEntitlementSnapshot(input: CreateEntitlementSnapshotInput): Promise<void> {

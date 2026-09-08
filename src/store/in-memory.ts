@@ -15,7 +15,6 @@ import {
   type StoredAuthCompletion,
   type StoredCapabilityGrant,
   type StoredLinkedIdentity,
-  type RegisterAppInput,
   type StoredRegisteredApp,
   type StoredSession,
   type StoredPrivateCommandReceipt,
@@ -47,25 +46,18 @@ export class InMemoryStore implements HeimdallStore {
   private readonly authAttempts = new Map<string, StoredAuthAttempt>();
   private readonly privateCommandReceipts = new Map<string, StoredPrivateCommandReceipt>();
   private readonly authCompletions = new Map<string, StoredAuthCompletion>();
+  private readonly authCompletionsByAttempt = new Map<string, string>();
   private readonly entitlementSnapshots = new Map<string, CreateEntitlementSnapshotInput>();
   private readonly auditEvents = new Map<string, CreateAuditEventInput>();
 
-  async registerApp(input: RegisterAppInput): Promise<StoredRegisteredApp> {
-    const existing = this.registeredApps.get(input.slug);
-    const record: StoredRegisteredApp = {
-      slug: input.slug,
-      displayName: input.displayName,
-      profileVersion: input.profileVersion,
-      createdAt: existing?.createdAt ?? input.registeredAt,
-      updatedAt: input.registeredAt,
-      identityProviders: [...input.identityProviders],
-      entitlementSources: [...input.entitlementSources],
-      managedConnectionProviders: [...input.managedConnectionProviders],
-      capabilities: structuredClone(input.capabilities),
-      redirectUris: [...input.redirectUris],
-    };
-    this.registeredApps.set(record.slug, record);
-    return structuredClone(record);
+  /**
+   * Test/ops seam only — not part of HeimdallStore. There is no production
+   * writer for `registered_apps` anymore; a real deployment provisions a row
+   * directly against Postgres. This lets fixtures exercise resolveAppProfile's
+   * non-built-in branch the same way.
+   */
+  seedRegisteredApp(record: StoredRegisteredApp): void {
+    this.registeredApps.set(record.slug, structuredClone(record));
   }
 
   async findRegisteredApp(slug: string): Promise<StoredRegisteredApp | null> {
@@ -359,8 +351,11 @@ export class InMemoryStore implements HeimdallStore {
   }
 
   async createAuthCompletion(input: CreateAuthCompletionInput): Promise<StoredAuthCompletion> {
+    // The code is always minted here; nothing upstream may choose it (see
+    // src/app.ts createAuthCompletion call site for why that mattered).
     const completion: StoredAuthCompletion = {
-      code: input.code ?? randomUUID(),
+      code: randomUUID(),
+      ...(input.attemptId ? { attemptId: input.attemptId } : {}),
       appSlug: input.appSlug,
       provider: input.provider,
       mode: input.mode,
@@ -373,6 +368,9 @@ export class InMemoryStore implements HeimdallStore {
     };
 
     this.authCompletions.set(completion.code, clone(completion));
+    if (input.attemptId) {
+      this.authCompletionsByAttempt.set(`${input.appSlug}:${input.attemptId}`, completion.code);
+    }
     return clone(completion);
   }
 
@@ -388,6 +386,14 @@ export class InMemoryStore implements HeimdallStore {
 
     completion.consumedAt = at;
     return clone(completion);
+  }
+
+  async consumeAuthCompletionByAttempt(appSlug: AppSlug, attemptId: string, at: string): Promise<StoredAuthCompletion | null> {
+    const code = this.authCompletionsByAttempt.get(`${appSlug}:${attemptId}`);
+    if (!code) {
+      return null;
+    }
+    return this.consumeAuthCompletion(appSlug, code, at);
   }
 
   async upsertEntitlementSnapshot(input: CreateEntitlementSnapshotInput): Promise<void> {

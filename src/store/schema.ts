@@ -109,6 +109,16 @@ CREATE TABLE IF NOT EXISTS auth_completions (
 CREATE INDEX IF NOT EXISTS auth_completions_lookup_idx
   ON auth_completions(app_slug, expires_at, consumed_at);
 
+-- Correlation handle for the browser_completion handoff. Before the
+-- caller-identity cut, the completion code itself was the caller-chosen
+-- attemptId (an unauthenticated account-takeover primitive); the code is now
+-- always minted by the store, and attempt_id lets the private command plane
+-- redeem the completion it created without ever needing the code.
+ALTER TABLE auth_completions ADD COLUMN IF NOT EXISTS attempt_id TEXT;
+
+CREATE INDEX IF NOT EXISTS auth_completions_attempt_idx
+  ON auth_completions(app_slug, attempt_id);
+
 CREATE TABLE IF NOT EXISTS capability_grants (
   id TEXT PRIMARY KEY,
   account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
