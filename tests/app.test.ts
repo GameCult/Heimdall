@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { type FastifyInstance } from "fastify";
 import { buildApp } from "../src/app.js";
-import { type HeimdallConfig } from "../src/config.js";
+import { type HeimdallConfig, loadConfig } from "../src/config.js";
 import { entitlementFacts, identityFacts } from "../src/facts.js";
 import { createOAuthRuntimeRegistry, type OAuthProviderRuntime } from "../src/oauth.js";
 import { verifyJwt } from "../src/signing.js";
@@ -1089,6 +1089,32 @@ describe("Heimdall service", () => {
       })
     );
     expect(credentialResponse.body).not.toContain("rotated-twitch-refresh-token");
+  });
+
+  it("no longer honors a global shared secret across apps", async () => {
+    // A per-app identity model with a global fallback is a two-app shared
+    // secret in practice (R6, fork 2). GC_ACCESS_APP_SHARED_SECRET alone must
+    // produce no usable secret for any app.
+    const config = loadConfig({ GC_ACCESS_APP_SHARED_SECRET: "one-secret-for-everyone" });
+    expect(config.appSharedSecrets).toEqual({});
+
+    const app = await buildApp({
+      config: {
+        ...createTestConfig(),
+        appSharedSecrets: {},
+      },
+    });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/apps/streampixels/managed-credentials/resolve",
+      headers: { "x-heimdall-app-secret": "one-secret-for-everyone" },
+      payload: { accountId: "acct-1", provider: "twitch" },
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toEqual(expect.objectContaining({ error: "app_auth_required" }));
   });
 
   it("accepts Twitch token scopes returned as an array", async () => {

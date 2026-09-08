@@ -439,8 +439,8 @@ Purpose:
 Authentication:
 
 - requires `x-heimdall-app-secret`
-- the configured secret comes from `GC_ACCESS_APP_{APP_SLUG}_SHARED_SECRET` or
-  the generic `GC_ACCESS_APP_SHARED_SECRET`
+- the configured secret comes from `GC_ACCESS_APP_{APP_SLUG}_SHARED_SECRET`,
+  per app; there is no generic fallback secret shared across apps
 
 Request body:
 

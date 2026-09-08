@@ -212,7 +212,7 @@ export function loadConfig(
     appSlugs
       .map((appSlug) => {
         const envKey = `GC_ACCESS_APP_${appSlug.toUpperCase()}_SHARED_SECRET`;
-        return [appSlug, env[envKey] ?? env.GC_ACCESS_APP_SHARED_SECRET];
+        return [appSlug, env[envKey]];
       })
       .filter(([, value]) => Boolean(value))
   ) as Partial<Record<AppSlug, string>>;
