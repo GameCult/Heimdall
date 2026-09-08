@@ -8,6 +8,13 @@ sludge.
 
 It is a boundary note, not a command to rewrite StreamPixels around Repixelizer.
 
+## Public origin
+
+`https://streampixels.gamecult.org` — this is the `allowedReturnOrigins` entry
+Heimdall's built-in `streampixels` profile carries (`src/app-profiles.ts`).
+Corroborated by `gamecult-ops/nginx/streampixels.gamecult.org.conf:14`
+(`server_name streampixels.gamecult.org`) and StreamPixels' own `.env` example.
+
 ## Current repo boundary
 
 The current StreamPixels architecture already makes useful splits:
