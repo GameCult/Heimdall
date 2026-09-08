@@ -11,7 +11,7 @@ import { encode } from "@msgpack/msgpack";
 import { invokeCultNetOperation } from "cultnet-ts";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildApp, refreshAppSession, startOAuthFlow } from "../src/app.js";
-import { secretMatches } from "../src/app-caller.js";
+import { callerFromOpenedEnvelope, secretMatches } from "../src/app-caller.js";
 import { type HeimdallConfig } from "../src/config.js";
 import { entitlementFacts } from "../src/facts.js";
 import { type OAuthProviderRuntime } from "../src/oauth.js";
@@ -78,15 +78,15 @@ function mockDiscordRuntime(): OAuthProviderRuntime {
 }
 
 describe("caller identity: unauthenticated mint paths", () => {
-  // Item 1. The browser flow is public by design, but the completion code is
-  // chosen by whoever starts the flow (handoff.attemptId becomes the
-  // completion code verbatim, src/app.ts createAuthCompletion `code:
-  // handoff.attemptId`), and auth-completions/redeem takes no app secret.
-  // An unauthenticated party can therefore fix the code, get a victim to
-  // finish provider login on the authorization URL, and redeem the victim's
-  // signed access + refresh tokens. This is the pre-existing hole the cut
-  // did not close.
-  it.fails("a client-chosen attemptId must not be redeemable for signed tokens without app auth", async () => {
+  // Item 1 (closed). The completion code used to be chosen by whoever started
+  // the flow (handoff.attemptId became the completion code verbatim,
+  // src/app.ts createAuthCompletion `code: handoff.attemptId`), and
+  // auth-completions/redeem takes no app secret. An unauthenticated party
+  // could therefore fix the code, get a victim to finish provider login on
+  // the authorization URL, and redeem the victim's signed access + refresh
+  // tokens. The store now always mints the code itself; attemptId is kept
+  // only as a separate correlation field the browser may carry.
+  it("a client-chosen attemptId must not be redeemable for signed tokens without app auth", async () => {
     const app = await buildApp({ config: testConfig(), oauthRuntimes: { discord: mockDiscordRuntime() } });
     resources.push(app);
 
@@ -117,16 +117,19 @@ describe("caller identity: unauthenticated mint paths", () => {
       // still no x-heimdall-app-secret
     });
 
-    // The invariant the cut claims. Today: 201 with accessToken + refreshToken.
+    // The invariant the cut claims: the caller-chosen code is never minted,
+    // so it can never be redeemed.
     expect(redeem.statusCode).not.toBe(201);
     expect(redeem.json().accessToken).toBeUndefined();
   });
 
-  // Same family: returnTo is only validated as `format: uri`. The success page
-  // postMessages the completion payload to new URL(returnTo).origin and links
-  // to returnTo with the code in the fragment (src/browser-handoff.ts). Nothing
-  // binds returnTo to an app-owned origin.
-  it.fails("an unauthenticated start must not accept an arbitrary returnTo origin", async () => {
+  // Item 2 (closed). returnTo used to be validated only as `format: uri`. The
+  // success page postMessages the completion payload to
+  // new URL(returnTo).origin and links to returnTo with the code in the
+  // fragment (src/browser-handoff.ts), so an unlisted origin was an
+  // exfiltration primitive. startOAuthFlow now refuses any returnTo whose
+  // origin is not in the app profile's allowedReturnOrigins.
+  it("an unauthenticated start must not accept an arbitrary returnTo origin", async () => {
     const app = await buildApp({ config: testConfig(), oauthRuntimes: { discord: mockDiscordRuntime() } });
     resources.push(app);
 
@@ -151,7 +154,7 @@ describe("caller identity: unauthenticated mint paths", () => {
     } as Parameters<typeof refreshAppSession>[3]);
     expect(nullCaller).toEqual({ statusCode: 401, body: { error: "app_auth_required" } });
 
-    const wrongApp = await refreshAppSession(context, "repixelizer", { appSlug: "ghostlight" }, {
+    const wrongApp = await refreshAppSession(context, "repixelizer", callerFromOpenedEnvelope("ghostlight"), {
       refreshToken: "irrelevant",
       entitlementPolicy: policy,
     } as Parameters<typeof refreshAppSession>[3]);
@@ -198,14 +201,19 @@ describe("caller identity: single authority", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("AppCaller literals are constructed only where identity was actually checked", () => {
-    // Item 3. `{ appSlug }` as an AppCaller argument must appear only in the
-    // private plane (after openPrivateEnvelope + sourceRuntimeId) and nowhere
-    // else; the HTTP path gets its caller from resolveAppCaller.
+  it("AppCaller literals are constructed nowhere; AppCaller is a branded type", () => {
+    // Item 3 (closed). `{ appSlug }` used to satisfy AppCaller structurally,
+    // so the private plane (after openPrivateEnvelope + sourceRuntimeId)
+    // constructed the literal directly — nothing but grep discipline stopped
+    // any other importer from doing the same. AppCaller is now branded with
+    // an unexported symbol, and the private plane gets its caller from
+    // app-caller.ts's callerFromOpenedEnvelope, the same way the HTTP path
+    // gets its caller from resolveAppCaller. No file may construct the
+    // literal at all anymore.
     const forgers = sources
       .filter(([name, text]) => name !== "app-caller.ts" && /(startOAuthFlow|refreshAppSession)\([^;]*\{\s*appSlug\s*\}/s.test(text))
       .map(([name]) => name);
-    expect(forgers).toEqual(["private-command-plane.ts"]);
+    expect(forgers).toEqual([]);
   });
 });
 

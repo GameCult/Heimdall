@@ -160,6 +160,11 @@ Failure modes:
 - `503 provider_not_configured` when the provider client id is missing
 - `400 untrusted_backend_callback` when `handoff.kind=backend_callback` and
   `callbackUrl` is not in that app's `GC_ACCESS_APP_<SLUG>_BACKEND_CALLBACK_URLS`
+- `400 return_to_not_allowed` when `returnTo`'s origin is not in that app's
+  `allowedReturnOrigins` (`src/app-profiles.ts`) -- `returnTo` is where the
+  browser handoff page postMessages the completion payload
+  (`src/browser-handoff.ts`), so this check runs for every caller, not only an
+  authenticated one
 - `401 app_auth_required` when the request body carries `entitlementPolicy` and
   the caller did not authenticate as that app via `x-heimdall-app-secret`
   (`resolveAppCaller`, `src/app-caller.ts`) -- this applies regardless of

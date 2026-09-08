@@ -129,7 +129,14 @@ describe("Heimdall Eve access plugin", () => {
       url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(state ?? "")}`,
     });
     expect(callback.statusCode, callback.body).toBe(201);
-    expect(callback.json().completion.code).toBe(handle);
+    // The completion code is always minted by the store now, never the
+    // attempt handle the caller supplied (that coupling was the
+    // caller-identity hole: a client-chosen attemptId used to become the
+    // redemption code verbatim). heimdall.auth.complete below redeems by
+    // handle through the store's own attempt-correlated lookup, not by
+    // knowing this code.
+    expect(callback.json().completion.code).toEqual(expect.any(String));
+    expect(callback.json().completion.code).not.toBe(handle);
 
     const completeEnvelope = sealPrivateEnvelope({
       appSlug: "ghostlight",
