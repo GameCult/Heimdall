@@ -155,9 +155,15 @@ Response:
 }
 ```
 
-Failure mode right now:
+Failure modes:
 
 - `503 provider_not_configured` when the provider client id is missing
+- `400 untrusted_backend_callback` when `handoff.kind=backend_callback` and
+  `callbackUrl` is not in that app's `GC_ACCESS_APP_<SLUG>_BACKEND_CALLBACK_URLS`
+- `401 app_auth_required` when the request body carries `entitlementPolicy` and
+  the caller did not authenticate as that app via `x-heimdall-app-secret`
+  (`resolveAppCaller`, `src/app-caller.ts`) -- this applies regardless of
+  `handoff.kind` or app slug; a caller with no policy to attach needs no secret
 
 Launch note:
 
@@ -423,8 +429,10 @@ Important behavior:
 - if a stored provider access token is expired or near expiry, Heimdall uses
   the stored provider refresh token and persists any rotation before
   evaluating entitlements
-- Repixelizer may send all of its app-owned provider policies; Heimdall matches
-  each stored identity to the policy for that provider
+- any app authenticated via `x-heimdall-app-secret` (`resolveAppCaller`) may
+  send `entitlementPolicies`; Heimdall matches each stored identity to the
+  policy for that provider. Sending policy without authenticating is
+  `401 app_auth_required` -- there is no per-slug allow-list for this anymore
 - the endpoint is not a provider OAuth start path and should not produce a
   provider authorization URL
 
