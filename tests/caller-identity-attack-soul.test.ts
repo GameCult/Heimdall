@@ -236,19 +236,17 @@ describe("consumeAuthCompletion: single-use, scoped, expiring", () => {
 });
 
 describe("attempt-handle binding: the public start route may attach a completion to any attempt", () => {
-  // Hole. The private plane creates attempt H for its app and later redeems
-  // by handle (consumeAuthCompletionByAttempt). The public start route
-  // accepts handoff.attemptId = H from anyone, and the callback stores a
-  // completion under attempt_id = H and flips attempt H to "completed".
-  // Nothing checks that the flow carrying attemptId H was the flow the plane
-  // started for H. Whoever learns H (Bifrost puts it in the wait-page URL)
-  // can bind their own provider identity to the app's pending attempt, and
-  // the app's completeAuth(H) then authenticates the victim's app session as
-  // the attacker. Exploitability rests on H leaking; the binding gap itself
-  // is real. Close it by refusing an attemptId at the public start route
-  // unless the caller is the app (AppCaller), or by having the store refuse
-  // to create a completion for an attempt whose state token it did not mint.
-  it.fails("a public flow carrying the app's attempt handle must not complete that attempt", async () => {
+  // Closed (R21.1). The private plane creates attempt H for its app and later
+  // redeems by handle (consumeAuthCompletionByAttempt). handoff.attemptId is
+  // no longer read from the request body at all (normalizeOAuthHandoff always
+  // returns a bare `{ kind: "browser_completion" }` for a public caller); the
+  // only path by which an attempt handle reaches the signed state token is
+  // `startOAuthFlow`'s `trustedBrowserAttemptId` option, which only
+  // `beginAuth` (private-command-plane.ts) can set, from the handle it just
+  // minted server-side. A value that never crosses the public boundary cannot
+  // be chosen by a stranger, so a public flow carrying H as body JSON now has
+  // no effect on H at all.
+  it("a public flow carrying the app's attempt handle must not complete that attempt", async () => {
     const { app, store } = await harness();
     const attempt = await store.createAuthAttempt({
       appSlug: "ghostlight",

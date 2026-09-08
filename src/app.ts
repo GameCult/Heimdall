@@ -247,14 +247,22 @@ function prefersHtml(acceptHeader: string | undefined): boolean {
   return acceptHeader.includes("text/html") || acceptHeader.includes("application/xhtml+xml");
 }
 
+/**
+ * `browser_completion.attemptId` is never accepted from a request body. It
+ * exists only to correlate a completion with the attempt the private command
+ * plane's `beginAuth` created server-side (see `startOAuthFlow`'s
+ * `trustedBrowserAttemptId` parameter) — a handle a public caller could name
+ * here would let it complete someone else's pending attempt (R21.1). A public
+ * `browser_completion` caller has no attempt to correlate: it gets the
+ * completion code directly in the callback response or handoff page.
+ */
 function normalizeOAuthHandoff(value: OAuthStartRequest["handoff"]): OAuthHandoff {
   if (!value) {
     return { kind: "browser_completion" };
   }
 
   if (value.kind === "browser_completion") {
-    const attemptId = value.attemptId?.trim();
-    return attemptId ? { kind: "browser_completion", attemptId } : { kind: "browser_completion" };
+    return { kind: "browser_completion" };
   }
 
   if (
@@ -507,7 +515,20 @@ export async function startOAuthFlow(
   ctx: Pick<HeimdallRuntimeContext, "config" | "keys" | "store">,
   provider: Provider,
   caller: AppCaller | null,
-  input: OAuthStartRequest
+  input: OAuthStartRequest,
+  options?: {
+    /**
+     * The attempt handle to bind into the state token's `browser_completion`
+     * handoff. Set only by `beginAuth` (private-command-plane.ts), which
+     * mints the handle itself via `store.createAuthAttempt` before calling
+     * here — it is a TypeScript function argument, never a value parsed out
+     * of `input`/the request body, so a public HTTP caller has no way to
+     * populate it (R21.1). `normalizeOAuthHandoff` already strips any
+     * body-supplied `attemptId` for this reason; this is the only path by
+     * which one reaches the signed state token.
+     */
+    trustedBrowserAttemptId?: string;
+  }
 ): Promise<HandlerResult> {
   const { config, keys, store } = ctx;
   const profile = await resolveAppProfile(store, input.appSlug);
@@ -561,6 +582,9 @@ export async function startOAuthFlow(
         detail: "Backend callback handoffs are only accepted for configured app callback URLs.",
       },
     };
+  }
+  if (options?.trustedBrowserAttemptId && handoff.kind === "browser_completion") {
+    handoff = { kind: "browser_completion", attemptId: options.trustedBrowserAttemptId };
   }
   if (entitlementPolicy && (!caller || caller.appSlug !== profile.slug)) {
     return { statusCode: 401, body: { error: "app_auth_required" } };

@@ -277,13 +277,19 @@ async function beginAuth(
   });
   // Same authority, same non-HTTP entry as refreshAuth above.
   const context = getHeimdallRuntimeContext(app);
-  const start = await startOAuthFlow({ config: context.config, keys: context.keys, store: context.store }, provider, callerFromOpenedEnvelope(appSlug), {
-    appSlug,
-    mode,
-    returnTo,
-    handoff: { kind: "browser_completion", attemptId: attempt.handle },
-    ...(entitlementPolicy ? { entitlementPolicy } : {}),
-  });
+  const start = await startOAuthFlow(
+    { config: context.config, keys: context.keys, store: context.store },
+    provider,
+    callerFromOpenedEnvelope(appSlug),
+    {
+      appSlug,
+      mode,
+      returnTo,
+      handoff: { kind: "browser_completion" },
+      ...(entitlementPolicy ? { entitlementPolicy } : {}),
+    },
+    { trustedBrowserAttemptId: attempt.handle }
+  );
   const startPayload = start.body as Record<string, unknown>;
   if (start.statusCode !== 201) {
     await context.store.updateAuthAttempt(appSlug, attempt.handle, {

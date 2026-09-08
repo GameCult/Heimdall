@@ -353,6 +353,17 @@ export class InMemoryStore implements HeimdallStore {
   async createAuthCompletion(input: CreateAuthCompletionInput): Promise<StoredAuthCompletion> {
     // The code is always minted here; nothing upstream may choose it (see
     // src/app.ts createAuthCompletion call site for why that mattered).
+    // Mirrors the partial unique index on (app_slug, attempt_id) WHERE
+    // consumed_at IS NULL (schema.ts): one attempt handle binds at most one
+    // unconsumed completion, so consumeAuthCompletionByAttempt never has more
+    // than one live row to choose between.
+    if (input.attemptId) {
+      const existingCode = this.authCompletionsByAttempt.get(`${input.appSlug}:${input.attemptId}`);
+      const existing = existingCode ? this.authCompletions.get(existingCode) : undefined;
+      if (existing && !existing.consumedAt) {
+        throw new Error("Attempt handle already has an unconsumed completion.");
+      }
+    }
     const completion: StoredAuthCompletion = {
       code: randomUUID(),
       ...(input.attemptId ? { attemptId: input.attemptId } : {}),

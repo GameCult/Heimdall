@@ -116,8 +116,18 @@ CREATE INDEX IF NOT EXISTS auth_completions_lookup_idx
 -- redeem the completion it created without ever needing the code.
 ALTER TABLE auth_completions ADD COLUMN IF NOT EXISTS attempt_id TEXT;
 
-CREATE INDEX IF NOT EXISTS auth_completions_attempt_idx
-  ON auth_completions(app_slug, attempt_id);
+-- One attempt handle may bind at most one unconsumed completion (R21.1): a
+-- second completion for the same handle would let the by-attempt UPDATE in
+-- consumeAuthCompletionByAttempt match more than one row, silently consuming
+-- and discarding all but the one it returns. The predicate is partial rather
+-- than a plain UNIQUE(app_slug, attempt_id) because a NULL attempt_id (no
+-- correlation handle) and a *consumed*, already-settled completion must not
+-- collide with a later one.
+DROP INDEX IF EXISTS auth_completions_attempt_idx;
+
+CREATE UNIQUE INDEX IF NOT EXISTS auth_completions_attempt_unconsumed_unique_idx
+  ON auth_completions(app_slug, attempt_id)
+  WHERE attempt_id IS NOT NULL AND consumed_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS capability_grants (
   id TEXT PRIMARY KEY,
