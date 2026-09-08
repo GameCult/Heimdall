@@ -508,15 +508,7 @@ function acceptsBackendCallback(config: HeimdallConfig, appSlug: AppSlug, handof
     return false;
   }
 
-  if ((config.appBackendCallbacks[appSlug] ?? []).includes(handoff.callbackUrl)) {
-    return true;
-  }
-
-  if (appSlug === "repixelizer") {
-    return handoff.callbackUrl === "https://repixelizer.gamecult.org/api/auth/heimdall/callback";
-  }
-
-  return false;
+  return (config.appBackendCallbacks[appSlug] ?? []).includes(handoff.callbackUrl);
 }
 
 async function maybeDeliverBackendHandoff(handoff: OAuthHandoff, payload: BackendHandoffPayload): Promise<void> {

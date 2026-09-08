@@ -32,6 +32,7 @@ function createTestConfig(): HeimdallConfig {
     },
     appBackendCallbacks: {
       bifrost: ["https://bifrost.gamecult.org/auth/heimdall/callback"],
+      repixelizer: ["https://repixelizer.gamecult.org/api/auth/heimdall/callback"],
     },
     storage: {
       backend: "memory",
@@ -896,6 +897,34 @@ describe("Heimdall service", () => {
         error: "untrusted_backend_callback",
       })
     );
+  });
+
+  it("no longer trusts Repixelizer's callback URL by slug name alone", async () => {
+    const baseConfig = createTestConfig();
+    const config = {
+      ...baseConfig,
+      appBackendCallbacks: {},
+    };
+    const app = await buildApp({ config });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/oauth/discord/start",
+      payload: {
+        appSlug: "repixelizer",
+        mode: "sign_in",
+        returnTo: "https://repixelizer.gamecult.org/app/",
+        handoff: {
+          kind: "backend_callback",
+          attemptId: "attempt-123",
+          callbackUrl: "https://repixelizer.gamecult.org/api/auth/heimdall/callback",
+        },
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual(expect.objectContaining({ error: "untrusted_backend_callback" }));
   });
 
   it("resolves app-managed provider credentials without exposing refresh custody", async () => {
