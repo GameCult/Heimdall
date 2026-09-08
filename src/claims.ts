@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import {
   type AccessClaimPayload,
   type AppSlug,
-  type IssueClaimRequest,
   type LinkedIdentityInput,
   type RefreshTokenPayload,
 } from "./contracts.js";
@@ -180,31 +179,4 @@ export async function issueAccessClaim(options: {
     sharedCapabilities,
     hybridCapabilities: profile.capabilities.filter((capability) => capability.mode === "hybrid"),
   };
-}
-
-export function mapIssueClaimRequest(appSlug: AppSlug, request: IssueClaimRequest): IssueAccessClaimInput {
-  const input: IssueAccessClaimInput = {
-    appSlug,
-    accountId: request.accountId,
-    linkedIdentities: request.linkedIdentities ?? [],
-    facts: request.facts ?? [],
-  };
-
-  if (request.displayName !== undefined) {
-    input.displayName = request.displayName;
-  }
-
-  if (request.sessionId !== undefined) {
-    input.sessionId = request.sessionId;
-  }
-
-  if (request.accessRevision !== undefined) {
-    input.accessRevision = request.accessRevision;
-  }
-
-  if (request.ttlSeconds !== undefined) {
-    input.ttlSeconds = request.ttlSeconds;
-  }
-
-  return input;
 }

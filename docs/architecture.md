@@ -470,7 +470,6 @@ Everything else is internal by the design already written down:
 |---|---|
 | `/.well-known/heimdall-configuration` | GC apps, mesh-reachable |
 | `/v1/apps` | GC apps, mesh-reachable |
-| `/v1/apps/{appSlug}/claims/issue` | GC app backends, mesh-reachable |
 | `/healthz` | local probes |
 
 The private command plane is not part of this question. It is

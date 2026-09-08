@@ -21,7 +21,7 @@ import {
   type OAuthStartRequest,
   type Provider,
 } from "./contracts.js";
-import { mapIssueClaimRequest, issueAccessClaim, type IssueAccessClaimInput } from "./claims.js";
+import { issueAccessClaim, type IssueAccessClaimInput } from "./claims.js";
 import { builtInAppProfiles, getAppProfile, serializeAppProfile, supportsProvider } from "./app-profiles.js";
 import {
   AppRegistrationError,
@@ -79,7 +79,6 @@ function buildDiscovery(config: HeimdallConfig) {
     configurationUri: `${config.publicBaseUrl}/.well-known/heimdall-configuration`,
     oauthStartEndpoint: `${config.publicBaseUrl}/v1/oauth/{provider}/start`,
     oauthCallbackEndpoint: `${config.publicBaseUrl}/v1/oauth/{provider}/callback`,
-    claimIssueEndpoint: `${config.publicBaseUrl}/v1/apps/{appSlug}/claims/issue`,
     supportedProviders: providers.map((provider) => ({
       key: provider,
       displayName: providerCatalog[provider].displayName,
@@ -1330,63 +1329,6 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
       reply.code(201);
       return completion.payloadJson;
-    }
-  );
-
-  app.post<{ Params: { appSlug: AppSlug }; Body: import("./contracts.js").IssueClaimRequest }>(
-    "/v1/apps/:appSlug/claims/issue",
-    {
-      schema: {
-        params: {
-          type: "object",
-          required: ["appSlug"],
-          additionalProperties: false,
-          properties: {
-            appSlug: { type: "string", enum: [...appSlugs] },
-          },
-        },
-        body: {
-          type: "object",
-          required: ["accountId"],
-          additionalProperties: false,
-          properties: {
-            accountId: { type: "string", minLength: 1 },
-            sessionId: { type: "string", minLength: 1 },
-            displayName: { type: "string", minLength: 1 },
-            facts: {
-              type: "array",
-              items: { type: "string" },
-              uniqueItems: true,
-            },
-            accessRevision: { type: "integer", minimum: 1 },
-            ttlSeconds: { type: "integer", minimum: 60, maximum: 86400 },
-            linkedIdentities: {
-              type: "array",
-              items: {
-                type: "object",
-                required: ["provider", "providerUserId"],
-                additionalProperties: false,
-                properties: {
-                  provider: { type: "string", enum: [...providers] },
-                  providerUserId: { type: "string", minLength: 1 },
-                  username: { type: "string" },
-                  displayName: { type: "string" },
-                },
-              },
-            },
-          },
-        },
-      },
-    },
-    async (request, reply) => {
-      const issued = await issueAccessClaim({
-        config,
-        keys,
-        store,
-        input: mapIssueClaimRequest(request.params.appSlug, request.body),
-      });
-      reply.code(201);
-      return issued;
     }
   );
 

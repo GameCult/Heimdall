@@ -2,10 +2,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { type FastifyInstance } from "fastify";
 import { buildApp } from "../src/app.js";
 import { type HeimdallConfig } from "../src/config.js";
-import { entitlementFacts, grantFacts, identityFacts } from "../src/facts.js";
+import { entitlementFacts, identityFacts } from "../src/facts.js";
 import { createOAuthRuntimeRegistry, type OAuthProviderRuntime } from "../src/oauth.js";
 import { verifyJwt } from "../src/signing.js";
-import { createHeimdallAccessTokenVerifier } from "../src/verifier.js";
 import { InMemoryStore } from "../src/store/index.js";
 
 function createTestConfig(): HeimdallConfig {
@@ -834,51 +833,24 @@ describe("Heimdall service", () => {
     expect(verified.valid).toBe(true);
   });
 
-  it("issues direct claims from provider-agnostic entitlement facts", async () => {
+  it("no longer exposes a route to mint claims from caller-supplied facts", async () => {
     const app = await buildApp({ config: createTestConfig() });
     apps.push(app);
 
     const response = await app.inject({
       method: "POST",
       url: "/v1/apps/repixelizer/claims/issue",
-      payload: {
-        accountId: "acct_repixelizer_001",
-        displayName: "Meta",
-        facts: [entitlementFacts.appAccess, grantFacts.operator],
-        linkedIdentities: [
-          {
-            provider: "discord",
-            providerUserId: "123456789",
-            username: "meta",
-          },
-        ],
-      },
+      payload: { accountId: "probe" },
     });
 
-    expect(response.statusCode).toBe(201);
-    const payload = response.json();
-    expect(payload.sharedCapabilities).toEqual(
-      expect.arrayContaining(["app_access", "queue_submit", "admin_access"])
-    );
+    expect(response.statusCode).toBe(404);
+    expect(app.printRoutes()).not.toContain("claims/issue");
 
-    const verifier = createHeimdallAccessTokenVerifier({
-      issuer: "https://heimdall.gamecult.org",
-      appSlug: "repixelizer",
-      jwks: {
-        keys: [getHeimdallContext(app).keys.publicJwk],
-      },
+    const discoveryResponse = await app.inject({
+      method: "GET",
+      url: "/.well-known/heimdall-configuration",
     });
-    expect(verifier.verify(payload.accessToken as string)).toEqual(
-      expect.objectContaining({
-        valid: true,
-        claimSet: expect.objectContaining({
-          aud: "repixelizer",
-          app: expect.objectContaining({
-            slug: "repixelizer",
-          }),
-        }),
-      })
-    );
+    expect(discoveryResponse.json()).not.toHaveProperty("claimIssueEndpoint");
   });
 
   it("exposes StreamPixels hybrid capability seams without granting them blindly", async () => {

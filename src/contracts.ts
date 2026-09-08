@@ -103,16 +103,6 @@ export interface LinkedIdentityInput {
   displayName?: string;
 }
 
-export interface IssueClaimRequest {
-  accountId: string;
-  sessionId?: string;
-  displayName?: string;
-  facts?: string[];
-  linkedIdentities?: LinkedIdentityInput[];
-  accessRevision?: number;
-  ttlSeconds?: number;
-}
-
 export interface RedeemAuthCompletionRequest {
   completionCode: string;
 }

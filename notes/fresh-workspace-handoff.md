@@ -72,7 +72,6 @@ Do not trust this file for the exact live HEAD. Always check git.
   - `/v1/oauth/{provider}/start`
   - `/v1/oauth/{provider}/callback`
   - `/v1/apps/{appSlug}/auth-completions/redeem`
-  - `/v1/apps/{appSlug}/claims/issue`
   - `/v1/apps/{appSlug}/sessions/refresh`
   - `/v1/apps/{appSlug}/managed-credentials/resolve`
 - the Discord callback path now performs real code exchange, identity

@@ -65,7 +65,6 @@ Current shape includes:
 - `configurationUri`
 - `oauthStartEndpoint`
 - `oauthCallbackEndpoint`
-- `claimIssueEndpoint`
 - `supportedProviders`
 - `apps`
 
@@ -496,63 +495,6 @@ Current helper contract:
 - accept a small clock-skew window for normal same-host reality
 
 This is a reference seam, not a magical shared middleware product yet.
-
-### `POST /v1/apps/{appSlug}/claims/issue`
-
-Purpose:
-
-- issue a signed Heimdall access claim for one app after identity/grant facts
-  have already been resolved
-
-This is currently the concrete claim contract and integration seam for early app
-binding work.
-
-Request body:
-
-```json
-{
-  "accountId": "acct_repixelizer_001",
-  "displayName": "Meta",
-  "facts": ["entitlement.app_access", "grant.operator"],
-  "linkedIdentities": [
-    {
-      "provider": "discord",
-      "providerUserId": "123456789",
-      "username": "meta"
-    }
-  ],
-  "accessRevision": 1,
-  "ttlSeconds": 3600
-}
-```
-
-Response:
-
-```json
-{
-  "session": {
-    "accountId": "acct_repixelizer_001",
-    "sessionId": "uuid",
-    "appSlug": "repixelizer",
-    "accessRevision": 1,
-    "expiresAt": "2026-05-26T12:00:00.000Z"
-  },
-  "accessToken": "<signed-jwt>",
-  "refreshToken": "<signed-refresh-jwt>",
-  "refresh": {
-    "expiresAt": "2026-05-26T12:00:00.000Z"
-  },
-  "claimSet": {},
-  "verification": {
-    "issuer": "https://heimdall.gamecult.org",
-    "jwksUri": "https://heimdall.gamecult.org/.well-known/jwks.json",
-    "alg": "EdDSA",
-    "kid": "ed25519-..."
-  },
-  "sharedCapabilities": ["app_access", "queue_submit", "admin_access"],
-  "hybridCapabilities": []
-}
-```
 
 ## Access claim shape
 
