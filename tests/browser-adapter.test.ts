@@ -19,7 +19,15 @@ describe("Heimdall browser completion fallback", () => {
       handle,
     });
     expect(readHeimdallBrowserReturn(returnUrl(handle), "another-app")).toMatchObject({ status: "error" });
-    expect(readHeimdallBrowserReturn(returnUrl(handle, "different"), "ghostlight")).toMatchObject({ status: "error" });
+    // The completion code is a distinct secret; the handle is the attempt id
+    // and the code never leaves the fragment.
+    expect(readHeimdallBrowserReturn(returnUrl(handle, "secret-redeem-code"), "ghostlight")).toEqual({
+      status: "success",
+      handle,
+    });
+    expect(JSON.stringify(readHeimdallBrowserReturn(returnUrl(handle, "secret-redeem-code"), "ghostlight")))
+      .not.toContain("secret-redeem-code");
+    expect(readHeimdallBrowserReturn(returnUrl("", "secret-redeem-code"), "ghostlight")).toMatchObject({ status: "error" });
     expect(readHeimdallBrowserReturn("https://yggdrasil.gamecult.org/ghostlight/", "ghostlight")).toBeUndefined();
   });
 
@@ -72,7 +80,10 @@ describe("Heimdall browser completion fallback", () => {
   });
 });
 
-function returnUrl(attemptId: string, completionCode = attemptId): string {
+// Heimdall issues a random completion code distinct from the attempt id
+// (src/app.ts createAuthCompletion); the fixture must too, or it restates the
+// contract this adapter used to assume.
+function returnUrl(attemptId: string, completionCode = `code-for-${attemptId}`): string {
   const parameters = new URLSearchParams({
     heimdall_status: "success",
     heimdall_provider: "discord",

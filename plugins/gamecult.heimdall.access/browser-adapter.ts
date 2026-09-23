@@ -116,12 +116,15 @@ export function readHeimdallBrowserReturn(
         || "Heimdall authentication failed.",
     };
   }
+  // The attempt id is the handle the app's backend completes over Heimdall's
+  // private command plane. The completion code in the same fragment is a
+  // distinct random secret for the HTTP redeem route; this adapter neither
+  // needs nor forwards it.
   const attemptId = parameters.get("heimdall_attempt_id") || "";
-  const completionCode = parameters.get("heimdall_completion_code") || "";
-  if (!attemptId || !completionCode || attemptId !== completionCode) {
-    return { status: "error", message: "Heimdall returned a malformed authentication completion witness." };
+  if (!attemptId) {
+    return { status: "error", message: "Heimdall returned an authentication completion without its attempt id." };
   }
-  return { status: "success", handle: completionCode };
+  return { status: "success", handle: attemptId };
 }
 
 function clearHeimdallBrowserReturn(): void {
