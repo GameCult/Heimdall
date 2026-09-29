@@ -192,3 +192,13 @@ startup = "create-or-open-after-write-lease"
 capability = "gamecult.shared-auth"
 schema = "heimdall.access-discovery.v1"
 compatibility = "v1"
+
+# Heimdall publishes its presence to Odin over CultMesh RUDP and never answers
+# an Idunn route challenge, so it declares the Odin dependency: Idunn admits it
+# as Ready on Odin's correlation, not on a challenge it will not answer.
+[[dependencies]]
+kind = "shared-infrastructure"
+capability = "odin.verse-rendezvous"
+schema = "odin.verse-topology.v1"
+compatibility = "v1"
+startup = "before-promotion"
