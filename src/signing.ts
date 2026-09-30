@@ -26,7 +26,7 @@ export interface RuntimeKeyMaterial {
   privateKey: KeyObject;
   publicKey: KeyObject;
   publicJwk: PublicSigningJwk;
-  source: "configured_pem" | "configured_file" | "bootstrapped_file" | "ephemeral_dev";
+  source: "configured_file" | "bootstrapped_file" | "ephemeral_dev";
 }
 
 function encodeBase64Url(input: string | Buffer): string {
@@ -110,12 +110,7 @@ function createOrLoadPrivateKeyFromPath(config: HeimdallConfig): {
 }
 
 export function createRuntimeKeyMaterial(config: HeimdallConfig): RuntimeKeyMaterial {
-  const loaded = config.signingPrivateKeyPem
-    ? {
-        privateKey: createPrivateKey(config.signingPrivateKeyPem),
-        source: "configured_pem" as const,
-      }
-    : createOrLoadPrivateKeyFromPath(config);
+  const loaded = createOrLoadPrivateKeyFromPath(config);
   const privateKey = loaded.privateKey;
   const publicKey = createPublicKey(privateKey);
   const exportedJwk = publicKey.export({ format: "jwk" }) as Jwk;

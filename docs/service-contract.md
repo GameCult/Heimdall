@@ -44,12 +44,11 @@ Purpose:
 Notes:
 
 - current skeleton signs with Ed25519
-- `GC_ACCESS_SIGNING_PRIVATE_KEY_PEM` still works for direct secret injection
 - `GC_ACCESS_SIGNING_PRIVATE_KEY_PATH` lets the service load a persisted key
   from disk
 - if the path is missing and `GC_ACCESS_SIGNING_PRIVATE_KEY_BOOTSTRAP=1`, the
   service bootstraps a new key file on first start
-- if neither PEM nor path is configured, the service still generates an
+- if no path is configured, the service still generates an
   ephemeral dev key at startup and deserves no sympathy when the `kid` changes
 
 ### `GET /.well-known/heimdall-configuration`

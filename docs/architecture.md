@@ -578,7 +578,6 @@ Suggested generic env surface:
 - `GC_ACCESS_BASE_URL=https://heimdall.gamecult.org`
 - `GC_ACCESS_INTERNAL_URL=http://127.0.0.1:4100`
 - `GC_ACCESS_SESSION_SECRET=...`
-- `GC_ACCESS_SIGNING_PRIVATE_KEY_PEM=...`
 - `GC_ACCESS_SIGNING_PRIVATE_KEY_PATH=/var/lib/heimdall/signing-key.pem`
 - `GC_ACCESS_SIGNING_PRIVATE_KEY_BOOTSTRAP=1`
 - `GC_ACCESS_SIGNING_KEY_ID=...`
@@ -604,10 +603,9 @@ Suggested generic env surface:
 
 Only configure the providers Heimdall actually owns for a given deployment.
 
-If `GC_ACCESS_SIGNING_PRIVATE_KEY_PEM` is absent, the current skeleton falls
-back to `GC_ACCESS_SIGNING_PRIVATE_KEY_PATH` if present, and can bootstrap that
-file on first boot when `GC_ACCESS_SIGNING_PRIVATE_KEY_BOOTSTRAP=1`. If
-neither PEM nor path is configured, the current skeleton falls back to an
+The signing key is always a file: `GC_ACCESS_SIGNING_PRIVATE_KEY_PATH` names
+it, and Heimdall can bootstrap that file on first boot when
+`GC_ACCESS_SIGNING_PRIVATE_KEY_BOOTSTRAP=1`. If no path is configured, the current skeleton falls back to an
 ephemeral dev signing key. That is acceptable for local iteration and
 absolutely not acceptable for real deployment.
 

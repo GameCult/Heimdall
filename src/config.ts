@@ -35,7 +35,6 @@ export interface HeimdallConfig {
   refreshTtlSeconds: number;
   stateTtlSeconds: number;
   completionTtlSeconds: number;
-  signingPrivateKeyPem?: string;
   signingPrivateKeyPath?: string;
   bootstrapSigningPrivateKeyOnMissing: boolean;
   signingKeyId?: string;
@@ -276,11 +275,6 @@ export function loadConfig(
   const odinCultMeshUri = readOptionalString(env.GC_ACCESS_ODIN_CULTMESH_URI);
   if (odinCultMeshUri) {
     config.odinCultMeshUri = odinCultMeshUri;
-  }
-
-  const signingPrivateKeyPem = env.GC_ACCESS_SIGNING_PRIVATE_KEY_PEM?.replace(/\\n/g, "\n");
-  if (signingPrivateKeyPem) {
-    config.signingPrivateKeyPem = signingPrivateKeyPem;
   }
 
   if (env.GC_ACCESS_SIGNING_PRIVATE_KEY_PATH) {
