@@ -223,26 +223,24 @@ export const REQUIRED_COLUMNS = [
 
 /**
  * Every unique key the schema makes: the primary keys and unique constraints
- * of the created tables, and each unique index it creates by name with that
- * index's predicate. The store relies on each as an immediate unique index
- * whose key columns are exactly these, with exactly this predicate: ON
+ * of the created tables, and each unique index it creates, with that index's
+ * predicate. The store relies on each as an immediate unique index on its
+ * table whose key columns are exactly these, with exactly this predicate: ON
  * CONFLICT refuses a deferrable arbiter and cannot infer a partial or wider
  * one, and the partial attempt index is what keeps one unconsumed completion
- * per attempt (R21.1). `index` is empty for a constraint, which may be
- * satisfied by any such index on its table.
+ * per attempt (R21.1). Any index with that shape serves, whatever its name.
  */
 export const REQUIRED_KEYS = [
   ...createdTables.flatMap(({ table, lines }) =>
     lines.flatMap((line) => {
       const columns =
         /^(\w+) .*\bPRIMARY KEY\b/.exec(line)?.[1] ?? keyColumns(line, "PRIMARY KEY") ?? keyColumns(line, "UNIQUE");
-      return columns ? [{ table, columns, index: "", predicate: "" }] : [];
+      return columns ? [{ table, columns, predicate: "" }] : [];
     })
   ),
-  ...[...schemaText.matchAll(/^CREATE UNIQUE INDEX IF NOT EXISTS (\w+)\s+ON (\w+)\(([^)]*)\)(?:\s+WHERE ([^;]+))?;/gm)].map((match) => ({
-    table: match[2]!,
-    columns: columnList(match[3]!),
-    index: match[1]!,
-    predicate: comparablePredicate(match[4] ?? ""),
+  ...[...schemaText.matchAll(/^CREATE UNIQUE INDEX IF NOT EXISTS \w+\s+ON (\w+)\(([^)]*)\)(?:\s+WHERE ([^;]+))?;/gm)].map((match) => ({
+    table: match[1]!,
+    columns: columnList(match[2]!),
+    predicate: comparablePredicate(match[3] ?? ""),
   })),
 ];

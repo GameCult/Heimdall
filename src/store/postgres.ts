@@ -335,11 +335,10 @@ export class PostgresStore implements HeimdallStore {
           AND a.atttypid = to_regtype(required.type_name)
       )
       UNION ALL
-      SELECT 'missing' FROM unnest($5::text[], $6::text[], $7::text[], $8::text[]) AS required(table_name, columns, index_name, predicate)
+      SELECT 'missing' FROM unnest($5::text[], $6::text[], $7::text[]) AS required(table_name, columns, predicate)
       WHERE NOT EXISTS (
         SELECT 1 FROM pg_index i
         WHERE i.indrelid = to_regclass(required.table_name)
-          AND (required.index_name = '' OR i.indexrelid = to_regclass(required.index_name))
           AND i.indisunique
           AND i.indimmediate
           AND coalesce(regexp_replace(lower(pg_get_expr(i.indpred, i.indrelid)), '[()[:space:]]', '', 'g'), '') = required.predicate
@@ -352,7 +351,7 @@ export class PostgresStore implements HeimdallStore {
           ) = required.columns
       )
       UNION ALL
-      SELECT 'privilege' FROM unnest($9::text[], $10::text[]) AS required(table_name, privilege)
+      SELECT 'privilege' FROM unnest($8::text[], $9::text[]) AS required(table_name, privilege)
       WHERE to_regclass(required.table_name) IS NOT NULL
         AND NOT has_table_privilege(to_regclass(required.table_name), required.privilege)
       `,
@@ -363,7 +362,6 @@ export class PostgresStore implements HeimdallStore {
         REQUIRED_COLUMNS.map((required) => required.type),
         REQUIRED_KEYS.map((required) => required.table),
         REQUIRED_KEYS.map((required) => required.columns),
-        REQUIRED_KEYS.map((required) => required.index),
         REQUIRED_KEYS.map((required) => required.predicate),
         privileges.map((required) => required.table),
         privileges.map((required) => required.privilege),

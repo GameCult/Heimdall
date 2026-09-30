@@ -234,13 +234,12 @@ describe("PostgresStore.checkSchema", () => {
     expect(REQUIRED_KEYS).toHaveLength(12);
     expect(REQUIRED_KEYS).toEqual(
       expect.arrayContaining([
-        { table: "linked_identities", columns: "provider,provider_user_id", index: "", predicate: "" },
-        { table: "private_command_receipts", columns: "app_slug,idempotency_key", index: "", predicate: "" },
-        { table: "entitlement_snapshots", columns: "account_id,provider,scope", index: "", predicate: "" },
+        { table: "linked_identities", columns: "provider,provider_user_id", predicate: "" },
+        { table: "private_command_receipts", columns: "app_slug,idempotency_key", predicate: "" },
+        { table: "entitlement_snapshots", columns: "account_id,provider,scope", predicate: "" },
         {
           table: "auth_completions",
           columns: "app_slug,attempt_id",
-          index: "auth_completions_attempt_unconsumed_unique_idx",
           predicate: comparablePredicate("attempt_id IS NOT NULL AND consumed_at IS NULL"),
         },
       ])
@@ -360,6 +359,17 @@ describe.skipIf(!adminUrl)("startup against a live Postgres (HEIMDALL_TEST_PG_AD
   const admin = adminUrl ? new Pool({ connectionString: adminUrl, max: 2 }) : undefined;
   const cleanup: Array<() => Promise<void>> = [];
 
+  /**
+   * A pool the test itself uses. The forced drops end its connections,
+   * possibly while pg is still closing them after end() resolved; that is
+   * cleanup, not a finding, so it is not left to become an unhandled error.
+   */
+  function fixturePool(connectionString: string): Pool {
+    const pool = new Pool({ connectionString, max: 2 });
+    pool.on("error", () => undefined);
+    return pool;
+  }
+
   function urlFor(database: string, user?: string, password?: string): string {
     const url = new URL(adminUrl!);
     url.pathname = `/${database}`;
@@ -370,7 +380,7 @@ describe.skipIf(!adminUrl)("startup against a live Postgres (HEIMDALL_TEST_PG_AD
 
   beforeAll(async () => {
     await admin!.query(`CREATE DATABASE ${template}`);
-    const pool = new Pool({ connectionString: urlFor(template) });
+    const pool = fixturePool(urlFor(template));
     await new PostgresStore(pool).ensureSchema();
     await pool.end();
     await admin!.query(`CREATE ROLE ${role} LOGIN PASSWORD '${rolePassword}'`);
@@ -390,10 +400,7 @@ describe.skipIf(!adminUrl)("startup against a live Postgres (HEIMDALL_TEST_PG_AD
   async function appliedDatabase(): Promise<{ name: string; owner: Pool }> {
     const name = `heimdall_check_${randomUUID().replace(/-/g, "")}`;
     await admin!.query(`CREATE DATABASE ${name} TEMPLATE ${template}`);
-    const owner = new Pool({ connectionString: urlFor(name), max: 2 });
-    // The forced drop ends this fixture pool's connections, possibly while
-    // they are still closing; that is cleanup, not a finding.
-    owner.on("error", () => undefined);
+    const owner = fixturePool(urlFor(name));
     cleanup.push(async () => {
       await owner.end();
       await admin!.query(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
@@ -450,7 +457,7 @@ describe.skipIf(!adminUrl)("startup against a live Postgres (HEIMDALL_TEST_PG_AD
     await grant(owner, STORE_TABLE_PRIVILEGES);
 
     expect(await start(urlFor(name, role, rolePassword), false)).toBe("started");
-    const pool = new Pool({ connectionString: urlFor(name, role, rolePassword) });
+    const pool = fixturePool(urlFor(name, role, rolePassword));
     cleanup.push(async () => {
       await pool.end();
     });
@@ -474,7 +481,7 @@ describe.skipIf(!adminUrl)("startup against a live Postgres (HEIMDALL_TEST_PG_AD
       expect(message, `${table} without ${privilege}`).toBe(refusal("SCHEMA_PRIVILEGES"));
       expect(message).not.toContain("CANARY");
 
-      const pool = new Pool({ connectionString: urlFor(name, role, rolePassword) });
+      const pool = fixturePool(urlFor(name, role, rolePassword));
       const failure = await exerciseStore(new PostgresStore(pool)).then(
         () => undefined,
         (error: unknown) => (error as { code?: string }).code
