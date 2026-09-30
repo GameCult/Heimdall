@@ -29,6 +29,9 @@ export async function createStore(config: HeimdallConfig): Promise<HeimdallStore
     // wrongly. Startup prints this error, so it names only the input and a
     // code, and carries no cause.
     const code = (error as { code?: unknown }).code;
+    // A refused store is never handed out, so it is closed here: its pool
+    // would otherwise hold the connection open.
+    await store.close().catch(() => undefined);
     throw new Error(
       `Postgres storage could not be prepared (${typeof code === "string" ? code : "error"}); check GC_ACCESS_DATABASE_URL_FILE.`
     );

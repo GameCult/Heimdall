@@ -311,6 +311,9 @@ describe.skipIf(!adminUrl)("startup against a live Postgres (HEIMDALL_TEST_PG_AD
       await admin.end();
     });
     const pool = new Pool({ connectionString: urlFor(name) });
+    // The forced drop ends this fixture pool's connections, possibly while
+    // they are still closing; that is cleanup, not a finding.
+    pool.on("error", () => undefined);
     cleanup.push(async () => {
       await pool.end();
     });
@@ -347,6 +350,15 @@ describe.skipIf(!adminUrl)("startup against a live Postgres (HEIMDALL_TEST_PG_AD
     const message = await start(urlFor(name, role, "CANARYrolepw"), false);
     expect(message).toBe(refusal("SCHEMA_PRIVILEGES"));
     expect(message).not.toContain("CANARY");
+
+    // The refused store closed its pool: no session of the role outlives the refusal.
+    let sessions = -1;
+    for (let attempt = 0; attempt < 20 && sessions !== 0; attempt += 1) {
+      if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 100));
+      const result = await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM pg_stat_activity WHERE usename = $1", [role]);
+      sessions = result.rows[0]!.n;
+    }
+    expect(sessions).toBe(0);
   });
 
   it("refuses a table whose primary key was dropped, even after applying the schema", async () => {
@@ -363,6 +375,22 @@ describe.skipIf(!adminUrl)("startup against a live Postgres (HEIMDALL_TEST_PG_AD
     await pool.query(
       "CREATE UNIQUE INDEX entitlement_snapshots_partial ON entitlement_snapshots(account_id, provider, scope) WHERE is_allowed"
     );
+
+    expect(await start(urlFor(name), false)).toBe(refusal("SCHEMA_MISSING"));
+  });
+
+  it("refuses a unique key replaced by a plain index on the same columns", async () => {
+    const { name, pool } = await appliedDatabase();
+    await pool.query("ALTER TABLE linked_identities DROP CONSTRAINT linked_identities_provider_provider_user_id_key");
+    await pool.query("CREATE INDEX linked_identities_plain ON linked_identities(provider, provider_user_id)");
+
+    expect(await start(urlFor(name), false)).toBe(refusal("SCHEMA_MISSING"));
+  });
+
+  it("refuses a unique key replaced by one on other columns of the same count", async () => {
+    const { name, pool } = await appliedDatabase();
+    await pool.query("ALTER TABLE linked_identities DROP CONSTRAINT linked_identities_provider_provider_user_id_key");
+    await pool.query("CREATE UNIQUE INDEX linked_identities_other ON linked_identities(provider, username)");
 
     expect(await start(urlFor(name), false)).toBe(refusal("SCHEMA_MISSING"));
   });
