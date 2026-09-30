@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { type FastifyInstance } from "fastify";
-import { buildApp } from "../src/app.js";
+import { buildApp, errorIdentity } from "../src/app.js";
 import { deliverBackendHandoff, type BackendHandoffPayload } from "../src/backend-handoff.js";
 import { type HeimdallConfig, loadConfig } from "../src/config.js";
 import { entitlementFacts, identityFacts } from "../src/facts.js";
@@ -614,7 +614,7 @@ describe("Heimdall service", () => {
 
   it("syncs a linked Patreon membership into a signed Bifrost support fact", async () => {
     const { response, auditEvents, bifrostBody, bifrostSignature, now } = await syncPatronSupport(
-      () => new Response("processed CANARYbifrost", { status: 200 })
+      () => new Response("CANARYbifrost processed", { status: 200 })
     );
 
     expect(response.statusCode, response.body).toBe(200);
@@ -633,7 +633,8 @@ describe("Heimdall service", () => {
       providerSubscriptionId: "member-789",
       notes: "Verified active Patreon membership for tier Inner Sanctum.",
     });
-    expect(response.json()).toEqual(expect.objectContaining({ status: "synced", bifrostStatus: 200 }));
+    // Exactly these fields: no part of Bifrost's body rides along.
+    expect(response.json()).toEqual({ status: "synced", supportFact: JSON.parse(bifrostBody), bifrostStatus: 200 });
     expect(auditEvents.map((event) => [event.eventType, event.eventPayloadJson])).toEqual([
       [
         "bifrost_patron_support_synced",
@@ -650,7 +651,7 @@ describe("Heimdall service", () => {
 
   it("answers a Bifrost refusal with fixed text and its status, never its body", async () => {
     const { response, auditEvents } = await syncPatronSupport(
-      () => new Response('{"error":"bad signature","echo":"CANARYrefusal"}', { status: 403 })
+      () => new Response('CANARYrefusal {"error":"bad signature"}', { status: 403 })
     );
 
     expect(response.statusCode).toBe(502);
@@ -1604,7 +1605,7 @@ describe("the failed-callback audit event for a provider's HTTP refusal", () => 
 
   it("keeps the provider's status as a number and never its body", async () => {
     const failed = await auditAfterTokenExchangeAnswers(
-      () => new Response('{"error":"invalid_grant","echo":"CANARYbody"}', { status: 401 })
+      () => new Response('CANARYbody {"error":"invalid_grant"}', { status: 401 })
     );
 
     expect(failed).toHaveLength(1);
@@ -1620,7 +1621,7 @@ describe("the failed-callback audit event for a provider's HTTP refusal", () => 
 
   it("keeps a 2xx body that is not JSON out of the event, by class and code alone", async () => {
     const failed = await auditAfterTokenExchangeAnswers(
-      () => new Response('{"access_token":"CANARYaccess","refresh_token":CANARYrefresh}', { status: 200 })
+      () => new Response('CANARYaccess{"access_token":"a"}', { status: 200 })
     );
 
     expect(failed).toHaveLength(1);
@@ -1660,7 +1661,7 @@ describe("the failed-callback audit event for a provider's HTTP refusal", () => 
 
 describe("a backend handoff the app refuses", () => {
   it("fails by status alone, never with the app's answer body", async () => {
-    globalThis.fetch = async () => new Response('{"error":"rejected","echo":"CANARYhandoff"}', { status: 500 });
+    globalThis.fetch = async () => new Response('CANARYhandoff {"error":"rejected"}', { status: 500 });
     const failure = await deliverBackendHandoff("https://bifrost.gamecult.org/auth/heimdall/callback", {
       source: "heimdall",
       kind: "oauth_result",
@@ -1685,8 +1686,9 @@ describe("a backend handoff the app refuses", () => {
 
 describe("a provider answer Heimdall cannot use", () => {
   const runtimes = createOAuthRuntimeRegistry();
-  const notJson = '{"access_token":"CANARYaccess","refresh_token":CANARYrefresh}';
-  const refusal = '{"error":"invalid_grant","echo":"CANARYrefused"}';
+  // The canary leads each body, so a message carrying any prefix of it shows.
+  const notJson = 'CANARYaccess{"access_token":"a"}';
+  const refusal = 'CANARYrefused {"error":"invalid_grant"}';
 
   /** What the call threw, as every form a catcher might record or print. */
   async function failureOf(call: () => Promise<unknown>) {
@@ -1711,6 +1713,7 @@ describe("a provider answer Heimdall cannot use", () => {
     );
 
     expect(error.name).toBe("ProviderResponseError");
+    expect(error.message).toBe(`Discord token exchange failed (status ${status}, ${code}).`);
     expect(error.code).toBe(code);
     expect(error.status).toBe(status);
     expect(printed).not.toContain("CANARY");
@@ -1732,6 +1735,7 @@ describe("a provider answer Heimdall cannot use", () => {
       })
     );
 
+    expect(error.message).toBe("Discord guild member lookup failed (status 200, provider_body_not_json).");
     expect(error.code).toBe("provider_body_not_json");
     expect(printed).not.toContain("CANARY");
   });
@@ -1742,7 +1746,29 @@ describe("a provider answer Heimdall cannot use", () => {
       runtimes.youtube.resolveIdentity({ config: createTestConfig(), accessToken: "a" })
     );
 
+    expect(error.message).toBe("YouTube channel lookup failed (status 200, provider_body_not_json).");
     expect(error.code).toBe("provider_body_not_json");
     expect(printed).not.toContain("CANARY");
+  });
+});
+
+describe("what may be recorded about a caught error", () => {
+  it("keeps a short identifier class and code", () => {
+    expect(errorIdentity(Object.assign(new TypeError("CANARY message"), { code: "ERR_INVALID_URL" }))).toEqual({
+      errorClass: "TypeError",
+      errorCode: "ERR_INVALID_URL",
+    });
+  });
+
+  it.each([
+    ["a code that carries input", Object.assign(new Error("m"), { code: "CANARY host.invalid:5432" }), { errorClass: "Error", errorCode: null }],
+    ["a code longer than an identifier", Object.assign(new Error("m"), { code: `CANARY${"x".repeat(64)}` }), { errorClass: "Error", errorCode: null }],
+    ["a code that is not a string", Object.assign(new Error("m"), { code: 42 }), { errorClass: "Error", errorCode: null }],
+    ["a class name that carries input", Object.assign(new Error("m"), { name: "CANARY: postgres://u:p@h/db" }), { errorClass: "Error", errorCode: null }],
+    ["a class name longer than an identifier", Object.assign(new Error("m"), { name: `CANARY${"x".repeat(64)}` }), { errorClass: "Error", errorCode: null }],
+    ["a thrown value that is not an Error", { name: "CANARYname", code: "CANARY code" }, { errorClass: "Error", errorCode: null }],
+    ["a thrown null", null, { errorClass: "Error", errorCode: null }],
+  ])("filters %s", (_case, error, expected) => {
+    expect(errorIdentity(error)).toEqual(expected);
   });
 });

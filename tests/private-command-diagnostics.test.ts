@@ -103,7 +103,7 @@ it("keeps a provider's malformed 2xx refresh body out of every plaintext part of
 });
 
 it("keeps a provider's refusal body out of every plaintext part of the reply", async () => {
-  const reply = await refreshAgainst(() => new Response('{"error":"invalid_grant","echo":"CANARYrefused"}', { status: 400 }));
+  const reply = await refreshAgainst(() => new Response('CANARYrefused {"error":"invalid_grant"}', { status: 400 }));
 
   expect(reply.status).toBe("denied");
   expect(reply.diagnostics).toEqual(["Heimdall denied the private command (ProviderResponseError, provider_status)."]);
