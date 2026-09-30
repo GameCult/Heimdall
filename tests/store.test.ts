@@ -1,7 +1,17 @@
-import { describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
+import { Pool } from "pg";
+import { afterEach, describe, expect, it } from "vitest";
 import { newDb } from "pg-mem";
+import { type HeimdallConfig } from "../src/config.js";
+import { createStore } from "../src/store/index.js";
 import { createPostgresStore, PostgresStore } from "../src/store/postgres.js";
-import { REQUIRED_COLUMNS, REQUIRED_RELATIONS } from "../src/store/schema.js";
+import {
+  REQUIRED_COLUMNS,
+  REQUIRED_KEYS,
+  REQUIRED_RELATIONS,
+  REQUIRED_TABLE_PRIVILEGES,
+  REQUIRED_TABLES,
+} from "../src/store/schema.js";
 
 describe("PostgresStore", () => {
   it("round-trips core auth records through postgres", async () => {
@@ -212,33 +222,155 @@ describe("createPostgresStore", () => {
 });
 
 describe("PostgresStore.checkSchema", () => {
-  it("requires every table and index the schema creates and every column it adds", () => {
+  it("requires every table, index, column and key the schema makes", () => {
     expect(REQUIRED_RELATIONS).toEqual(
       expect.arrayContaining(["accounts", "audit_events", "auth_completions_attempt_unconsumed_unique_idx", "audit_events_lookup_idx"])
     );
     expect(REQUIRED_RELATIONS).toHaveLength(17);
-    expect(REQUIRED_COLUMNS).toEqual([{ table: "auth_completions", column: "attempt_id" }]);
+    expect(REQUIRED_TABLES).toEqual([
+      "accounts",
+      "linked_identities",
+      "sessions",
+      "auth_attempts",
+      "private_command_receipts",
+      "auth_completions",
+      "capability_grants",
+      "entitlement_snapshots",
+      "audit_events",
+    ]);
+    expect(REQUIRED_COLUMNS).toHaveLength(85);
+    expect(REQUIRED_COLUMNS).toEqual(
+      expect.arrayContaining([
+        { table: "auth_completions", column: "code" },
+        { table: "auth_completions", column: "mode" },
+        { table: "linked_identities", column: "profile_json" },
+        { table: "auth_completions", column: "attempt_id" },
+      ])
+    );
+    // The keys the store's ON CONFLICT clauses and the foreign keys rely on.
+    expect(REQUIRED_KEYS).toEqual(
+      expect.arrayContaining([
+        { table: "linked_identities", columns: "provider,provider_user_id", primary: false },
+        { table: "sessions", columns: "id", primary: true },
+        { table: "private_command_receipts", columns: "app_slug,idempotency_key", primary: true },
+        { table: "entitlement_snapshots", columns: "account_id,provider,scope", primary: false },
+        { table: "accounts", columns: "id", primary: true },
+        { table: "auth_completions", columns: "code", primary: true },
+      ])
+    );
+    expect(REQUIRED_KEYS).toHaveLength(11);
+    expect(REQUIRED_TABLE_PRIVILEGES).toEqual(["SELECT", "INSERT", "UPDATE"]);
   });
 
-  function storeAnswering(missing: string[]) {
-    const queries: unknown[][] = [];
-    const store = new PostgresStore({
-      query: (async (_text: string, values: unknown[]) => {
-        queries.push(values);
-        return { rows: missing.map((name) => ({ missing: name })) };
-      }) as never,
+  function storeAnswering(kinds: string[]) {
+    return new PostgresStore({
+      query: (async () => ({ rows: kinds.map((kind) => ({ kind })) })) as never,
       end: async () => undefined,
     });
-    return { store, queries };
   }
 
-  it("refuses with SCHEMA_MISSING when anything is missing", async () => {
-    const { store, queries } = storeAnswering(["auth_completions.attempt_id"]);
-    await expect(store.checkSchema()).rejects.toMatchObject({ code: "SCHEMA_MISSING" });
-    expect(queries).toEqual([[REQUIRED_RELATIONS, ["auth_completions"], ["attempt_id"]]]);
+  it("refuses with SCHEMA_MISSING when anything is missing, whatever else is", async () => {
+    await expect(storeAnswering(["privilege", "missing"]).checkSchema()).rejects.toMatchObject({ code: "SCHEMA_MISSING" });
+  });
+
+  it("refuses with SCHEMA_PRIVILEGES when only a privilege is missing", async () => {
+    await expect(storeAnswering(["privilege"]).checkSchema()).rejects.toMatchObject({ code: "SCHEMA_PRIVILEGES" });
   });
 
   it("passes when nothing is missing", async () => {
-    await expect(storeAnswering([]).store.checkSchema()).resolves.toBeUndefined();
+    await expect(storeAnswering([]).checkSchema()).resolves.toBeUndefined();
+  });
+});
+
+// Against a real Postgres, through the startup path itself: createStore, with
+// and without applying the schema. HEIMDALL_TEST_PG_ADMIN_URL names a role
+// that may create databases and roles; each case gets its own database.
+const adminUrl = process.env.HEIMDALL_TEST_PG_ADMIN_URL;
+describe.skipIf(!adminUrl)("startup against a live Postgres (HEIMDALL_TEST_PG_ADMIN_URL)", () => {
+  const refusal = (code: string) => `Postgres storage could not be prepared (${code}); check GC_ACCESS_DATABASE_URL_FILE.`;
+  const cleanup: Array<() => Promise<void>> = [];
+  afterEach(async () => {
+    for (const step of cleanup.splice(0).reverse()) await step();
+  });
+
+  function urlFor(database: string, user?: string, password?: string): string {
+    const url = new URL(adminUrl!);
+    url.pathname = `/${database}`;
+    if (user) url.username = user;
+    if (password) url.password = password;
+    return url.toString();
+  }
+
+  /** A fresh database with the schema applied by its owner, and an owner pool on it. */
+  async function appliedDatabase(): Promise<{ name: string; pool: Pool }> {
+    const name = `heimdall_check_${randomUUID().replace(/-/g, "")}`;
+    const admin = new Pool({ connectionString: adminUrl });
+    await admin.query(`CREATE DATABASE ${name}`);
+    cleanup.push(async () => {
+      await admin.query(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
+      await admin.end();
+    });
+    const pool = new Pool({ connectionString: urlFor(name) });
+    cleanup.push(async () => {
+      await pool.end();
+    });
+    await new PostgresStore(pool).ensureSchema();
+    return { name, pool };
+  }
+
+  async function start(url: string, applySchemaOnStartup: boolean): Promise<string> {
+    try {
+      const store = await createStore({ storage: { backend: "postgres", databaseUrl: url, applySchemaOnStartup } } as HeimdallConfig);
+      await store.close();
+      return "started";
+    } catch (error) {
+      return (error as Error).message;
+    }
+  }
+
+  it("starts on an applied database, applying or not", async () => {
+    const { name } = await appliedDatabase();
+    expect(await start(urlFor(name), false)).toBe("started");
+    expect(await start(urlFor(name), true)).toBe("started");
+  });
+
+  it("refuses a role that may only read, by code and without its password", async () => {
+    const { name, pool } = await appliedDatabase();
+    const role = `heimdall_ro_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+    await pool.query(`CREATE ROLE ${role} LOGIN PASSWORD 'CANARYrolepw'`);
+    cleanup.push(async () => {
+      await pool.query(`REVOKE ALL ON ALL TABLES IN SCHEMA public FROM ${role}`);
+      await pool.query(`DROP ROLE IF EXISTS ${role}`);
+    });
+    await pool.query(`GRANT SELECT ON ALL TABLES IN SCHEMA public TO ${role}`);
+
+    const message = await start(urlFor(name, role, "CANARYrolepw"), false);
+    expect(message).toBe(refusal("SCHEMA_PRIVILEGES"));
+    expect(message).not.toContain("CANARY");
+  });
+
+  it("refuses a table whose primary key was dropped, even after applying the schema", async () => {
+    const { name, pool } = await appliedDatabase();
+    await pool.query("ALTER TABLE auth_completions DROP CONSTRAINT auth_completions_pkey");
+
+    expect(await start(urlFor(name), false)).toBe(refusal("SCHEMA_MISSING"));
+    expect(await start(urlFor(name), true)).toBe(refusal("SCHEMA_MISSING"));
+  });
+
+  it("refuses a unique key the store's ON CONFLICT needs, replaced by a partial one", async () => {
+    const { name, pool } = await appliedDatabase();
+    await pool.query("ALTER TABLE entitlement_snapshots DROP CONSTRAINT entitlement_snapshots_account_id_provider_scope_key");
+    await pool.query(
+      "CREATE UNIQUE INDEX entitlement_snapshots_partial ON entitlement_snapshots(account_id, provider, scope) WHERE is_allowed"
+    );
+
+    expect(await start(urlFor(name), false)).toBe(refusal("SCHEMA_MISSING"));
+  });
+
+  it("refuses a created table's dropped column", async () => {
+    const { name, pool } = await appliedDatabase();
+    await pool.query("ALTER TABLE auth_completions DROP COLUMN mode");
+
+    expect(await start(urlFor(name), false)).toBe(refusal("SCHEMA_MISSING"));
   });
 });

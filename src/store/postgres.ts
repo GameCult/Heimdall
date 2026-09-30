@@ -1,7 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient, type QueryResultRow } from "pg";
 import { type AppSlug, type HeimdallAuthAttemptStatus, type LinkedIdentityInput, type Provider } from "../contracts.js";
-import { CREATE_SCHEMA_SQL, REQUIRED_COLUMNS, REQUIRED_RELATIONS } from "./schema.js";
+import {
+  CREATE_SCHEMA_SQL,
+  REQUIRED_COLUMNS,
+  REQUIRED_KEYS,
+  REQUIRED_RELATIONS,
+  REQUIRED_TABLE_PRIVILEGES,
+  REQUIRED_TABLES,
+} from "./schema.js";
 import {
   type CreateAccountInput,
   type CreateAuthAttemptInput,
@@ -292,32 +299,64 @@ export class PostgresStore implements HeimdallStore {
   }
 
   /**
-   * Proves, for a start that does not apply the schema, that the URL connects
-   * and that the database holds every relation and column the schema makes.
-   * A missing one fails with code SCHEMA_MISSING.
+   * Proves, before Heimdall serves, that the database can take its requests:
+   * every relation, column and key the schema makes is there, and the role
+   * may read, insert and update every table. A missing piece fails with code
+   * SCHEMA_MISSING and a missing privilege with SCHEMA_PRIVILEGES; neither
+   * error names the piece.
    */
   async checkSchema(): Promise<void> {
-    const result = await this.pool.query<{ missing: string }>(
+    const result = await this.pool.query<{ kind: "missing" | "privilege" }>(
       `
-      SELECT name AS missing FROM unnest($1::text[]) AS name WHERE to_regclass(name) IS NULL
+      SELECT 'missing' AS kind FROM unnest($1::text[]) AS name WHERE to_regclass(name) IS NULL
       UNION ALL
-      SELECT required.table_name || '.' || required.column_name
-      FROM unnest($2::text[], $3::text[]) AS required(table_name, column_name)
+      SELECT 'missing' FROM unnest($2::text[], $3::text[]) AS required(table_name, column_name)
       WHERE NOT EXISTS (
-        SELECT 1 FROM information_schema.columns c
-        WHERE c.table_schema = current_schema()
-          AND c.table_name = required.table_name
-          AND c.column_name = required.column_name
+        SELECT 1 FROM pg_attribute a
+        WHERE a.attrelid = to_regclass(required.table_name)
+          AND a.attname = required.column_name
+          AND a.attnum > 0
+          AND NOT a.attisdropped
       )
+      UNION ALL
+      SELECT 'missing' FROM unnest($4::text[], $5::text[], $6::boolean[]) AS required(table_name, columns, is_primary)
+      WHERE NOT EXISTS (
+        SELECT 1 FROM pg_index i
+        WHERE i.indrelid = to_regclass(required.table_name)
+          AND i.indisunique
+          AND i.indpred IS NULL
+          AND (i.indisprimary OR NOT required.is_primary)
+          AND i.indnatts = cardinality(string_to_array(required.columns, ','))
+          AND (
+            SELECT string_agg(a.attname, ',' ORDER BY a.attname)
+            FROM unnest(i.indkey::int2[]) AS key(attnum)
+            JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = key.attnum
+          ) = required.columns
+      )
+      UNION ALL
+      SELECT 'privilege' FROM unnest($7::text[]) AS required(table_name)
+      CROSS JOIN unnest($8::text[]) AS wanted(privilege)
+      WHERE to_regclass(required.table_name) IS NOT NULL
+        AND NOT has_table_privilege(to_regclass(required.table_name), wanted.privilege)
       `,
       [
         REQUIRED_RELATIONS,
         REQUIRED_COLUMNS.map((required) => required.table),
         REQUIRED_COLUMNS.map((required) => required.column),
+        REQUIRED_KEYS.map((required) => required.table),
+        REQUIRED_KEYS.map((required) => required.columns),
+        REQUIRED_KEYS.map((required) => required.primary),
+        REQUIRED_TABLES,
+        REQUIRED_TABLE_PRIVILEGES,
       ]
     );
-    if (result.rows.length > 0) {
+    if (result.rows.some((row) => row.kind === "missing")) {
       throw Object.assign(new Error("The Heimdall schema is not applied."), { code: "SCHEMA_MISSING" });
+    }
+    if (result.rows.length > 0) {
+      throw Object.assign(new Error("The Heimdall database role lacks a privilege the store needs."), {
+        code: "SCHEMA_PRIVILEGES",
+      });
     }
   }
 

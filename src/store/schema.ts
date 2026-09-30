@@ -163,15 +163,60 @@ CREATE INDEX IF NOT EXISTS audit_events_lookup_idx
   ON audit_events(account_id, session_id, app_slug, created_at);
 `;
 
-/**
- * What a start that does not apply the schema must find, read from the SQL
- * above so the two cannot drift: every table and index it creates, and every
- * column it adds to an existing table.
+const schemaText = CREATE_SCHEMA_SQL.replace(/\r\n/g, "\n");
+const createdTables = [...schemaText.matchAll(/^CREATE TABLE IF NOT EXISTS (\w+) \(\n([\s\S]*?)\n\);/gm)].map((match) => ({
+  table: match[1]!,
+  lines: match[2]!.split("\n").map((line) => line.trim().replace(/,$/, "")),
+}));
+
+/** The sorted, comma-separated columns of a `PRIMARY KEY (a, b)` or `UNIQUE(a, b)` line. */
+function keyColumns(line: string, keyword: "PRIMARY KEY" | "UNIQUE"): string | undefined {
+  const match = new RegExp(`^${keyword}\\s*\\(([^)]*)\\)`).exec(line);
+  return match ? match[1]!.split(",").map((column) => column.trim()).sort().join(",") : undefined;
+}
+
+/*
+ * What every start must find before it serves, read from the SQL above so the
+ * two cannot drift. A start that applies the schema checks as well, because
+ * CREATE ... IF NOT EXISTS leaves a damaged table as it is.
  */
+
+/** Every table and index the schema creates. */
 export const REQUIRED_RELATIONS = [
-  ...CREATE_SCHEMA_SQL.matchAll(/^CREATE (?:UNIQUE )?(?:TABLE|INDEX) IF NOT EXISTS (\w+)/gm),
+  ...schemaText.matchAll(/^CREATE (?:UNIQUE )?(?:TABLE|INDEX) IF NOT EXISTS (\w+)/gm),
 ].map((match) => match[1]!);
 
+/** Every table the schema creates. The store reads and writes each one. */
+export const REQUIRED_TABLES = createdTables.map(({ table }) => table);
+
+/** What the store does to its tables: it reads, inserts and updates, and never deletes. */
+export const REQUIRED_TABLE_PRIVILEGES = ["SELECT", "INSERT", "UPDATE"];
+
+/** Every column a created table declares, and every column the schema adds to an existing table. */
 export const REQUIRED_COLUMNS = [
-  ...CREATE_SCHEMA_SQL.matchAll(/^ALTER TABLE (\w+) ADD COLUMN IF NOT EXISTS (\w+)/gm),
-].map((match) => ({ table: match[1]!, column: match[2]! }));
+  ...createdTables.flatMap(({ table, lines }) =>
+    lines
+      .filter((line) => !/^(?:PRIMARY KEY|UNIQUE)\b/.test(line))
+      .map((line) => ({ table, column: /^(\w+)/.exec(line)![1]! }))
+  ),
+  ...[...schemaText.matchAll(/^ALTER TABLE (\w+) ADD COLUMN IF NOT EXISTS (\w+)/gm)].map((match) => ({
+    table: match[1]!,
+    column: match[2]!,
+  })),
+];
+
+/**
+ * Every primary key and unique constraint a created table declares, by its
+ * sorted columns. Foreign keys reference the primary keys, and each of the
+ * store's ON CONFLICT clauses needs a unique index on exactly its columns:
+ * without one, every such write fails.
+ */
+export const REQUIRED_KEYS = createdTables.flatMap(({ table, lines }) =>
+  lines.flatMap((line) => {
+    const inline = /^(\w+) .*\bPRIMARY KEY\b/.exec(line);
+    const columns = inline?.[1] ?? keyColumns(line, "PRIMARY KEY");
+    if (columns) return [{ table, columns, primary: true }];
+    const unique = keyColumns(line, "UNIQUE");
+    return unique ? [{ table, columns: unique, primary: false }] : [];
+  })
+);
