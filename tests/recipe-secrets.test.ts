@@ -32,38 +32,87 @@ const everyDeclaredName = [...recipe.replace(/\r\n/g, "\n").matchAll(/^\w+_envir
 // up. readSecretInput looks up `NAME_FILE` for each secret, so every `_FILE`
 // lookup names one, however the call is spelled and whatever list computes
 // the name. The same recorder stands in for process.env during the call, so a
-// read that bypasses the env argument is seen too. The environment is empty,
-// so this sees the reads loadConfig makes when nothing is set; a secret read
-// only on a branch some other variable opens would not be seen.
-function namesLoadConfigReads(): Set<string> {
+// read that bypasses the env argument is seen too.
+//
+// A read made from a copy of the environment ({ ...env }, Object.entries)
+// cannot be seen, so copying or enumerating it is recorded and fails below.
+//
+// A secret read only on a branch that some value opens is reached by running
+// loadConfig over many environments: every secret found so far set in
+// plaintext, then each name read so far set to each probe value in turn, then
+// every such name set to one probe value at once, until no run reads a new
+// name. A run that throws still counts the reads it made first.
+const probeValues = ["1", "true", "/probe/path", "127.0.0.1:4100", "https://probe.test"];
+
+function readsOf(values: Readonly<Record<string, string>>): { names: Set<string>; enumerated: boolean } {
   const names = new Set<string>();
+  let enumerated = false;
+  const record = (name: string | symbol) => {
+    if (typeof name === "string") names.add(name);
+  };
   const env = new Proxy({} as NodeJS.ProcessEnv, {
     get(_target, name) {
-      if (typeof name === "string") names.add(name);
-      return undefined;
+      record(name);
+      return typeof name === "string" ? values[name] : undefined;
     },
     has(_target, name) {
-      if (typeof name === "string") names.add(name);
-      return false;
+      record(name);
+      return typeof name === "string" && name in values;
+    },
+    ownKeys() {
+      enumerated = true;
+      return [];
+    },
+    getOwnPropertyDescriptor() {
+      enumerated = true;
+      return undefined;
     },
   });
   const processEnv = process.env;
   process.env = env;
   try {
     loadConfig(env, []);
+  } catch {
+    // The reads before the refusal still count.
   } finally {
     process.env = processEnv;
   }
-  return names;
+  return { names, enumerated };
 }
 
+function exploreLoadConfig(): { names: Set<string>; enumerated: boolean } {
+  const names = new Set<string>();
+  let enumerated = false;
+  const secretsOf = () => [...names].filter((name) => name.endsWith("_FILE")).map((name) => name.slice(0, -"_FILE".length));
+  for (let grew = true; grew; ) {
+    const before = names.size;
+    const secrets = Object.fromEntries(secretsOf().map((name) => [name, "probe-secret"]));
+    const settable = [...names].filter((name) => !name.endsWith("_FILE") && !(name in secrets));
+    const runs: Array<Record<string, string>> = [
+      {},
+      secrets,
+      ...settable.flatMap((name) => probeValues.map((value) => ({ ...secrets, [name]: value }))),
+      ...probeValues.map((value) => ({ ...secrets, ...Object.fromEntries(settable.map((name) => [name, value])) })),
+    ];
+    for (const values of runs) {
+      const run = readsOf(values);
+      run.names.forEach((name) => names.add(name));
+      enumerated ||= run.enumerated;
+    }
+    grew = names.size > before;
+  }
+  return { names, enumerated };
+}
+
+const explored = exploreLoadConfig();
+
 /** Secrets Heimdall reads through readSecretInput, by their plaintext name. */
-const secretNames = [...namesLoadConfigReads()]
+const secretNames = [...explored.names]
   .filter((name) => name.endsWith("_FILE"))
   .map((name) => name.slice(0, -"_FILE".length));
 
 const secretShaped =
-  /SECRET|PASSWORD|PASSPHRASE|TOKEN|API_KEY|PRIVATE_KEY|ENCRYPTION_KEY|SALT|CREDENTIAL|DATABASE_URL|_DSN|_PEM/;
+  /SECRET|PASSWORD|PASSPHRASE|TOKEN|API_KEY|PRIVATE_KEY|ENCRYPTION_KEY|SALT|CREDENTIAL|DATABASE_URL|_DSN|_PEM|HMAC/;
 
 /** Secret-shaped names that hold no secret, each for its own reason. */
 const notSecrets = new Set([
@@ -84,6 +133,10 @@ describe("Idunn recipe secret declarations", () => {
       (name) => secretShaped.test(name) && !name.endsWith("_FILE") && !notSecrets.has(name)
     );
     expect(plaintext).toEqual([]);
+  });
+
+  it("reads the environment only by name, never by copying or enumerating it", () => {
+    expect(explored.enumerated).toBe(false);
   });
 
   it("sees every secret loadConfig reads, across the provider and app lists", () => {
