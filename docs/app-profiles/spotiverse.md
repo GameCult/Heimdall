@@ -81,12 +81,11 @@ Heimdall needs:
 ```text
 GC_ACCESS_PROVIDER_SPOTIFY_CLIENT_ID=...
 GC_ACCESS_PROVIDER_SPOTIFY_CLIENT_SECRET_FILE=/absolute/path/to/spotify-client-secret
-GC_ACCESS_APP_SPOTIVERSE_SHARED_SECRET_FILE=/absolute/path/to/spotiverse-shared-secret
 GC_ACCESS_APP_SPOTIVERSE_BACKEND_CALLBACK_URLS=https://your-spotiverse-portal.example/auth/heimdall/callback
 ```
 
-Spotiverse needs only the Heimdall base URL, matching app secret, and local
-portal callback/return URLs. The callback URL Spotiverse sends in
+Spotiverse needs only the Heimdall base URL and local portal callback/return
+URLs. The callback URL Spotiverse sends in
 `HEIMDALL_CALLBACK_URL` must exactly match one URL in Heimdall's
 `GC_ACCESS_APP_SPOTIVERSE_BACKEND_CALLBACK_URLS` allowlist unless both services
 are running on the same local host.

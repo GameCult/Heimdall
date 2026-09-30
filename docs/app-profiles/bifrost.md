@@ -68,10 +68,11 @@ paid membership for the requested tier title, and POSTs a signed
 `RecurringSupportSnapshot` fact to Bifrost's
 `/heimdall/patron-support/events` endpoint.
 
-The outbound fact uses `X-Heimdall-Signature-256` with the shared
-`GC_ACCESS_BIFROST_PATRON_SUPPORT_SECRET`. Bifrost verifies that HMAC, resolves
-the Heimdall account id to its local user account, deduplicates by provider
-event id, records the support event, and derives patron points locally.
+The outbound fact uses `X-Heimdall-Signature-256` with the shared secret
+Heimdall reads from `GC_ACCESS_BIFROST_PATRON_SUPPORT_SECRET_FILE`. Bifrost
+verifies that HMAC, resolves the Heimdall account id to its local user account,
+deduplicates by provider event id, records the support event, and derives
+patron points locally.
 
 This route is a bridge from auth-owned Patreon evidence to Bifrost-owned
 governance meaning. Heimdall still does not own points, votes, tiers, ledger

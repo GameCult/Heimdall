@@ -233,9 +233,10 @@ Bifrost needs browser verification after deployment:
 
 - configure Heimdall with
   `GC_ACCESS_APP_BIFROST_BACKEND_CALLBACK_URLS=https://bifrost.gamecult.org/auth/heimdall/callback`
-- configure Heimdall with `GC_ACCESS_APP_BIFROST_SHARED_SECRET`,
+- configure Heimdall with `GC_ACCESS_APP_BIFROST_SHARED_SECRET_FILE`,
   `GC_ACCESS_BIFROST_PATRON_SUPPORT_ENDPOINT=https://bifrost.gamecult.org/heimdall/patron-support/events`,
-  and `GC_ACCESS_BIFROST_PATRON_SUPPORT_SECRET`
+  and `GC_ACCESS_BIFROST_PATRON_SUPPORT_SECRET_FILE`, each naming a credential
+  file
 - configure Bifrost with `Heimdall__DiscordGuildId`,
   `Heimdall__DiscordAllowedRoleIds__0=<KTLST-role-id>`, and
   `Heimdall__PatreonTierTitle=Inner Sanctum`
