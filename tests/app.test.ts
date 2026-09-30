@@ -1427,7 +1427,7 @@ describe("the relayed provider error", () => {
     expect(providerError).toBe("e".repeat(64));
     expect(providerErrorDescription).toHaveLength(256);
     expect(providerErrorDescription).toMatch(allowed);
-    expect(providerErrorDescription.startsWith("<script>alert(1)</script>xxx")).toBe(true);
+    expect(String(providerErrorDescription).startsWith("<script>alert(1)</script>xxx")).toBe(true);
   });
 
   it("cannot inject markup into the browser page, and is bounded there", async () => {

@@ -972,6 +972,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       if (request.query.error) {
         const providerError = relayedProviderText(request.query.error, 64);
         const providerErrorDescription = relayedProviderText(request.query.error_description, 256);
+        const relayedDescription = providerErrorDescription ?? providerError;
+        const relayedDescriptionField = relayedDescription ? { errorDescription: relayedDescription } : {};
         await denyBrowserAttempt("provider_error");
         if (handoff.kind === "backend_callback") {
           await maybeDeliverBackendHandoff(handoff, {
@@ -986,7 +988,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
             returnTo: statePayload.return_to,
             connection: statePayload.connection,
             error: "provider_error",
-            errorDescription: providerErrorDescription ?? providerError,
+            ...relayedDescriptionField,
           });
         }
 
@@ -1002,7 +1004,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
               returnTo: statePayload.return_to,
               ...(handoff.kind === "backend_callback" ? { attemptId: handoff.attemptId } : {}),
               error: "provider_error",
-              errorDescription: providerErrorDescription ?? providerError,
+              ...relayedDescriptionField,
             })
           );
         }
