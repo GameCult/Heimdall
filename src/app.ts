@@ -1326,11 +1326,13 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           ...completionPayload,
         };
       } catch (error) {
-        const message = error instanceof Error ? error.message : "OAuth callback failed.";
-        // What leaves Heimdall is fixed text. This path catches store and
-        // provider failures: a Postgres error names a constraint, the host or
-        // the database, and JSON.parse quotes the provider's response body.
-        // The full text stays in the audit event.
+        // Neither the answer nor the audit event carries the error's text.
+        // This path catches store and provider failures: a Postgres or
+        // resolver error names a constraint, the host or the database, and
+        // JSON.parse quotes the provider's response body. The audit event
+        // keeps the error's class and code.
+        const code = (error as { code?: unknown }).code;
+        const errorClass = error instanceof Error && /^[A-Za-z]{1,64}$/.test(error.name) ? error.name : "Error";
         const failure = "The provider callback could not be completed.";
         const nowIso = new Date().toISOString();
         await denyBrowserAttempt("oauth_callback_failed");
@@ -1340,7 +1342,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           eventPayloadJson: {
             provider: request.params.provider,
             mode: statePayload.mode,
-            error: message,
+            errorClass,
+            errorCode: typeof code === "string" && /^[A-Za-z0-9_]{1,64}$/.test(code) ? code : null,
           },
           createdAt: nowIso,
         });

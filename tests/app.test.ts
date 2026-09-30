@@ -1479,3 +1479,39 @@ describe("the relayed provider error", () => {
   });
 });
 
+describe("the failed-callback audit event", () => {
+  it("keeps the error's class and code, not its text", async () => {
+    const store = new InMemoryStore();
+    const app = await buildApp({
+      config: createTestConfig(),
+      store,
+      oauthRuntimes: {
+        discord: {
+          ...createMockDiscordRuntime(),
+          async exchangeAuthorizationCode() {
+            throw Object.assign(new Error("getaddrinfo ENOTFOUND CANARYhost.invalid"), { code: "ENOTFOUND" });
+          },
+        },
+      },
+    });
+    apps.push(app);
+
+    const stateToken = await startDiscordSignIn(app);
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(stateToken)}`,
+    });
+    expect(response.statusCode).toBe(502);
+
+    const events = [...(store as unknown as { auditEvents: Map<string, { eventType: string; eventPayloadJson: unknown }> }).auditEvents.values()];
+    const failed = events.filter((event) => event.eventType === "oauth_callback_failed");
+    expect(failed).toHaveLength(1);
+    expect(failed[0]!.eventPayloadJson).toEqual({
+      provider: "discord",
+      mode: "sign_in",
+      errorClass: "Error",
+      errorCode: "ENOTFOUND",
+    });
+    expect(JSON.stringify(events)).not.toContain("CANARY");
+  });
+});
