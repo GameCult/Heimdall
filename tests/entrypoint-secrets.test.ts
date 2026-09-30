@@ -112,22 +112,29 @@ const cases: Case[] = [
   {
     name: "a database URL with an unusable port",
     env: () => ({ GC_ACCESS_DATABASE_URL_FILE: file("db-port", `postgres://heimdall:${CANARY}port@db:notaport/heimdall\n`) }),
-    expect: /./,
+    expect: /Postgres storage could not be prepared \(ERR_INVALID_URL\)/,
   },
   {
     name: "a database URL that does not parse",
     env: () => ({ GC_ACCESS_DATABASE_URL_FILE: file("db-parse", `postgres://heimdall:${CANARY} parse@[bad/heimdall\n`) }),
-    expect: /./,
+    expect: /Postgres storage could not be prepared \(E[A-Z_]+\)/,
   },
   {
     name: "a database URL with a broken percent escape",
     env: () => ({ GC_ACCESS_DATABASE_URL_FILE: file("db-percent", `postgres://heimdall:${CANARY}%zz@127.0.0.1:1/heimdall\n`) }),
-    expect: /./,
+    expect: /Postgres storage could not be prepared \(ECONNREFUSED\)/,
   },
   {
     name: "a database that refuses the connection",
     env: () => ({ GC_ACCESS_DATABASE_URL_FILE: file("db-refused", `postgres://heimdall:${CANARY}refused@127.0.0.1:1/heimdall\n`) }),
-    expect: /ECONNREFUSED/,
+    expect: /Postgres storage could not be prepared \(ECONNREFUSED\)/,
+  },
+  {
+    // A password holding an unescaped delimiter moves part of it into the
+    // host, and the resolver's error names the host.
+    name: "a database host that does not resolve",
+    env: () => ({ GC_ACCESS_DATABASE_URL_FILE: file("db-host", `postgres://heimdall:pw@${CANARY}host.invalid/heimdall\n`) }),
+    expect: /Postgres storage could not be prepared \(E[A-Z_]+\)/,
   },
   {
     name: "private key text bound to the signing key path",
