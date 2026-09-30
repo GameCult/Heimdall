@@ -64,6 +64,22 @@ describe("Heimdall security helpers", () => {
     expect(custody.decrypt(encrypted)).toBe("discord-access-token");
   });
 
+  it("refuses a token key that does not decode to 32 bytes, without echoing it", () => {
+    for (const length of [16, 31, 33]) {
+      const key = Buffer.alloc(length, 7).toString("base64");
+      const message = (() => {
+        try {
+          createTokenCustody({ ...createTestConfig(), tokenEncryptionKeyBase64: key });
+        } catch (error) {
+          return (error as Error).message;
+        }
+        throw new Error(`a ${length}-byte key was accepted`);
+      })();
+      expect(message).toMatch(/GC_ACCESS_TOKEN_ENCRYPTION_KEY_BASE64_FILE must decode to exactly 32 bytes/);
+      expect(message).not.toContain(key);
+    }
+  });
+
   it("refuses persistent provider-token storage without a stable encryption key", () => {
     expect(() =>
       createTokenCustody(
