@@ -269,6 +269,7 @@ describe("PostgresStore.checkSchema", () => {
       "consumed_at IS NULL",
     ]);
     expect(predicateConditions("(s = 'x AND (y'::text)")).toEqual(["s = 'x AND (y'::text"]);
+    expect(predicateConditions('(("odd AND (name" IS NULL) AND b)')).toEqual(['"odd AND (name" IS NULL', "b"]);
     expect(predicateConditions("")).toEqual([]);
   });
 
