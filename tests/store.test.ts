@@ -7,6 +7,8 @@ import { createStore } from "../src/store/index.js";
 import {
   createPostgresStore,
   PostgresStore,
+  checkSchemaRequirements,
+  HEIMDALL_SCHEMA_REQUIREMENTS,
   predicateConditions,
   printedDeclaredPredicates,
   samePredicate,
@@ -519,7 +521,7 @@ describe.skipIf(!adminUrl)("startup against a live Postgres (HEIMDALL_TEST_PG_AD
 
   it("prints each declared predicate exactly as Postgres prints the applied index's", async () => {
     const { owner } = await appliedDatabase();
-    const printed = await printedDeclaredPredicates(owner);
+    const printed = await printedDeclaredPredicates(owner, HEIMDALL_SCHEMA_REQUIREMENTS);
     const applied = await owner.query<{ predicate: string }>(
       "SELECT pg_get_expr(indpred, indrelid) AS predicate FROM pg_index WHERE indexrelid = 'auth_completions_attempt_unconsumed_unique_idx'::regclass"
     );
@@ -550,6 +552,51 @@ describe.skipIf(!adminUrl)("startup against a live Postgres (HEIMDALL_TEST_PG_AD
       await pool.end();
     });
     await exerciseStore(new PostgresStore(pool));
+  });
+
+  it("refuses a privilege missing on one column of another table", async () => {
+    const { name, owner } = await appliedDatabase();
+    await grant(owner, { ...STORE_TABLE_PRIVILEGES, auth_completions: [] });
+    const columns = REQUIRED_COLUMNS.filter((column) => column.table === "auth_completions" && column.column !== "attempt_id")
+      .map((column) => column.column)
+      .join(", ");
+    for (const privilege of STORE_TABLE_PRIVILEGES.auth_completions!) {
+      await owner.query(`GRANT ${privilege} (${columns}) ON auth_completions TO ${role}`);
+    }
+
+    expect(await start(urlFor(name, role, rolePassword), false)).toBe(refusal("SCHEMA_PRIVILEGES"));
+  });
+
+  it("names the TEMPORARY privilege when the role may not create temporary tables", async () => {
+    const { name, owner } = await appliedDatabase();
+    await grant(owner, STORE_TABLE_PRIVILEGES);
+    await owner.query(`REVOKE TEMPORARY ON DATABASE ${name} FROM PUBLIC`);
+
+    expect(await start(urlFor(name, role, rolePassword), false)).toBe(
+      "Postgres storage could not be prepared (SCHEMA_TEMP_PRIVILEGE); grant the database role TEMPORARY on its database."
+    );
+  });
+
+  // The schema's own predicate splits into the same conditions raw or
+  // printed, so only a predicate whose printed form differs (a literal gains
+  // its cast) shows that the check compares Postgres's printing.
+  it("matches a declared predicate that Postgres prints differently from how it is written", async () => {
+    const { owner } = await appliedDatabase();
+    await owner.query("CREATE TABLE predicate_probe (id INTEGER NOT NULL, state TEXT, attempts INTEGER)");
+    await owner.query("CREATE UNIQUE INDEX predicate_probe_live ON predicate_probe (id) WHERE state = 'live' AND attempts > 0");
+    const requirements = {
+      tables: ["predicate_probe"],
+      columns: [
+        { table: "predicate_probe", column: "id", type: "INTEGER", nullable: false },
+        { table: "predicate_probe", column: "state", type: "TEXT", nullable: true },
+        { table: "predicate_probe", column: "attempts", type: "INTEGER", nullable: true },
+      ],
+      keys: [{ table: "predicate_probe", columns: "id", predicate: "state = 'live' AND attempts > 0" }],
+      privileges: {},
+    };
+
+    expect((await printedDeclaredPredicates(owner, requirements))[0]).toBe("((state = 'live'::text) AND (attempts > 0))");
+    await expect(checkSchemaRequirements(owner, requirements)).resolves.toBeUndefined();
   });
 
   it("refuses a privilege held on only some of a table's columns", async () => {
@@ -598,6 +645,18 @@ describe.skipIf(!adminUrl)("startup against a live Postgres (HEIMDALL_TEST_PG_AD
       ["ALTER TABLE linked_identities DROP CONSTRAINT linked_identities_provider_provider_user_id_key",
         "CREATE UNIQUE INDEX li_half_dropped ON linked_identities(provider, provider_user_id)",
         "UPDATE pg_index SET indisvalid = false WHERE indexrelid = 'li_half_dropped'::regclass"]],
+    ["a key's first column compared under a case-insensitive collation",
+      ["CREATE COLLATION heimdall_ci (provider = icu, locale = 'und-u-ks-level2', deterministic = false)",
+        "ALTER TABLE linked_identities DROP CONSTRAINT linked_identities_provider_provider_user_id_key",
+        "CREATE UNIQUE INDEX li_ci_first ON linked_identities(provider COLLATE heimdall_ci, provider_user_id)"]],
+    // Soul pass 7: the key index compares under "C", but the column itself is
+    // case-insensitive, so the store's own lookups by provider_user_id match
+    // other users' ids.
+    ["a column declared under a case-insensitive collation, its key index under C",
+      ["CREATE COLLATION heimdall_ci (provider = icu, locale = 'und-u-ks-level2', deterministic = false)",
+        "ALTER TABLE linked_identities DROP CONSTRAINT linked_identities_provider_provider_user_id_key",
+        "ALTER TABLE linked_identities ALTER COLUMN provider_user_id TYPE text COLLATE heimdall_ci",
+        'CREATE UNIQUE INDEX li_c ON linked_identities(provider, provider_user_id COLLATE "C")']],
     ["a key compared under a case-insensitive collation (two users' ids become one row)",
       ["CREATE COLLATION heimdall_ci (provider = icu, locale = 'und-u-ks-level2', deterministic = false)",
         "ALTER TABLE linked_identities DROP CONSTRAINT linked_identities_provider_provider_user_id_key",
@@ -617,6 +676,8 @@ describe.skipIf(!adminUrl)("startup against a live Postgres (HEIMDALL_TEST_PG_AD
     ["a column retyped", ["ALTER TABLE sessions ALTER COLUMN access_revision TYPE TEXT"]],
     ["a created table's column dropped", ["ALTER TABLE auth_completions DROP COLUMN mode"]],
     ["NOT NULL added to a column the store leaves null", ["ALTER TABLE auth_completions ALTER COLUMN attempt_id SET NOT NULL"]],
+    ["NOT NULL added to a nullable column of another table",
+      ["UPDATE linked_identities SET username = ''", "ALTER TABLE linked_identities ALTER COLUMN username SET NOT NULL"]],
   ])("refuses %s", async (_damage, steps) => {
     const { name, owner } = await appliedDatabase();
     for (const step of steps) {
@@ -639,6 +700,13 @@ describe.skipIf(!adminUrl)("startup against a live Postgres (HEIMDALL_TEST_PG_AD
     ["the attempt index without its redundant attempt_id IS NOT NULL",
       ["DROP INDEX auth_completions_attempt_unconsumed_unique_idx", "CREATE UNIQUE INDEX attempt_unconsumed ON auth_completions(app_slug, attempt_id) WHERE consumed_at IS NULL"]],
     ["a lookup index dropped", ["DROP INDEX audit_events_lookup_idx", "DROP INDEX auth_completions_lookup_idx"]],
+    // Only a key's own columns decide which rows collide; an INCLUDEd column's
+    // collation does not, whatever it is.
+    ["a key index that INCLUDEs an undeclared case-insensitive column",
+      ["CREATE COLLATION heimdall_ci (provider = icu, locale = 'und-u-ks-level2', deterministic = false)",
+        "ALTER TABLE linked_identities ADD COLUMN operator_note text COLLATE heimdall_ci",
+        "ALTER TABLE linked_identities DROP CONSTRAINT linked_identities_provider_provider_user_id_key",
+        "CREATE UNIQUE INDEX li_note ON linked_identities(provider, provider_user_id) INCLUDE (operator_note)"]],
   ])("accepts %s", async (_change, steps) => {
     const { name, owner } = await appliedDatabase();
     for (const step of steps) await owner.query(step);

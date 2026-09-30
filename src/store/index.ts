@@ -32,9 +32,13 @@ export async function createStore(config: HeimdallConfig): Promise<HeimdallStore
     // A refused store is never handed out, so it is closed here: its pool
     // would otherwise hold the connection open.
     await store.close().catch(() => undefined);
-    throw new Error(
-      `Postgres storage could not be prepared (${typeof code === "string" ? code : "error"}); check GC_ACCESS_DATABASE_URL_FILE.`
-    );
+    // A role that may not create temporary tables is not a bad URL, so that
+    // refusal names the privilege instead.
+    const remedy =
+      code === "SCHEMA_TEMP_PRIVILEGE"
+        ? "grant the database role TEMPORARY on its database"
+        : "check GC_ACCESS_DATABASE_URL_FILE";
+    throw new Error(`Postgres storage could not be prepared (${typeof code === "string" ? code : "error"}); ${remedy}.`);
   }
 
   return store;
