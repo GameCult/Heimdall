@@ -1224,7 +1224,7 @@ describe("Heimdall service", () => {
 
 // An answer never carries an input value. The canary stands in for whatever a
 // failure could quote: part of a misbound database URL in a pg or resolver
-// error, a request body in a JSON parse error, a header or a path.
+// error, a request body, a header, a path, or a 4xx error's own message.
 describe("error answers never echo an input", () => {
   const CANARY = "CANARY";
 
@@ -1274,6 +1274,19 @@ describe("error answers never echo an input", () => {
     expect(response.statusCode).toBe(400);
     expect(response.json().error).toBe("invalid_request");
     expect(response.body).not.toContain(CANARY);
+  });
+
+  it("answers any other 4xx error by its code, not its message", async () => {
+    const app = await buildApp({ config: createTestConfig() });
+    apps.push(app);
+    app.get("/v1/probe-4xx", async () => {
+      throw Object.assign(new Error(`refused ${CANARY}input`), { statusCode: 409, code: "PROBE_REFUSED" });
+    });
+
+    const response = await app.inject({ method: "GET", url: "/v1/probe-4xx" });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({ error: "invalid_request", code: "PROBE_REFUSED" });
   });
 
   it("answers an unsupported media type without quoting the header", async () => {

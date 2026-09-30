@@ -736,12 +736,12 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     ...(options.oauthRuntimes ?? {}),
   };
   const app = Fastify({ logger: false });
-  // Fastify's default handlers answer with the error's message, and those
-  // messages carry input: pg and Node name the database host or the database
-  // (which a misbound URL fills with part of a secret), JSON.parse quotes the
-  // request body, and the media-type and not-found errors quote a header and
-  // the path. So every framework answer here is built from fixed text, the
-  // error code and the route's own schema, never from the message.
+  // Fastify's default handlers answer with the error's message, and messages
+  // carry input: pg and Node name the database host or the database (which a
+  // misbound URL fills with part of a secret), the default not-found answer
+  // quotes the path, and any error thrown with a 4xx status says whatever its
+  // thrower wrote. So every framework answer here is built from fixed text,
+  // the error code and the route's own schema, never from the message.
   app.setErrorHandler((error: FastifyError, request, reply) => {
     const status = error.statusCode !== undefined && error.statusCode >= 400 && error.statusCode < 600 ? error.statusCode : 500;
     const code = typeof error.code === "string" ? error.code : "error";
