@@ -56,8 +56,30 @@ function exportPrivateKeyPem(privateKey: KeyObject): string {
   return typeof exported === "string" ? exported : exported.toString("utf8");
 }
 
+const SIGNING_KEY_VARIABLE = "GC_ACCESS_SIGNING_PRIVATE_KEY_PATH";
+
+/**
+ * Every signing-key failure names only the variable and an error code. It
+ * carries no path, no file contents and no cause, because Node prints an
+ * error's cause and properties along with its message.
+ */
+function signingKeyError(failure: string, error: unknown): Error {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code ?? "error";
+  return new Error(`${SIGNING_KEY_VARIABLE} ${failure} (${code}).`);
+}
+
 function loadPrivateKeyFromPath(path: string): KeyObject {
-  return createPrivateKey(readFileSync(path, "utf8"));
+  let pem: string;
+  try {
+    pem = readFileSync(path, "utf8");
+  } catch (error) {
+    throw signingKeyError("could not be read", error);
+  }
+  try {
+    return createPrivateKey(pem);
+  } catch (error) {
+    throw signingKeyError("does not hold a usable private key", error);
+  }
 }
 
 function createOrLoadPrivateKeyFromPath(config: HeimdallConfig): {
@@ -81,12 +103,16 @@ function createOrLoadPrivateKeyFromPath(config: HeimdallConfig): {
 
   if (!config.bootstrapSigningPrivateKeyOnMissing) {
     throw new Error(
-      `Signing key file '${path}' does not exist. Set GC_ACCESS_SIGNING_PRIVATE_KEY_BOOTSTRAP=1 to create it on first boot.`
+      `${SIGNING_KEY_VARIABLE} names no file (ENOENT). Set GC_ACCESS_SIGNING_PRIVATE_KEY_BOOTSTRAP=1 to create it on first boot.`
     );
   }
 
   const privateKey = generateKeyPairSync("ed25519").privateKey;
-  mkdirSync(dirname(path), { recursive: true });
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+  } catch (error) {
+    throw signingKeyError("could not be created", error);
+  }
   try {
     writeFileSync(path, exportPrivateKeyPem(privateKey), {
       encoding: "utf8",
@@ -99,7 +125,7 @@ function createOrLoadPrivateKeyFromPath(config: HeimdallConfig): {
     };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-      throw error;
+      throw signingKeyError("could not be created", error);
     }
 
     return {

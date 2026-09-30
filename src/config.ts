@@ -332,8 +332,16 @@ export function loadConfig(
     config.odinCultMeshUri = odinCultMeshUri;
   }
 
-  if (env.GC_ACCESS_SIGNING_PRIVATE_KEY_PATH) {
-    config.signingPrivateKeyPath = env.GC_ACCESS_SIGNING_PRIVATE_KEY_PATH;
+  // The signing key path follows the secret reader's rules: it must be
+  // absolute, and no error repeats it. An operator moving off the deleted
+  // inline PEM input who binds the key text here would otherwise have the
+  // private key printed back into the journal.
+  const signingPrivateKeyPath = env.GC_ACCESS_SIGNING_PRIVATE_KEY_PATH;
+  if (signingPrivateKeyPath) {
+    if (!path.isAbsolute(signingPrivateKeyPath)) {
+      throw new Error("GC_ACCESS_SIGNING_PRIVATE_KEY_PATH is not an absolute path.");
+    }
+    config.signingPrivateKeyPath = signingPrivateKeyPath;
   }
 
   if (env.GC_ACCESS_SIGNING_KEY_ID) {
