@@ -800,5 +800,17 @@ export function createPostgresStore(databaseUrl: string): PostgresStore {
   const pool = new Pool({
     connectionString: databaseUrl,
   });
+  // An idle client whose connection ends (a database restart, an
+  // administrator terminating the backend) is emitted here. Unheard, the
+  // event kills the process and Node prints the pg Client, connection
+  // parameters included. The pool has already dropped the dead client and
+  // opens a new one on the next query, so this only says what happened, by
+  // code.
+  pool.on("error", (error) => {
+    const code = (error as { code?: unknown }).code;
+    console.error(
+      `Heimdall lost an idle Postgres connection (${typeof code === "string" ? code : "error"}); the pool reconnects on the next query.`
+    );
+  });
   return new PostgresStore(pool);
 }

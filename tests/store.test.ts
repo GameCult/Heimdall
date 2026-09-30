@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { newDb } from "pg-mem";
-import { PostgresStore } from "../src/store/postgres.js";
+import { createPostgresStore, PostgresStore } from "../src/store/postgres.js";
 
 describe("PostgresStore", () => {
   it("round-trips core auth records through postgres", async () => {
@@ -181,5 +181,31 @@ describe("PostgresStore", () => {
     })).rejects.toThrow("Idempotency key was reused");
 
     await store.close();
+  });
+});
+
+describe("createPostgresStore", () => {
+  // pg emits an idle client's connection loss on the pool. With no listener
+  // that event kills the process, and Node prints the pg Client with its
+  // connection parameters.
+  it("survives an idle connection's loss and says so by code alone", async () => {
+    const store = createPostgresStore("postgres://heimdall:CANARYpw@127.0.0.1:1/heimdall");
+    const pool = (store as unknown as { pool: { emit(event: string, ...args: unknown[]): boolean } }).pool;
+    const logged: string[] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => void logged.push(args.map(String).join(" "));
+    try {
+      const terminated = Object.assign(new Error("terminating connection due to administrator command CANARY"), {
+        code: "57P01",
+        client: { connectionParameters: { password: "CANARYpw" } },
+      });
+      expect(() => pool.emit("error", terminated, terminated.client)).not.toThrow();
+    } finally {
+      console.error = originalError;
+      await store.close();
+    }
+    expect(logged).toEqual([
+      "Heimdall lost an idle Postgres connection (57P01); the pool reconnects on the next query.",
+    ]);
   });
 });
