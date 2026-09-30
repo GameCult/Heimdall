@@ -85,15 +85,27 @@ describe("readSecretInput", () => {
     expect(() => readSecretInput(env, "EXAMPLE_SECRET")).toThrow(/both set/);
   });
 
-  it("names the variable and the path of a missing file", () => {
-    const missing = join(tempDir(), "absent-credential");
-    const message = thrownMessage(() => readSecretInput({ EXAMPLE_SECRET_FILE: missing }, "EXAMPLE_SECRET"));
+  it("refuses an unreadable path naming only the variable and the code, not the path", () => {
+    // A secret bound into a _FILE slot by mistake must not be printed back.
+    const canaryPath = join(tempDir(), "canary-path-3b7e1d");
+    const message = thrownMessage(() => readSecretInput({ EXAMPLE_SECRET_FILE: canaryPath }, "EXAMPLE_SECRET"));
     expect(message).toContain("EXAMPLE_SECRET_FILE");
-    expect(message).toContain(missing);
     expect(message).toContain("ENOENT");
+    expect(message).not.toContain("canary");
   });
 
-  it("names the variable and the path of an unreadable file, and carries no byte of what sits beside it", () => {
+  it("refuses a _FILE value that is not an absolute path, without echoing it", () => {
+    for (const value of ["postgres://heimdall:canary-pw-6f02aa@db/heimdall", "relative/canary-rel-0c9d", ""]) {
+      const message = thrownMessage(() => readSecretInput({ EXAMPLE_SECRET_FILE: value }, "EXAMPLE_SECRET"));
+      expect(message).toBe("EXAMPLE_SECRET_FILE is not an absolute path.");
+    }
+  });
+
+  it("does not treat an empty _FILE as unset, even with no plaintext form", () => {
+    expect(() => readSecretInput({ EXAMPLE_SECRET_FILE: "" }, "EXAMPLE_SECRET")).toThrow(/EXAMPLE_SECRET_FILE/);
+  });
+
+  it("refuses an unreadable file, and carries no byte of what sits in or beside it", () => {
     const dir = tempDir();
     const canary = "canary-sibling-5d2f88";
     writeFileSync(join(dir, "sibling"), canary);
@@ -102,9 +114,27 @@ describe("readSecretInput", () => {
     writeFileSync(join(notAFile, "inside"), canary);
 
     const message = thrownMessage(() => readSecretInput({ EXAMPLE_SECRET_FILE: notAFile }, "EXAMPLE_SECRET"));
-    expect(message).toContain("EXAMPLE_SECRET_FILE");
-    expect(message).toContain(notAFile);
-    expect(message).not.toContain("canary");
+    expect(message).toBe("EXAMPLE_SECRET_FILE could not be read (EISDIR).");
+  });
+
+  it("refuses a blank secret file rather than treating it as unset", () => {
+    for (const contents of ["", "\n", " \n", "\t\r\n", "   "]) {
+      const env = { EXAMPLE_SECRET_FILE: secretFile(contents) };
+      expect(thrownMessage(() => readSecretInput(env, "EXAMPLE_SECRET"))).toBe("EXAMPLE_SECRET_FILE is empty.");
+    }
+  });
+
+  it("refuses a blank plaintext secret too", () => {
+    for (const value of ["", "  ", "\n"]) {
+      expect(thrownMessage(() => readSecretInput({ EXAMPLE_SECRET: value }, "EXAMPLE_SECRET"))).toBe(
+        "EXAMPLE_SECRET is empty."
+      );
+    }
+  });
+
+  it("keeps a value whose only whitespace is inside or around real content", () => {
+    const env = { EXAMPLE_SECRET_FILE: secretFile(" padded value \n") };
+    expect(readSecretInput(env, "EXAMPLE_SECRET")).toBe(" padded value ");
   });
 });
 
@@ -157,17 +187,31 @@ describe("loadConfig secret inputs", () => {
   it("refuses to start when the database URL file is absent", () => {
     const missing = join(tempDir(), "database-url");
     const message = thrownMessage(() => loadConfig({ GC_ACCESS_DATABASE_URL_FILE: missing }, []));
-    expect(message).toContain("GC_ACCESS_DATABASE_URL_FILE");
-    expect(message).toContain(missing);
+    expect(message).toBe("GC_ACCESS_DATABASE_URL_FILE could not be read (ENOENT).");
   });
 
-  it("refuses a secret bound both ways at startup", () => {
-    const env = {
-      GC_ACCESS_TOKEN_ENCRYPTION_KEY_BASE64: "plain",
-      GC_ACCESS_TOKEN_ENCRYPTION_KEY_BASE64_FILE: secretFile("file"),
-    };
-    expect(() => loadConfig(env, [])).toThrow(/GC_ACCESS_TOKEN_ENCRYPTION_KEY_BASE64_FILE/);
+  it("refuses to start on a blank database URL file instead of falling back to memory storage", () => {
+    for (const contents of ["", "\n", " \n"]) {
+      const env = { GC_ACCESS_DATABASE_URL_FILE: secretFile(contents) };
+      expect(() => loadConfig(env, [])).toThrow("GC_ACCESS_DATABASE_URL_FILE is empty.");
+    }
   });
+
+  // One per call site: a site that reads the plaintext name itself before the
+  // reader would let the plaintext win silently instead of refusing.
+  const bothSetSites: Array<[string, string]> = [
+    ["token encryption key", "GC_ACCESS_TOKEN_ENCRYPTION_KEY_BASE64"],
+    ["provider client secret", "GC_ACCESS_PROVIDER_DISCORD_CLIENT_SECRET"],
+    ["app shared secret", "GC_ACCESS_APP_GHOSTLIGHT_SHARED_SECRET"],
+    ["database URL", "GC_ACCESS_DATABASE_URL"],
+    ["patron support secret", "GC_ACCESS_BIFROST_PATRON_SUPPORT_SECRET"],
+  ];
+  for (const [site, name] of bothSetSites) {
+    it(`refuses the ${site} bound both ways at startup`, () => {
+      const env = { [name]: "plain", [`${name}_FILE`]: secretFile("file") };
+      expect(() => loadConfig(env, [])).toThrow(`${name} and ${name}_FILE are both set`);
+    });
+  }
 
   it("publishes provider secret variable names that actually configure the secret", () => {
     for (const provider of providers) {

@@ -12,12 +12,8 @@ export interface TokenCustody {
 }
 
 function decodeConfiguredKey(base64Value: string): Buffer {
-  const normalized = base64Value.trim();
-  if (!normalized) {
-    throw new Error("GC_ACCESS_TOKEN_ENCRYPTION_KEY_BASE64_FILE is set but empty.");
-  }
-
-  const key = Buffer.from(normalized, "base64");
+  // readSecretInput refuses a blank key; a short one fails the length check.
+  const key = Buffer.from(base64Value.trim(), "base64");
   if (key.byteLength !== TOKEN_KEY_BYTES) {
     throw new Error(
       `GC_ACCESS_TOKEN_ENCRYPTION_KEY_BASE64_FILE must decode to exactly ${TOKEN_KEY_BYTES} bytes for AES-256-GCM.`

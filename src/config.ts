@@ -131,7 +131,12 @@ function readIdunnCandidateBind(
  * Setting both is refused, so one input has one owner. Under Idunn the recipe
  * declares only the `_FILE` names, so the plaintext form cannot be bound there.
  *
- * Errors name the variable and the path, never a value or a file's contents.
+ * `NAME_FILE` must be an absolute path, and a value that is empty or only
+ * whitespace is refused: a blank secret is a misconfiguration, never "unset".
+ *
+ * Errors name only the variable and an error code. They never carry the path,
+ * a value or a file's contents: Idunn admits any string for a declared name, so
+ * a secret bound into a `_FILE` slot by mistake would otherwise be printed.
  */
 export function readSecretInput(env: NodeJS.ProcessEnv, name: string): string | undefined {
   const fileVariable = `${name}_FILE`;
@@ -142,19 +147,31 @@ export function readSecretInput(env: NodeJS.ProcessEnv, name: string): string | 
     throw new Error(`${name} and ${fileVariable} are both set; set only ${fileVariable}.`);
   }
 
+  let value: string;
+  let source: string;
   if (filePath === undefined) {
-    return plaintext;
+    if (plaintext === undefined) {
+      return undefined;
+    }
+    value = plaintext;
+    source = name;
+  } else {
+    if (!path.isAbsolute(filePath)) {
+      throw new Error(`${fileVariable} is not an absolute path.`);
+    }
+    try {
+      value = readFileSync(filePath, "utf8").replace(/\r?\n$/, "");
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code ?? "read error";
+      throw new Error(`${fileVariable} could not be read (${code}).`);
+    }
+    source = fileVariable;
   }
 
-  let contents: string;
-  try {
-    contents = readFileSync(filePath, "utf8");
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code ?? "read error";
-    throw new Error(`${fileVariable} names ${filePath}, which could not be read (${code}).`);
+  if (value.trim() === "") {
+    throw new Error(`${source} is empty.`);
   }
-
-  return contents.replace(/\r?\n$/, "");
+  return value;
 }
 
 function readProviderConfig(env: NodeJS.ProcessEnv, provider: Provider): ProviderClientConfig {
