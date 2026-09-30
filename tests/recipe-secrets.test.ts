@@ -1,7 +1,8 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { appProfiles } from "../src/app-profiles.js";
 import { appSlugs, providers } from "../src/contracts.js";
+import { loadConfig } from "../src/config.js";
 import { providerCatalog } from "../src/providers.js";
 
 // The Idunn recipe decides which environment names a binding may set, and
@@ -26,34 +27,40 @@ const everyDeclaredName = [...recipe.replace(/\r\n/g, "\n").matchAll(/^\w+_envir
   (match) => [...match[1]!.matchAll(/"([^"]+)"/g)].map((name) => name[1]!)
 );
 
-// The secrets Heimdall reads are whatever its source passes to
-// readSecretInput, so the set is read from the source: a secret added there
-// cannot be declared in plaintext here without failing. A literal name is
-// taken as written; the two computed names expand over the lists that compute
-// them; any other argument fails, because this test cannot know its names.
-const srcRoot = new URL("../src/", import.meta.url);
-const secretArguments = readdirSync(srcRoot, { recursive: true })
-  .map(String)
-  .filter((file) => file.endsWith(".ts"))
-  .flatMap((file) =>
-    [...readFileSync(new URL(file.replace(/\\/g, "/"), srcRoot), "utf8").matchAll(/(?<!function )readSecretInput\(\s*[^,()]+,\s*([^)]+?)\s*\)/g)].map(
-      (call) => call[1]!
-    )
-  );
-
-const computedSecretNames: Record<string, string[]> = {
-  "`${prefix}_CLIENT_SECRET`": providers.map((provider) => `GC_ACCESS_PROVIDER_${provider.toUpperCase()}_CLIENT_SECRET`),
-  envKey: appSlugs.map((appSlug) => `GC_ACCESS_APP_${appSlug.toUpperCase()}_SHARED_SECRET`),
-};
+// The secrets Heimdall reads are observed, not read from the source: the real
+// loadConfig runs against an environment that records every name it looks
+// up. readSecretInput looks up `NAME_FILE` for each secret, so every `_FILE`
+// lookup names one, however the call is spelled and whatever list computes
+// the name. The same recorder stands in for process.env during the call, so a
+// read that bypasses the env argument is seen too. The environment is empty,
+// so this sees the reads loadConfig makes when nothing is set; a secret read
+// only on a branch some other variable opens would not be seen.
+function namesLoadConfigReads(): Set<string> {
+  const names = new Set<string>();
+  const env = new Proxy({} as NodeJS.ProcessEnv, {
+    get(_target, name) {
+      if (typeof name === "string") names.add(name);
+      return undefined;
+    },
+    has(_target, name) {
+      if (typeof name === "string") names.add(name);
+      return false;
+    },
+  });
+  const processEnv = process.env;
+  process.env = env;
+  try {
+    loadConfig(env, []);
+  } finally {
+    process.env = processEnv;
+  }
+  return names;
+}
 
 /** Secrets Heimdall reads through readSecretInput, by their plaintext name. */
-const secretNames = secretArguments.flatMap((argument) => {
-  const literal = /^"([A-Z0-9_]+)"$/.exec(argument);
-  if (literal) return [literal[1]!];
-  const computed = computedSecretNames[argument];
-  if (computed) return computed;
-  throw new Error(`recipe-secrets cannot derive the names read by readSecretInput(env, ${argument}); teach it.`);
-});
+const secretNames = [...namesLoadConfigReads()]
+  .filter((name) => name.endsWith("_FILE"))
+  .map((name) => name.slice(0, -"_FILE".length));
 
 const secretShaped =
   /SECRET|PASSWORD|PASSPHRASE|TOKEN|API_KEY|PRIVATE_KEY|ENCRYPTION_KEY|SALT|CREDENTIAL|DATABASE_URL|_DSN|_PEM/;
@@ -79,14 +86,14 @@ describe("Idunn recipe secret declarations", () => {
     expect(plaintext).toEqual([]);
   });
 
-  it("finds every readSecretInput call in the source", () => {
+  it("sees every secret loadConfig reads, across the provider and app lists", () => {
     expect(secretNames).toEqual(
       expect.arrayContaining([
         "GC_ACCESS_DATABASE_URL",
         "GC_ACCESS_TOKEN_ENCRYPTION_KEY_BASE64",
         "GC_ACCESS_BIFROST_PATRON_SUPPORT_SECRET",
-        "GC_ACCESS_PROVIDER_DISCORD_CLIENT_SECRET",
-        "GC_ACCESS_APP_GHOSTLIGHT_SHARED_SECRET",
+        ...providers.map((provider) => `GC_ACCESS_PROVIDER_${provider.toUpperCase()}_CLIENT_SECRET`),
+        ...appSlugs.map((appSlug) => `GC_ACCESS_APP_${appSlug.toUpperCase()}_SHARED_SECRET`),
       ])
     );
   });
