@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -35,11 +35,31 @@ interface Run {
   output: string;
 }
 
+interface Identity {
+  uid: number;
+  gid: number;
+}
+
+/**
+ * Who can be denied a read. Root reads a mode-000 file, so a read failure is
+ * only reachable as another user: the process itself when it is not root, or
+ * else the checkout's owner, who can still load the entrypoint. A string is
+ * the reason no such user exists here.
+ */
+function nonRootReader(): Identity | "self" | string {
+  if (process.platform === "win32") return "file modes do not deny reads on Windows";
+  if (process.getuid?.() !== 0) return "self";
+  const owner = statSync(repoRoot);
+  if (owner.uid === 0) return "running as root in a root-owned checkout, so no other user can load the entrypoint";
+  return { uid: owner.uid, gid: owner.gid };
+}
+
 /** Runs `tsx src/index.ts` with only the given environment, merging stdout and stderr. */
-function runEntrypoint(name: string, env: Record<string, string>): Promise<Run> {
+function runEntrypoint(name: string, env: Record<string, string>, identity?: Identity): Promise<Run> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [tsxCli, "src/index.ts"], {
       cwd: repoRoot,
+      ...identity,
       env: {
         PATH: process.env.PATH ?? "",
         HOME: scratch,
@@ -73,6 +93,8 @@ interface Case {
   env: () => Record<string, string>;
   /** Something the failure must say, so a case cannot pass by never reaching its path. */
   expect: RegExp;
+  /** Run the entrypoint as a user a file mode can refuse. */
+  nonRoot?: true;
 }
 
 const cases: Case[] = [
@@ -137,6 +159,16 @@ const cases: Case[] = [
     expect: /Postgres storage could not be prepared \(E[A-Z_]+\)/,
   },
   {
+    // A start that does not apply the schema still connects, so a misbound URL
+    // fails at startup rather than in a request's error answer.
+    name: "a database host that does not resolve, on a start that does not apply the schema",
+    env: () => ({
+      GC_ACCESS_APPLY_SCHEMA_ON_STARTUP: "0",
+      GC_ACCESS_DATABASE_URL_FILE: file("db-host-noapply", `postgres://heimdall:pw@${CANARY}host.invalid/heimdall\n`),
+    }),
+    expect: /Postgres storage could not be prepared \(E[A-Z_]+\)/,
+  },
+  {
     name: "private key text bound to the signing key path",
     env: () => ({
       GC_ACCESS_SIGNING_PRIVATE_KEY_PATH: `-----BEGIN PRIVATE KEY-----\n${CANARY}pem\n-----END PRIVATE KEY-----\n`,
@@ -152,6 +184,19 @@ const cases: Case[] = [
     name: "a signing key file that is not a key",
     env: () => ({ GC_ACCESS_SIGNING_PRIVATE_KEY_PATH: file("not-a-key", `${CANARY}notakey\n`) }),
     expect: /GC_ACCESS_SIGNING_PRIVATE_KEY_PATH does not hold a usable private key/,
+  },
+  {
+    name: "a signing key file its reader may not read",
+    env: () => {
+      const key = file(`${CANARY}locked-key`, `${CANARY}pem\n`);
+      chmodSync(key, 0o000);
+      const dataRoot = join(scratch, "locked-key-data");
+      mkdirSync(dataRoot, { recursive: true });
+      chmodSync(dataRoot, 0o777);
+      return { GC_ACCESS_SIGNING_PRIVATE_KEY_PATH: key, GC_ACCESS_DATA_ROOT: dataRoot };
+    },
+    expect: /GC_ACCESS_SIGNING_PRIVATE_KEY_PATH could not be read \(EACCES\)/,
+    nonRoot: true,
   },
   {
     name: "a signing key path that is a directory",
@@ -187,10 +232,17 @@ const cases: Case[] = [
 
 describe("the entrypoint never prints a secret", () => {
   writeFileSync(join(scratch, "blank"), " \n");
+  // mkdtemp makes the scratch directory private to its creator; a non-root
+  // reader must still reach the files a case names inside it.
+  chmodSync(scratch, 0o755);
+  const reader = nonRootReader();
 
   for (const testCase of cases) {
-    it(`refuses ${testCase.name} without printing the canary`, async () => {
-      const run = await runEntrypoint(testCase.name.replace(/\W+/g, "-"), testCase.env());
+    const skipReason = testCase.nonRoot && typeof reader === "string" && reader !== "self" ? reader : undefined;
+    const title = `refuses ${testCase.name} without printing the canary${skipReason ? ` (skipped: ${skipReason})` : ""}`;
+    it.skipIf(skipReason !== undefined)(title, async () => {
+      const identity = testCase.nonRoot && typeof reader === "object" ? reader : undefined;
+      const run = await runEntrypoint(testCase.name.replace(/\W+/g, "-"), testCase.env(), identity);
 
       expect(run.signal, "the process must stop by itself").toBeNull();
       expect(run.code, "startup must fail").not.toBe(0);

@@ -291,6 +291,11 @@ export class PostgresStore implements HeimdallStore {
     await this.pool.query(CREATE_SCHEMA_SQL);
   }
 
+  /** Opens a connection and runs a trivial query, so a start that does not apply the schema still proves the URL. */
+  async checkConnection(): Promise<void> {
+    await this.pool.query("SELECT 1");
+  }
+
   async close(): Promise<void> {
     await this.pool.end();
   }
@@ -791,7 +796,7 @@ export class PostgresStore implements HeimdallStore {
   }
 }
 
-export function createPostgresStore(databaseUrl: string): HeimdallStore {
+export function createPostgresStore(databaseUrl: string): PostgresStore {
   const pool = new Pool({
     connectionString: databaseUrl,
   });
