@@ -169,10 +169,24 @@ const createdTables = [...schemaText.matchAll(/^CREATE TABLE IF NOT EXISTS (\w+)
   lines: match[2]!.split("\n").map((line) => line.trim().replace(/,$/, "")),
 }));
 
-/** The sorted, comma-separated columns of a `PRIMARY KEY (a, b)` or `UNIQUE(a, b)` line. */
+/** Sorted and comma-separated, the form the schema check compares key columns in. */
+function columnList(text: string): string {
+  return text.split(",").map((column) => column.trim()).sort().join(",");
+}
+
+/** The columns of a `PRIMARY KEY (a, b)` or `UNIQUE(a, b)` line, as a column list. */
 function keyColumns(line: string, keyword: "PRIMARY KEY" | "UNIQUE"): string | undefined {
   const match = new RegExp(`^${keyword}\\s*\\(([^)]*)\\)`).exec(line);
-  return match ? match[1]!.split(",").map((column) => column.trim()).sort().join(",") : undefined;
+  return match ? columnList(match[1]!) : undefined;
+}
+
+/**
+ * An index predicate in the form the schema check compares: lower case, with
+ * no parentheses or white space. Postgres stores `a IS NOT NULL AND b IS NULL`
+ * back as `((a IS NOT NULL) AND (b IS NULL))`; both reduce to the same text.
+ */
+export function comparablePredicate(predicate: string): string {
+  return predicate.toLowerCase().replace(/[()\s]/g, "");
 }
 
 /*
@@ -186,35 +200,49 @@ export const REQUIRED_RELATIONS = [
   ...schemaText.matchAll(/^CREATE (?:UNIQUE )?(?:TABLE|INDEX) IF NOT EXISTS (\w+)/gm),
 ].map((match) => match[1]!);
 
-/** Every table the schema creates. The store reads and writes each one. */
-export const REQUIRED_TABLES = createdTables.map(({ table }) => table);
-
-/** What the store does to its tables: it reads, inserts and updates, and never deletes. */
-export const REQUIRED_TABLE_PRIVILEGES = ["SELECT", "INSERT", "UPDATE"];
-
-/** Every column a created table declares, and every column the schema adds to an existing table. */
+/**
+ * Every column a created table declares and every column the schema adds to
+ * an existing table, each with its declared type: the store reads and writes
+ * the values as that type, and a column retyped under it fails its queries.
+ */
 export const REQUIRED_COLUMNS = [
   ...createdTables.flatMap(({ table, lines }) =>
     lines
       .filter((line) => !/^(?:PRIMARY KEY|UNIQUE)\b/.test(line))
-      .map((line) => ({ table, column: /^(\w+)/.exec(line)![1]! }))
+      .map((line) => {
+        const [, column, type] = /^(\w+) (\w+)/.exec(line)!;
+        return { table, column: column!, type: type! };
+      })
   ),
-  ...[...schemaText.matchAll(/^ALTER TABLE (\w+) ADD COLUMN IF NOT EXISTS (\w+)/gm)].map((match) => ({
+  ...[...schemaText.matchAll(/^ALTER TABLE (\w+) ADD COLUMN IF NOT EXISTS (\w+) (\w+)/gm)].map((match) => ({
     table: match[1]!,
     column: match[2]!,
+    type: match[3]!,
   })),
 ];
 
 /**
- * Every primary key and unique constraint a created table declares, by its
- * sorted columns. Each must stand as a unique, non-partial index on exactly
- * those columns: the store's ON CONFLICT clauses and the foreign keys need
- * nothing more, and without it every such write fails.
+ * Every unique key the schema makes: the primary keys and unique constraints
+ * of the created tables, and each unique index it creates by name with that
+ * index's predicate. The store relies on each as an immediate unique index
+ * whose key columns are exactly these, with exactly this predicate: ON
+ * CONFLICT refuses a deferrable arbiter and cannot infer a partial or wider
+ * one, and the partial attempt index is what keeps one unconsumed completion
+ * per attempt (R21.1). `index` is empty for a constraint, which may be
+ * satisfied by any such index on its table.
  */
-export const REQUIRED_KEYS = createdTables.flatMap(({ table, lines }) =>
-  lines.flatMap((line) => {
-    const columns =
-      /^(\w+) .*\bPRIMARY KEY\b/.exec(line)?.[1] ?? keyColumns(line, "PRIMARY KEY") ?? keyColumns(line, "UNIQUE");
-    return columns ? [{ table, columns }] : [];
-  })
-);
+export const REQUIRED_KEYS = [
+  ...createdTables.flatMap(({ table, lines }) =>
+    lines.flatMap((line) => {
+      const columns =
+        /^(\w+) .*\bPRIMARY KEY\b/.exec(line)?.[1] ?? keyColumns(line, "PRIMARY KEY") ?? keyColumns(line, "UNIQUE");
+      return columns ? [{ table, columns, index: "", predicate: "" }] : [];
+    })
+  ),
+  ...[...schemaText.matchAll(/^CREATE UNIQUE INDEX IF NOT EXISTS (\w+)\s+ON (\w+)\(([^)]*)\)(?:\s+WHERE ([^;]+))?;/gm)].map((match) => ({
+    table: match[2]!,
+    columns: columnList(match[3]!),
+    index: match[1]!,
+    predicate: comparablePredicate(match[4] ?? ""),
+  })),
+];

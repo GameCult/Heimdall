@@ -1,14 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient, type QueryResultRow } from "pg";
 import { type AppSlug, type HeimdallAuthAttemptStatus, type LinkedIdentityInput, type Provider } from "../contracts.js";
-import {
-  CREATE_SCHEMA_SQL,
-  REQUIRED_COLUMNS,
-  REQUIRED_KEYS,
-  REQUIRED_RELATIONS,
-  REQUIRED_TABLE_PRIVILEGES,
-  REQUIRED_TABLES,
-} from "./schema.js";
+import { CREATE_SCHEMA_SQL, REQUIRED_COLUMNS, REQUIRED_KEYS, REQUIRED_RELATIONS } from "./schema.js";
 import {
   type CreateAccountInput,
   type CreateAuthAttemptInput,
@@ -291,6 +284,24 @@ function mapAuthAttemptRow(row: AuthAttemptRow): StoredAuthAttempt {
   return attempt;
 }
 
+/**
+ * What the store's statements do to each table, and so the privileges its
+ * database role needs: it reads what it returns or looks up, inserts what it
+ * creates, updates what it changes or upserts, and deletes nothing.
+ * audit_events is written and never read back.
+ */
+export const STORE_TABLE_PRIVILEGES: Readonly<Record<string, readonly ("SELECT" | "INSERT" | "UPDATE")[]>> = {
+  accounts: ["SELECT", "INSERT", "UPDATE"],
+  linked_identities: ["SELECT", "INSERT", "UPDATE"],
+  sessions: ["SELECT", "INSERT", "UPDATE"],
+  auth_attempts: ["SELECT", "INSERT", "UPDATE"],
+  private_command_receipts: ["SELECT", "INSERT"],
+  auth_completions: ["SELECT", "INSERT", "UPDATE"],
+  capability_grants: ["SELECT", "INSERT"],
+  entitlement_snapshots: ["SELECT", "INSERT", "UPDATE"],
+  audit_events: ["INSERT"],
+};
+
 export class PostgresStore implements HeimdallStore {
   constructor(private readonly pool: Pick<Pool, "query" | "end">) {}
 
@@ -300,52 +311,62 @@ export class PostgresStore implements HeimdallStore {
 
   /**
    * Proves, before Heimdall serves, that the database can take its requests:
-   * every relation, column and key the schema makes is there, and the role
-   * may read, insert and update every table. A missing piece fails with code
+   * every relation the schema makes, every column with its declared type,
+   * every unique key as the store relies on it, and every privilege in
+   * STORE_TABLE_PRIVILEGES. A missing or altered piece fails with code
    * SCHEMA_MISSING and a missing privilege with SCHEMA_PRIVILEGES; neither
    * error names the piece.
    */
   async checkSchema(): Promise<void> {
+    const privileges = Object.entries(STORE_TABLE_PRIVILEGES).flatMap(([table, wanted]) =>
+      wanted.map((privilege) => ({ table, privilege }))
+    );
     const result = await this.pool.query<{ kind: "missing" | "privilege" }>(
       `
       SELECT 'missing' AS kind FROM unnest($1::text[]) AS name WHERE to_regclass(name) IS NULL
       UNION ALL
-      SELECT 'missing' FROM unnest($2::text[], $3::text[]) AS required(table_name, column_name)
+      SELECT 'missing' FROM unnest($2::text[], $3::text[], $4::text[]) AS required(table_name, column_name, type_name)
       WHERE NOT EXISTS (
         SELECT 1 FROM pg_attribute a
         WHERE a.attrelid = to_regclass(required.table_name)
           AND a.attname = required.column_name
           AND a.attnum > 0
           AND NOT a.attisdropped
+          AND a.atttypid = to_regtype(required.type_name)
       )
       UNION ALL
-      SELECT 'missing' FROM unnest($4::text[], $5::text[]) AS required(table_name, columns)
+      SELECT 'missing' FROM unnest($5::text[], $6::text[], $7::text[], $8::text[]) AS required(table_name, columns, index_name, predicate)
       WHERE NOT EXISTS (
         SELECT 1 FROM pg_index i
         WHERE i.indrelid = to_regclass(required.table_name)
+          AND (required.index_name = '' OR i.indexrelid = to_regclass(required.index_name))
           AND i.indisunique
-          AND i.indpred IS NULL
-          AND i.indnatts = cardinality(string_to_array(required.columns, ','))
+          AND i.indimmediate
+          AND coalesce(regexp_replace(lower(pg_get_expr(i.indpred, i.indrelid)), '[()[:space:]]', '', 'g'), '') = required.predicate
+          AND i.indnkeyatts = cardinality(string_to_array(required.columns, ','))
           AND (
             SELECT string_agg(a.attname, ',' ORDER BY a.attname)
-            FROM unnest(i.indkey::int2[]) AS key(attnum)
+            FROM unnest(i.indkey::int2[]) WITH ORDINALITY AS key(attnum, position)
             JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = key.attnum
+            WHERE key.position <= i.indnkeyatts
           ) = required.columns
       )
       UNION ALL
-      SELECT 'privilege' FROM unnest($6::text[]) AS required(table_name)
-      CROSS JOIN unnest($7::text[]) AS wanted(privilege)
+      SELECT 'privilege' FROM unnest($9::text[], $10::text[]) AS required(table_name, privilege)
       WHERE to_regclass(required.table_name) IS NOT NULL
-        AND NOT has_table_privilege(to_regclass(required.table_name), wanted.privilege)
+        AND NOT has_table_privilege(to_regclass(required.table_name), required.privilege)
       `,
       [
         REQUIRED_RELATIONS,
         REQUIRED_COLUMNS.map((required) => required.table),
         REQUIRED_COLUMNS.map((required) => required.column),
+        REQUIRED_COLUMNS.map((required) => required.type),
         REQUIRED_KEYS.map((required) => required.table),
         REQUIRED_KEYS.map((required) => required.columns),
-        REQUIRED_TABLES,
-        REQUIRED_TABLE_PRIVILEGES,
+        REQUIRED_KEYS.map((required) => required.index),
+        REQUIRED_KEYS.map((required) => required.predicate),
+        privileges.map((required) => required.table),
+        privileges.map((required) => required.privilege),
       ]
     );
     if (result.rows.some((row) => row.kind === "missing")) {
