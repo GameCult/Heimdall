@@ -1655,3 +1655,67 @@ describe("a backend handoff the app refuses", () => {
     expect(JSON.stringify(failure) + String(failure)).not.toContain("CANARY");
   });
 });
+
+describe("a provider answer Heimdall cannot use", () => {
+  const runtimes = createOAuthRuntimeRegistry();
+  const notJson = '{"access_token":"CANARYaccess","refresh_token":CANARYrefresh}';
+  const refusal = '{"error":"invalid_grant","echo":"CANARYrefused"}';
+
+  /** What the call threw, as every form a catcher might record or print. */
+  async function failureOf(call: () => Promise<unknown>) {
+    const error = await call().then(
+      () => undefined,
+      (caught: unknown) => caught
+    );
+    expect(error).toBeInstanceOf(Error);
+    return {
+      error: error as Error & { code?: unknown; status?: unknown },
+      printed: `${String(error)} ${(error as Error).stack ?? ""} ${JSON.stringify(error)}`,
+    };
+  }
+
+  it.each([
+    ["a 2xx body that is not JSON", () => new Response(notJson, { status: 200 }), "provider_body_not_json", 200],
+    ["a refusal", () => new Response(refusal, { status: 401 }), "provider_status", 401],
+  ])("fails the Discord token exchange on %s by status and code alone", async (_name, answer, code, status) => {
+    globalThis.fetch = async () => answer();
+    const { error, printed } = await failureOf(() =>
+      runtimes.discord.exchangeAuthorizationCode({ config: createTestConfig(), code: "c", redirectUri: "https://heimdall.gamecult.org/cb" })
+    );
+
+    expect(error.name).toBe("ProviderResponseError");
+    expect(error.code).toBe(code);
+    expect(error.status).toBe(status);
+    expect(printed).not.toContain("CANARY");
+  });
+
+  it("fails the Discord guild lookup on a 2xx body that is not JSON by status and code alone", async () => {
+    globalThis.fetch = async () => new Response(notJson, { status: 200 });
+    const { error, printed } = await failureOf(() =>
+      runtimes.discord.evaluateEntitlements({
+        config: createTestConfig(),
+        callback: {
+          appSlug: "ghostlight",
+          accountId: "account-1",
+          connection: null,
+          entitlementPolicy: { kind: "discord_role_access", guildId: "g", allowedRoleIds: ["r"] },
+        },
+        identity: { provider: "discord", providerUserId: "u1", profile: {} },
+        tokenSet: { accessToken: "a", tokenType: "Bearer", scope: [], raw: {} },
+      })
+    );
+
+    expect(error.code).toBe("provider_body_not_json");
+    expect(printed).not.toContain("CANARY");
+  });
+
+  it("fails the YouTube channel lookup on a 2xx body that is not JSON by status and code alone", async () => {
+    globalThis.fetch = async () => new Response(notJson, { status: 200 });
+    const { error, printed } = await failureOf(() =>
+      runtimes.youtube.resolveIdentity({ config: createTestConfig(), accessToken: "a" })
+    );
+
+    expect(error.code).toBe("provider_body_not_json");
+    expect(printed).not.toContain("CANARY");
+  });
+});
