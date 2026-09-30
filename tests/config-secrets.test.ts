@@ -45,6 +45,7 @@ describe("readSecretInput", () => {
       ["from-the-file\n", "from-the-file"],
       ["from-the-file\r\n", "from-the-file"],
       ["two-newlines\n\n", "two-newlines\n"],
+      ["line-one\nline-two\n", "line-one\nline-two"],
       ["  inner spaces kept  \n", "  inner spaces kept  "],
       ["no-newline", "no-newline"],
     ];
@@ -145,6 +146,12 @@ describe("loadConfig secret inputs", () => {
       []
     );
     expect(config.storage.backend).toBe("postgres");
+  });
+
+  it("keeps memory storage when no database URL is bound, and postgres when it is asked for", () => {
+    expect(loadConfig({}, []).storage.backend).toBe("memory");
+    expect(loadConfig({ GC_ACCESS_STORAGE_BACKEND: "memory" }, []).storage.backend).toBe("memory");
+    expect(loadConfig({ GC_ACCESS_STORAGE_BACKEND: "postgres" }, []).storage.backend).toBe("postgres");
   });
 
   it("refuses to start when the database URL file is absent", () => {
