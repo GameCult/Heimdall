@@ -1,3 +1,4 @@
+import { inspect } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { type FastifyInstance } from "fastify";
 import { buildApp, errorIdentity } from "../src/app.js";
@@ -1699,7 +1700,8 @@ describe("a provider answer Heimdall cannot use", () => {
     expect(error).toBeInstanceOf(Error);
     return {
       error: error as Error & { code?: unknown; status?: unknown },
-      printed: `${String(error)} ${(error as Error).stack ?? ""} ${JSON.stringify(error)}`,
+      // inspect shows what the others miss, such as a non-enumerable cause.
+      printed: `${String(error)} ${(error as Error).stack ?? ""} ${JSON.stringify(error)} ${inspect(error, { depth: 5, showHidden: true })}`,
     };
   }
 

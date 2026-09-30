@@ -1,8 +1,7 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { appProfiles } from "../src/app-profiles.js";
 import { appSlugs, providers } from "../src/contracts.js";
-import { loadConfig } from "../src/config.js";
 import { providerCatalog } from "../src/providers.js";
 
 // The Idunn recipe decides which environment names a binding may set, and
@@ -31,80 +30,107 @@ const everyDeclaredName = [...recipe.replace(/\r\n/g, "\n").matchAll(/^\w+_envir
 // loadConfig runs against an environment that records every name it looks
 // up. readSecretInput looks up `NAME_FILE` for each secret, so every `_FILE`
 // lookup names one, however the call is spelled and whatever list computes
-// the name. The same recorder stands in for process.env during the call, so a
-// read that bypasses the env argument is seen too.
+// the name. The recorder also stands in for process.env, both while config.ts
+// is imported (freshly, so a copy of process.env taken at module load is the
+// recorder too) and during every call.
 //
 // A read made from a copy of the environment ({ ...env }, Object.entries)
 // cannot be seen, so copying or enumerating it is recorded and fails below.
 //
-// A secret read only on a branch that some value opens is reached by running
-// loadConfig over many environments: every secret found so far set in
-// plaintext, then each name read so far set to each probe value in turn, then
-// every such name set to one probe value at once, until no run reads a new
-// name. A run that throws still counts the reads it made first.
-const probeValues = ["1", "true", "/probe/path", "127.0.0.1:4100", "https://probe.test"];
+// A secret read only on a branch some value opens is reached by running
+// loadConfig over many environments, until no run reads a new name: every
+// secret found so far set in plaintext; then each name read so far set to
+// each probe value (a few shapes, plus every string literal in config.ts);
+// then every name at once, each set to a value loadConfig accepted for it
+// alone. A run that throws still counts the reads it made first.
+//
+// Known limit: a read gated on a value that is none of the probe values and
+// not accepted alone in combination with the others stays unseen.
+const configSource = readFileSync(new URL("../src/config.ts", import.meta.url), "utf8");
+const probeValues = [
+  ...new Set(["1", "true", "/probe/path", "127.0.0.1:4100", "https://probe.test", ...[...configSource.matchAll(/"([^"\\\r\n]+)"/g)].map((m) => m[1]!)]),
+];
 
-function readsOf(values: Readonly<Record<string, string>>): { names: Set<string>; enumerated: boolean } {
-  const names = new Set<string>();
-  let enumerated = false;
-  const record = (name: string | symbol) => {
-    if (typeof name === "string") names.add(name);
-  };
-  const env = new Proxy({} as NodeJS.ProcessEnv, {
-    get(_target, name) {
-      record(name);
-      return typeof name === "string" ? values[name] : undefined;
-    },
-    has(_target, name) {
-      record(name);
-      return typeof name === "string" && name in values;
-    },
-    ownKeys() {
-      enumerated = true;
-      return [];
-    },
-    getOwnPropertyDescriptor() {
-      enumerated = true;
-      return undefined;
-    },
-  });
+const recorder = { values: {} as Record<string, string>, names: new Set<string>(), enumerated: false };
+const recordingEnv = new Proxy({} as NodeJS.ProcessEnv, {
+  get(_target, name) {
+    if (typeof name !== "string") return undefined;
+    recorder.names.add(name);
+    return recorder.values[name];
+  },
+  has(_target, name) {
+    if (typeof name !== "string") return false;
+    recorder.names.add(name);
+    return name in recorder.values;
+  },
+  ownKeys() {
+    recorder.enumerated = true;
+    return [];
+  },
+  getOwnPropertyDescriptor() {
+    recorder.enumerated = true;
+    return undefined;
+  },
+});
+
+async function withRecordingProcessEnv<T>(run: () => T | Promise<T>): Promise<T> {
   const processEnv = process.env;
-  process.env = env;
+  process.env = recordingEnv;
   try {
-    loadConfig(env, []);
-  } catch {
-    // The reads before the refusal still count.
+    return await run();
   } finally {
     process.env = processEnv;
   }
-  return { names, enumerated };
 }
 
-function exploreLoadConfig(): { names: Set<string>; enumerated: boolean } {
+vi.resetModules();
+const { loadConfig } = await withRecordingProcessEnv(() => import("../src/config.js"));
+
+/** The names one loadConfig run reads under `values`, and whether it accepted them. */
+async function readsOf(values: Readonly<Record<string, string>>): Promise<{ names: Set<string>; accepted: boolean }> {
+  recorder.values = { ...values };
+  recorder.names = new Set();
+  let accepted = true;
+  await withRecordingProcessEnv(() => {
+    try {
+      loadConfig(recordingEnv, []);
+    } catch {
+      accepted = false; // the reads before the refusal still count
+    }
+  });
+  return { names: recorder.names, accepted };
+}
+
+async function exploreLoadConfig(): Promise<{ names: Set<string>; enumerated: boolean }> {
   const names = new Set<string>();
-  let enumerated = false;
+  recorder.enumerated = false;
   const secretsOf = () => [...names].filter((name) => name.endsWith("_FILE")).map((name) => name.slice(0, -"_FILE".length));
   for (let grew = true; grew; ) {
     const before = names.size;
     const secrets = Object.fromEntries(secretsOf().map((name) => [name, "probe-secret"]));
     const settable = [...names].filter((name) => !name.endsWith("_FILE") && !(name in secrets));
-    const runs: Array<Record<string, string>> = [
-      {},
-      secrets,
-      ...settable.flatMap((name) => probeValues.map((value) => ({ ...secrets, [name]: value }))),
-      ...probeValues.map((value) => ({ ...secrets, ...Object.fromEntries(settable.map((name) => [name, value])) })),
-    ];
-    for (const values of runs) {
-      const run = readsOf(values);
-      run.names.forEach((name) => names.add(name));
-      enumerated ||= run.enumerated;
+    const accepted = new Map<string, string[]>();
+    const keep = (run: { names: Set<string> }) => run.names.forEach((name) => names.add(name));
+    keep(await readsOf({}));
+    keep(await readsOf(secrets));
+    for (const name of settable) {
+      for (const value of probeValues) {
+        const run = await readsOf({ ...secrets, [name]: value });
+        keep(run);
+        if (run.accepted) accepted.set(name, [...(accepted.get(name) ?? []), value]);
+      }
+    }
+    const widest = Math.max(0, ...[...accepted.values()].map((values) => values.length));
+    for (let round = 0; round < widest; round += 1) {
+      const together = Object.fromEntries([...accepted].map(([name, values]) => [name, values[round % values.length]!]));
+      keep(await readsOf({ ...secrets, ...together }));
     }
     grew = names.size > before;
   }
-  return { names, enumerated };
+  return { names, enumerated: recorder.enumerated };
 }
 
-const explored = exploreLoadConfig();
+const explored = await exploreLoadConfig();
 
 /** Secrets Heimdall reads through readSecretInput, by their plaintext name. */
 const secretNames = [...explored.names]
