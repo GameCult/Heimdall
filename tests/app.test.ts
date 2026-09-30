@@ -1542,9 +1542,25 @@ describe("the failed-callback audit event for a provider's HTTP refusal", () => 
     expect(failed[0]!.eventPayloadJson).toEqual({
       provider: "discord",
       mode: "sign_in",
-      errorClass: "ProviderHttpError",
-      errorCode: null,
+      errorClass: "ProviderResponseError",
+      errorCode: "provider_status",
       providerStatus: 401,
+    });
+    expect(JSON.stringify(failed)).not.toContain("CANARY");
+  });
+
+  it("keeps a 2xx body that is not JSON out of the event, by class and code alone", async () => {
+    const failed = await auditAfterTokenExchangeAnswers(
+      () => new Response('{"access_token":"CANARYaccess","refresh_token":CANARYrefresh}', { status: 200 })
+    );
+
+    expect(failed).toHaveLength(1);
+    expect(failed[0]!.eventPayloadJson).toEqual({
+      provider: "discord",
+      mode: "sign_in",
+      errorClass: "ProviderResponseError",
+      errorCode: "provider_body_not_json",
+      providerStatus: 200,
     });
     expect(JSON.stringify(failed)).not.toContain("CANARY");
   });

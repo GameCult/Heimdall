@@ -249,6 +249,19 @@ function relayedProviderText(value: string | undefined, bound: number): string |
   return printable ? printable : undefined;
 }
 
+/**
+ * What may be recorded or answered about a caught error: its class and its
+ * code, each only when it is a short identifier. Never its message, which
+ * carries whatever the thrower quoted (a host, a database, a provider's body).
+ */
+export function errorIdentity(error: unknown): { errorClass: string; errorCode: string | null } {
+  const code = (error as { code?: unknown } | null)?.code;
+  return {
+    errorClass: error instanceof Error && /^[A-Za-z]{1,64}$/.test(error.name) ? error.name : "Error",
+    errorCode: typeof code === "string" && /^[A-Za-z0-9_]{1,64}$/.test(code) ? code : null,
+  };
+}
+
 function prefersHtml(acceptHeader: string | undefined): boolean {
   if (!acceptHeader) {
     return false;
@@ -1333,9 +1346,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         // resolver error names a constraint, the host or the database, and
         // JSON.parse quotes the provider's response body. The audit event
         // keeps the error's class, its code, and a provider's HTTP status.
-        const code = (error as { code?: unknown }).code;
         const status = (error as { status?: unknown }).status;
-        const errorClass = error instanceof Error && /^[A-Za-z]{1,64}$/.test(error.name) ? error.name : "Error";
         const failure = "The provider callback could not be completed.";
         const nowIso = new Date().toISOString();
         await denyBrowserAttempt("oauth_callback_failed");
@@ -1345,8 +1356,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           eventPayloadJson: {
             provider: request.params.provider,
             mode: statePayload.mode,
-            errorClass,
-            errorCode: typeof code === "string" && /^[A-Za-z0-9_]{1,64}$/.test(code) ? code : null,
+            ...errorIdentity(error),
             providerStatus: typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599 ? status : null,
           },
           createdAt: nowIso,

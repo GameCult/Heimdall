@@ -60,29 +60,42 @@ export interface OAuthProviderRuntime {
 }
 
 /**
- * A provider answered with a non-2xx status. It carries the status and never
- * the response body: a provider's body can quote the request, and whatever
- * catches this may record or print it.
+ * A provider answer Heimdall cannot use: a non-2xx status, or a body that is
+ * not JSON. It carries the status and a code, never the body or the parser's
+ * message: a provider's body can quote the request or hold tokens (JSON.parse
+ * quotes the text around the fault), and whatever catches this may record,
+ * print or relay it.
  */
-export class ProviderHttpError extends Error {
+export class ProviderResponseError extends Error {
   readonly status: number;
+  readonly code: "provider_status" | "provider_body_not_json";
 
-  constructor(status: number, failure: string) {
-    super(`${failure} (status ${status}).`);
-    this.name = "ProviderHttpError";
+  constructor(status: number, code: ProviderResponseError["code"], failure: string) {
+    super(`${failure} (status ${status}, ${code}).`);
+    this.name = "ProviderResponseError";
     this.status = status;
+    this.code = code;
   }
 }
 
-async function fetchJson<T>(input: string | URL, init: RequestInit, fallbackError: string): Promise<T> {
-  const response = await fetch(input, init);
+/** The JSON body of a provider's answer; refuses any other answer by status and code alone. */
+async function readProviderJson<T>(response: Response, failure: string): Promise<T> {
   const text = await response.text();
-
   if (!response.ok) {
-    throw new ProviderHttpError(response.status, fallbackError);
+    throw new ProviderResponseError(response.status, "provider_status", failure);
   }
+  if (!text) {
+    return {} as T;
+  }
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new ProviderResponseError(response.status, "provider_body_not_json", failure);
+  }
+}
 
-  return (text ? JSON.parse(text) : {}) as T;
+async function fetchJson<T>(input: string | URL, init: RequestInit, failure: string): Promise<T> {
+  return readProviderJson<T>(await fetch(input, init), failure);
 }
 
 function normalizeScopes(scope: string | string[] | undefined): string[] {
@@ -783,7 +796,7 @@ async function resolveYouTubeIdentity(options: { accessToken: string }): Promise
   });
 
   if (channelResponse.ok) {
-    const payload = (await channelResponse.json()) as {
+    const payload = await readProviderJson<{
       items?: Array<{
         id: string;
         snippet?: {
@@ -796,7 +809,7 @@ async function resolveYouTubeIdentity(options: { accessToken: string }): Promise
           };
         };
       }>;
-    };
+    }>(channelResponse, "YouTube channel lookup failed");
     const channel = payload.items?.[0];
 
     if (channel?.id) {
@@ -937,16 +950,11 @@ async function evaluateDiscordEntitlements(options: {
     };
   }
 
-  if (!response.ok) {
-    throw new ProviderHttpError(response.status, "Discord guild member lookup failed");
-  }
-  const text = await response.text();
-
-  const member = (text ? JSON.parse(text) : {}) as {
+  const member = await readProviderJson<{
     nick?: string;
     roles?: string[];
     joined_at?: string;
-  };
+  }>(response, "Discord guild member lookup failed");
   const roles = member.roles ?? [];
   const matchedRoles = allowedRoleIds.filter((roleId) => roles.includes(roleId));
   const facts: string[] = [];

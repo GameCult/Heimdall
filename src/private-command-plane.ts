@@ -7,7 +7,7 @@ import {
   type CultNetOperationServer,
 } from "cultnet-ts";
 import { type FastifyInstance } from "fastify";
-import { getHeimdallRuntimeContext, refreshAppSession, startOAuthFlow, verifyRefreshToken } from "./app.js";
+import { errorIdentity, getHeimdallRuntimeContext, refreshAppSession, startOAuthFlow, verifyRefreshToken } from "./app.js";
 import { callerFromOpenedEnvelope } from "./app-caller.js";
 import { getAppProfile } from "./app-profiles.js";
 import { executeHeimdallAccessPlugin, HEIMDALL_ACCESS_PLUGIN_ID, type EvePluginAbiRequest } from "./access-plugin.js";
@@ -138,6 +138,12 @@ export async function startHeimdallPrivateCommandPlane(
         }
         return response(request, cachedResult.status, cachedResult.envelope, config.daemonId);
       } catch (error) {
+        // The reply's diagnostics travel outside the sealed envelope, and the
+        // caller logs them. Errors caught here carry input: JSON.parse quotes
+        // a provider's body, a store error names the database. So the
+        // diagnostic is fixed text plus the error's class and code; anything
+        // more lives only in a sealed payload the plane authored.
+        const { errorClass, errorCode } = errorIdentity(error);
         return {
           schemaVersion: "cultnet.operation_response.v0",
           messageId: request.messageId,
@@ -147,7 +153,7 @@ export async function startHeimdallPrivateCommandPlane(
           payloadSchema: "gamecult.cultnet.operation_failure.v1",
           payloadEncoding: "messagepack-base64",
           payload: Buffer.from(encode({ code: "private-command-denied", message: "Heimdall denied the private command." })).toString("base64"),
-          diagnostics: [error instanceof Error ? error.message : "Private command failed."],
+          diagnostics: [`Heimdall denied the private command (${errorClass}${errorCode ? `, ${errorCode}` : ""}).`],
           sourceRuntimeId: config.daemonId,
         };
       }
