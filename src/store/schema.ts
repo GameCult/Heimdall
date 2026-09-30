@@ -207,16 +207,14 @@ export const REQUIRED_COLUMNS = [
 
 /**
  * Every primary key and unique constraint a created table declares, by its
- * sorted columns. Foreign keys reference the primary keys, and each of the
- * store's ON CONFLICT clauses needs a unique index on exactly its columns:
- * without one, every such write fails.
+ * sorted columns. Each must stand as a unique, non-partial index on exactly
+ * those columns: the store's ON CONFLICT clauses and the foreign keys need
+ * nothing more, and without it every such write fails.
  */
 export const REQUIRED_KEYS = createdTables.flatMap(({ table, lines }) =>
   lines.flatMap((line) => {
-    const inline = /^(\w+) .*\bPRIMARY KEY\b/.exec(line);
-    const columns = inline?.[1] ?? keyColumns(line, "PRIMARY KEY");
-    if (columns) return [{ table, columns, primary: true }];
-    const unique = keyColumns(line, "UNIQUE");
-    return unique ? [{ table, columns: unique, primary: false }] : [];
+    const columns =
+      /^(\w+) .*\bPRIMARY KEY\b/.exec(line)?.[1] ?? keyColumns(line, "PRIMARY KEY") ?? keyColumns(line, "UNIQUE");
+    return columns ? [{ table, columns }] : [];
   })
 );

@@ -250,12 +250,12 @@ describe("PostgresStore.checkSchema", () => {
     // The keys the store's ON CONFLICT clauses and the foreign keys rely on.
     expect(REQUIRED_KEYS).toEqual(
       expect.arrayContaining([
-        { table: "linked_identities", columns: "provider,provider_user_id", primary: false },
-        { table: "sessions", columns: "id", primary: true },
-        { table: "private_command_receipts", columns: "app_slug,idempotency_key", primary: true },
-        { table: "entitlement_snapshots", columns: "account_id,provider,scope", primary: false },
-        { table: "accounts", columns: "id", primary: true },
-        { table: "auth_completions", columns: "code", primary: true },
+        { table: "linked_identities", columns: "provider,provider_user_id" },
+        { table: "sessions", columns: "id" },
+        { table: "private_command_receipts", columns: "app_slug,idempotency_key" },
+        { table: "entitlement_snapshots", columns: "account_id,provider,scope" },
+        { table: "accounts", columns: "id" },
+        { table: "auth_completions", columns: "code" },
       ])
     );
     expect(REQUIRED_KEYS).toHaveLength(11);

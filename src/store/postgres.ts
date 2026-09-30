@@ -319,13 +319,12 @@ export class PostgresStore implements HeimdallStore {
           AND NOT a.attisdropped
       )
       UNION ALL
-      SELECT 'missing' FROM unnest($4::text[], $5::text[], $6::boolean[]) AS required(table_name, columns, is_primary)
+      SELECT 'missing' FROM unnest($4::text[], $5::text[]) AS required(table_name, columns)
       WHERE NOT EXISTS (
         SELECT 1 FROM pg_index i
         WHERE i.indrelid = to_regclass(required.table_name)
           AND i.indisunique
           AND i.indpred IS NULL
-          AND (i.indisprimary OR NOT required.is_primary)
           AND i.indnatts = cardinality(string_to_array(required.columns, ','))
           AND (
             SELECT string_agg(a.attname, ',' ORDER BY a.attname)
@@ -334,8 +333,8 @@ export class PostgresStore implements HeimdallStore {
           ) = required.columns
       )
       UNION ALL
-      SELECT 'privilege' FROM unnest($7::text[]) AS required(table_name)
-      CROSS JOIN unnest($8::text[]) AS wanted(privilege)
+      SELECT 'privilege' FROM unnest($6::text[]) AS required(table_name)
+      CROSS JOIN unnest($7::text[]) AS wanted(privilege)
       WHERE to_regclass(required.table_name) IS NOT NULL
         AND NOT has_table_privilege(to_regclass(required.table_name), wanted.privilege)
       `,
@@ -345,7 +344,6 @@ export class PostgresStore implements HeimdallStore {
         REQUIRED_COLUMNS.map((required) => required.column),
         REQUIRED_KEYS.map((required) => required.table),
         REQUIRED_KEYS.map((required) => required.columns),
-        REQUIRED_KEYS.map((required) => required.primary),
         REQUIRED_TABLES,
         REQUIRED_TABLE_PRIVILEGES,
       ]
