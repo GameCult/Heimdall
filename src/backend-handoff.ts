@@ -44,10 +44,10 @@ export async function deliverBackendHandoff(callbackUrl: string, payload: Backen
     body: JSON.stringify(payload),
   });
 
+  // The status alone: the app's answer body can quote the handoff, which
+  // carries tokens, and whatever catches this may record or print it.
   if (!response.ok) {
-    const body = await response.text();
-    throw new Error(
-      `Backend handoff delivery failed (status ${response.status}): ${body || "empty response"}`
-    );
+    await response.body?.cancel();
+    throw new Error(`Backend handoff delivery failed (status ${response.status}).`);
   }
 }

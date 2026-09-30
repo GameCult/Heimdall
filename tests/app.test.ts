@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { type FastifyInstance } from "fastify";
 import { buildApp } from "../src/app.js";
+import { deliverBackendHandoff, type BackendHandoffPayload } from "../src/backend-handoff.js";
 import { type HeimdallConfig, loadConfig } from "../src/config.js";
 import { entitlementFacts, identityFacts } from "../src/facts.js";
 import { createOAuthRuntimeRegistry, type OAuthProviderRuntime } from "../src/oauth.js";
@@ -1586,5 +1587,30 @@ describe("the failed-callback audit event for a provider's HTTP refusal", () => 
     const events = [...(store as unknown as { auditEvents: Map<string, { eventType: string; eventPayloadJson: Record<string, unknown> }> }).auditEvents.values()];
     const failed = events.find((event) => event.eventType === "oauth_callback_failed");
     expect(failed?.eventPayloadJson.providerStatus).toBeNull();
+  });
+});
+
+describe("a backend handoff the app refuses", () => {
+  it("fails by status alone, never with the app's answer body", async () => {
+    globalThis.fetch = async () => new Response('{"error":"rejected","echo":"CANARYhandoff"}', { status: 500 });
+    const failure = await deliverBackendHandoff("https://bifrost.gamecult.org/auth/heimdall/callback", {
+      source: "heimdall",
+      kind: "oauth_result",
+      handoffKind: "backend_callback",
+      attemptId: "attempt-1",
+      status: "error",
+      provider: "discord",
+      appSlug: "bifrost",
+      returnTo: "https://bifrost.gamecult.org/",
+      connection: null,
+      error: "oauth_callback_failed",
+    } as BackendHandoffPayload).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toBe("Backend handoff delivery failed (status 500).");
+    expect(JSON.stringify(failure) + String(failure)).not.toContain("CANARY");
   });
 });
