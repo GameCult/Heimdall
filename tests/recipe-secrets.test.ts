@@ -42,7 +42,10 @@ const everyDeclaredName = [...recipe.replace(/\r\n/g, "\n").matchAll(/^\w+_envir
 // secret found so far set in plaintext; then each name read so far set to
 // each probe value (a few shapes, plus every string literal in config.ts);
 // then every name at once, each set to a value loadConfig accepted for it
-// alone. A run that throws still counts the reads it made first.
+// alone; and every combined run again as Idunn starts Heimdall, with the
+// recipe's service arguments and a candidate socket with its base URL, a
+// pair loadConfig refuses one name at a time. A run that throws still counts
+// the reads it made first.
 //
 // Known limit: a read gated on a value that is none of the probe values and
 // not accepted alone in combination with the others stays unseen.
@@ -83,17 +86,31 @@ async function withRecordingProcessEnv<T>(run: () => T | Promise<T>): Promise<T>
   }
 }
 
+/**
+ * How Idunn starts Heimdall: the recipe's [service] arguments after the
+ * entry script, each binding given a probe value, and the environment an
+ * Idunn candidate always has (a loopback socket, which requires the base URL).
+ */
+const recipeArguments = [...(/^\[service\][\s\S]*?^arguments = \[([\s\S]*?)^\]/m.exec(recipe.replace(/\r\n/g, "\n"))?.[1] ?? "").matchAll(
+  /\{ kind = "(literal|binding)", (?:value|name) = "([^"]+)" \}/g
+)].map((match) => (match[1] === "literal" ? match[2]! : "/probe/idunn-binding"));
+const idunnArgv = recipeArguments.slice(1);
+const idunnEnv = { GAMECULT_IDUNN_CANDIDATE_BIND: "127.0.0.1:4100", GC_ACCESS_BASE_URL: "https://probe.test" };
+
 vi.resetModules();
 const { loadConfig } = await withRecordingProcessEnv(() => import("../src/config.js"));
 
 /** The names one loadConfig run reads under `values`, and whether it accepted them. */
-async function readsOf(values: Readonly<Record<string, string>>): Promise<{ names: Set<string>; accepted: boolean }> {
+async function readsOf(
+  values: Readonly<Record<string, string>>,
+  argv: readonly string[] = []
+): Promise<{ names: Set<string>; accepted: boolean }> {
   recorder.values = { ...values };
   recorder.names = new Set();
   let accepted = true;
   await withRecordingProcessEnv(() => {
     try {
-      loadConfig(recordingEnv, []);
+      loadConfig(recordingEnv, argv);
     } catch {
       accepted = false; // the reads before the refusal still count
     }
@@ -113,6 +130,7 @@ async function exploreLoadConfig(): Promise<{ names: Set<string>; enumerated: bo
     const keep = (run: { names: Set<string> }) => run.names.forEach((name) => names.add(name));
     keep(await readsOf({}));
     keep(await readsOf(secrets));
+    keep(await readsOf({ ...secrets, ...idunnEnv }, idunnArgv));
     for (const name of settable) {
       for (const value of probeValues) {
         const run = await readsOf({ ...secrets, [name]: value });
@@ -124,6 +142,7 @@ async function exploreLoadConfig(): Promise<{ names: Set<string>; enumerated: bo
     for (let round = 0; round < widest; round += 1) {
       const together = Object.fromEntries([...accepted].map(([name, values]) => [name, values[round % values.length]!]));
       keep(await readsOf({ ...secrets, ...together }));
+      keep(await readsOf({ ...secrets, ...together, ...idunnEnv }, idunnArgv));
     }
     grew = names.size > before;
   }
@@ -159,6 +178,12 @@ describe("Idunn recipe secret declarations", () => {
       (name) => secretShaped.test(name) && !name.endsWith("_FILE") && !notSecrets.has(name)
     );
     expect(plaintext).toEqual([]);
+  });
+
+  it("starts the exploration the way the recipe starts Heimdall", async () => {
+    expect(idunnArgv).toEqual(["--state-root", "/probe/idunn-binding"]);
+    expect(serviceNames).toEqual(expect.arrayContaining(Object.keys(idunnEnv)));
+    expect((await readsOf({ ...idunnEnv }, idunnArgv)).accepted).toBe(true);
   });
 
   it("reads the environment only by name, never by copying or enumerating it", () => {
