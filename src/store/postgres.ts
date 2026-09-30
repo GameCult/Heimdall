@@ -453,9 +453,9 @@ export class PostgresStore implements HeimdallStore {
           WHERE key.position <= i.indnkeyatts
         ) = required.columns
         AND NOT EXISTS (
-          SELECT 1 FROM unnest(i.indcollation::oid[]) WITH ORDINALITY AS collation(oid, position)
-          JOIN pg_collation c ON c.oid = collation.oid
-          WHERE collation.position <= i.indnkeyatts AND NOT c.collisdeterministic
+          SELECT 1 FROM unnest(i.indcollation::oid[]) WITH ORDINALITY AS key_collation(oid, position)
+          JOIN pg_collation c ON c.oid = key_collation.oid
+          WHERE key_collation.position <= i.indnkeyatts AND NOT c.collisdeterministic
         )
       UNION ALL
       SELECT 'privilege', NULL, NULL, NULL
