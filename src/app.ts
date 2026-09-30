@@ -1689,7 +1689,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         },
         body,
       });
-      const bifrostBody = await bifrostResponse.text();
+      // Bifrost's answer is kept by its status alone, in the audit event and
+      // in the reply: another service's body can quote the signed fact or
+      // its own configuration, and both of those are stored and relayed.
+      await bifrostResponse.body?.cancel();
 
       await store.createAuditEvent({
         accountId: request.body.accountId,
@@ -1700,7 +1703,6 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           requiredTierTitle: request.body.requiredTierTitle,
           providerEventId: supportFact.providerEventId,
           bifrostStatus: bifrostResponse.status,
-          bifrostResponse: bifrostBody,
         },
         createdAt: now,
       });
@@ -1710,14 +1712,14 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         return {
           error: "bifrost_patron_support_rejected",
           statusCode: bifrostResponse.status,
-          detail: bifrostBody,
+          detail: "Bifrost refused the patron support fact.",
         };
       }
 
       return {
         status: "synced",
         supportFact,
-        bifrostResponse: bifrostBody,
+        bifrostStatus: bifrostResponse.status,
       };
     }
   );

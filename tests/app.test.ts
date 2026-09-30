@@ -518,7 +518,7 @@ describe("Heimdall service", () => {
     }
   });
 
-  it("syncs a linked Patreon membership into a signed Bifrost support fact", async () => {
+  async function syncPatronSupport(bifrostAnswer: () => Response) {
     const baseConfig = createTestConfig();
     const config = {
       ...baseConfig,
@@ -589,7 +589,7 @@ describe("Heimdall service", () => {
         bifrostBody = String(init?.body ?? "");
         const headers = init?.headers as Record<string, string>;
         bifrostSignature = headers["x-heimdall-signature-256"] ?? "";
-        return new Response("processed", { status: 200 });
+        return bifrostAnswer();
       }
 
       return new Response("unexpected request", { status: 500 });
@@ -608,6 +608,15 @@ describe("Heimdall service", () => {
       },
     });
 
+    const auditEvents = [...(store as unknown as { auditEvents: Map<string, { eventType: string; eventPayloadJson: unknown }> }).auditEvents.values()];
+    return { response, auditEvents, bifrostBody, bifrostSignature, now };
+  }
+
+  it("syncs a linked Patreon membership into a signed Bifrost support fact", async () => {
+    const { response, auditEvents, bifrostBody, bifrostSignature, now } = await syncPatronSupport(
+      () => new Response("processed CANARYbifrost", { status: 200 })
+    );
+
     expect(response.statusCode, response.body).toBe(200);
     expect(bifrostSignature).toMatch(/^sha256=[0-9a-f]{64}$/);
     expect(JSON.parse(bifrostBody)).toEqual({
@@ -624,12 +633,44 @@ describe("Heimdall service", () => {
       providerSubscriptionId: "member-789",
       notes: "Verified active Patreon membership for tier Inner Sanctum.",
     });
-    expect(response.json()).toEqual(
-      expect.objectContaining({
-        status: "synced",
-        bifrostResponse: "processed",
-      })
+    expect(response.json()).toEqual(expect.objectContaining({ status: "synced", bifrostStatus: 200 }));
+    expect(auditEvents.map((event) => [event.eventType, event.eventPayloadJson])).toEqual([
+      [
+        "bifrost_patron_support_synced",
+        {
+          provider: "patreon",
+          requiredTierTitle: "Inner Sanctum",
+          providerEventId: "patreon-membership-snapshot:patreon-user-456:member-789:2026-06-09:1500",
+          bifrostStatus: 200,
+        },
+      ],
+    ]);
+    expect(response.body + JSON.stringify(auditEvents)).not.toContain("CANARY");
+  });
+
+  it("answers a Bifrost refusal with fixed text and its status, never its body", async () => {
+    const { response, auditEvents } = await syncPatronSupport(
+      () => new Response('{"error":"bad signature","echo":"CANARYrefusal"}', { status: 403 })
     );
+
+    expect(response.statusCode).toBe(502);
+    expect(response.json()).toEqual({
+      error: "bifrost_patron_support_rejected",
+      statusCode: 403,
+      detail: "Bifrost refused the patron support fact.",
+    });
+    expect(auditEvents.map((event) => [event.eventType, event.eventPayloadJson])).toEqual([
+      [
+        "bifrost_patron_support_sync_failed",
+        {
+          provider: "patreon",
+          requiredTierTitle: "Inner Sanctum",
+          providerEventId: "patreon-membership-snapshot:patreon-user-456:member-789:2026-06-09:1500",
+          bifrostStatus: 403,
+        },
+      ],
+    ]);
+    expect(response.body + JSON.stringify(auditEvents)).not.toContain("CANARY");
   });
 
   it("redeems a completion code exactly once", async () => {
