@@ -1304,10 +1304,12 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           sessionId: issued.session.sessionId,
           appSlug: statePayload.app_slug,
           eventType: "auth_completion_created",
+          // Never the completion code: until it expires, the unauthenticated
+          // redeem route turns it into the session. The event's sessionId
+          // already names the completion, one per callback.
           eventPayloadJson: {
             provider: request.params.provider,
             mode: statePayload.mode,
-            completionCode: completion.code,
             expiresAt: completion.expiresAt,
           },
           createdAt: nowIso,
@@ -1449,7 +1451,6 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         eventPayloadJson: {
           provider: completion.provider,
           mode: completion.mode,
-          completionCode: completion.code,
         },
         createdAt: nowIso,
       });

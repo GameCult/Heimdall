@@ -717,6 +717,33 @@ describe("Heimdall service", () => {
     expect(secondRedeemResponse.statusCode).toBe(410);
   });
 
+  it("keeps the completion code out of the audit trail, live or redeemed", async () => {
+    const store = new InMemoryStore();
+    const app = await buildApp({ config: createTestConfig(), store, oauthRuntimes: { discord: createMockDiscordRuntime() } });
+    apps.push(app);
+    const auditEvents = () =>
+      [...(store as unknown as { auditEvents: Map<string, { eventType: string; sessionId?: string; eventPayloadJson: unknown }> }).auditEvents.values()];
+
+    const stateToken = await startDiscordSignIn(app);
+    const callback = await app.inject({
+      method: "GET",
+      url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(stateToken)}`,
+    });
+    const { code, expiresAt } = callback.json().completion as { code: string; expiresAt: string };
+    const created = auditEvents().filter((event) => event.eventType === "auth_completion_created");
+    expect(created.map((event) => event.eventPayloadJson)).toEqual([{ provider: "discord", mode: "sign_in", expiresAt }]);
+    expect(created[0]!.sessionId).toEqual(expect.any(String));
+    // While the code is live, the audit trail must not be a way to redeem it.
+    expect(JSON.stringify(auditEvents())).not.toContain(code);
+
+    const redeem = await app.inject({ method: "POST", url: "/v1/apps/repixelizer/auth-completions/redeem", payload: { completionCode: code } });
+    expect(redeem.statusCode).toBe(201);
+    const redeemed = auditEvents().filter((event) => event.eventType === "auth_completion_redeemed");
+    expect(redeemed.map((event) => event.eventPayloadJson)).toEqual([{ provider: "discord", mode: "sign_in" }]);
+    expect(redeemed[0]!.sessionId).toBe(created[0]!.sessionId);
+    expect(JSON.stringify(auditEvents())).not.toContain(code);
+  });
+
   it("refreshes a Repixelizer app claim from a Heimdall refresh token without provider OAuth", async () => {
     const store = new InMemoryStore();
     let exchangeCalls = 0;

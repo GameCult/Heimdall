@@ -109,3 +109,42 @@ it("keeps a provider's refusal body out of every plaintext part of the reply", a
   expect(reply.diagnostics).toEqual(["Heimdall denied the private command (ProviderResponseError, provider_status)."]);
   expect(plaintext(reply)).not.toContain("CANARY");
 });
+
+it("keeps the completion code out of the audit trail when the plane redeems by attempt", async () => {
+  vi.stubGlobal("fetch", async (url: string | URL) => {
+    const u = String(url);
+    if (u.endsWith("/oauth2/token")) {
+      return new Response(
+        JSON.stringify({ access_token: "a", refresh_token: "r", token_type: "Bearer", expires_in: 60, scope: "identify" }),
+        { status: 200 }
+      );
+    }
+    if (u.endsWith("/users/@me")) return new Response(JSON.stringify({ id: "u1", username: "u1" }), { status: 200 });
+    if (u.includes("/member")) return new Response(JSON.stringify({ roles: ["r"] }), { status: 200 });
+    return new Response("{}", { status: 404 });
+  });
+  const cfg = config();
+  const store = new InMemoryStore();
+  const app = await buildApp({ config: cfg, store });
+  resources.push(app);
+  const plane = await startHeimdallPrivateCommandPlane(app, cfg);
+  resources.push(plane);
+  const policy = { kind: "discord_role_access", guildId: "g", allowedRoleIds: ["r"] };
+  const begin = open(await command(plane.endpoint, "heimdall.auth.begin", "heimdall.auth_begin_command.v1", "k1",
+    { provider: "discord", mode: "sign_in", returnTo: "https://yggdrasil.gamecult.org/ghostlight/", entitlementPolicy: policy }));
+  const state = new URL(String((begin.navigation as { url: string }).url)).searchParams.get("state")!;
+  const callback = await app.inject({
+    method: "GET",
+    url: `/v1/oauth/discord/callback?code=c1&state=${encodeURIComponent(state)}`,
+    headers: { accept: "application/json" },
+  });
+  const code = (callback.json().completion as { code: string }).code;
+  const done = open(await command(plane.endpoint, "heimdall.auth.complete", "heimdall.auth_complete_command.v1", "k2", { handle: begin.handle }));
+  expect(done.status).toBe("authenticated");
+
+  const events = [...(store as unknown as { auditEvents: Map<string, { eventType: string; eventPayloadJson: unknown }> }).auditEvents.values()];
+  expect(events.filter((event) => event.eventType === "auth_completion_redeemed").map((event) => event.eventPayloadJson)).toEqual([
+    { provider: "discord", mode: "sign_in" },
+  ]);
+  expect(JSON.stringify(events)).not.toContain(code);
+});

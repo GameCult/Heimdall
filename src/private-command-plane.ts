@@ -357,7 +357,6 @@ async function completeAuth(
     eventPayloadJson: {
       provider: completion.provider,
       mode: completion.mode,
-      completionCode: completion.code,
     },
     createdAt: now,
   });
