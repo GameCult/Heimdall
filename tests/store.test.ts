@@ -8,6 +8,7 @@ import {
   createPostgresStore,
   PostgresStore,
   predicateConditions,
+  printedDeclaredPredicates,
   samePredicate,
   STORE_TABLE_PRIVILEGES,
 } from "../src/store/postgres.js";
@@ -516,6 +517,17 @@ describe.skipIf(!adminUrl)("startup against a live Postgres (HEIMDALL_TEST_PG_AD
     expect(await start(urlFor(name, role, rolePassword), true)).toBe(refusal("42501"));
   });
 
+  it("prints each declared predicate exactly as Postgres prints the applied index's", async () => {
+    const { owner } = await appliedDatabase();
+    const printed = await printedDeclaredPredicates(owner);
+    const applied = await owner.query<{ predicate: string }>(
+      "SELECT pg_get_expr(indpred, indrelid) AS predicate FROM pg_index WHERE indexrelid = 'auth_completions_attempt_unconsumed_unique_idx'::regclass"
+    );
+    const attemptKey = REQUIRED_KEYS.findIndex((key) => key.predicate !== "");
+    expect(printed[attemptKey]).toBe(applied.rows[0]!.predicate);
+    expect(printed.filter((predicate) => predicate !== "")).toHaveLength(1);
+  });
+
   it("refuses a table whose primary key was dropped, even after applying the schema", async () => {
     const { name, owner } = await appliedDatabase();
     await owner.query("ALTER TABLE auth_completions DROP CONSTRAINT auth_completions_pkey");
@@ -580,6 +592,12 @@ describe.skipIf(!adminUrl)("startup against a live Postgres (HEIMDALL_TEST_PG_AD
         "DROP INDEX auth_completions_attempt_unconsumed_unique_idx",
         "INSERT INTO auth_completions (code, attempt_id, app_slug, provider, mode, account_id, session_id, return_to, payload_json, created_at, expires_at) VALUES ('c1', 'att', 'ghostlight', 'discord', 'sign_in', 'acc', 's', 'https://x/', '{}', now(), now() + interval '1 hour'), ('c2', 'att', 'ghostlight', 'discord', 'sign_in', 'acc', 's', 'https://x/', '{}', now(), now() + interval '1 hour')",
         "!CREATE UNIQUE INDEX CONCURRENTLY auth_completions_attempt_unconsumed_unique_idx ON auth_completions(app_slug, attempt_id) WHERE attempt_id IS NOT NULL AND consumed_at IS NULL"]],
+    // An interrupted DROP INDEX CONCURRENTLY leaves an index ready but not
+    // valid; the fixture sets that state directly (the admin role may).
+    ["a key left only as an index that is ready but not valid",
+      ["ALTER TABLE linked_identities DROP CONSTRAINT linked_identities_provider_provider_user_id_key",
+        "CREATE UNIQUE INDEX li_half_dropped ON linked_identities(provider, provider_user_id)",
+        "UPDATE pg_index SET indisvalid = false WHERE indexrelid = 'li_half_dropped'::regclass"]],
     ["a key compared under a case-insensitive collation (two users' ids become one row)",
       ["CREATE COLLATION heimdall_ci (provider = icu, locale = 'und-u-ks-level2', deterministic = false)",
         "ALTER TABLE linked_identities DROP CONSTRAINT linked_identities_provider_provider_user_id_key",

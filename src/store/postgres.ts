@@ -370,7 +370,7 @@ export function samePredicate(declared: string, actual: string, keyColumns: stri
  * it with the declared predicate, reads the printed form and rolls back.
  * The names and SQL are the schema's own constants, never input.
  */
-async function printedDeclaredPredicates(pool: Pick<Pool, "query">): Promise<string[]> {
+export async function printedDeclaredPredicates(pool: Pick<Pool, "query">): Promise<string[]> {
   const partial = REQUIRED_KEYS.flatMap((required, index) => (required.predicate ? [{ ...required, index }] : []));
   if (partial.length === 0) return REQUIRED_KEYS.map(() => "");
   const statements = partial.flatMap(({ table, columns, predicate, index }) => {
@@ -426,9 +426,10 @@ export class PostgresStore implements HeimdallStore {
    * columns. A missing or altered piece fails with code SCHEMA_MISSING and a
    * missing privilege with SCHEMA_PRIVILEGES; neither error names the piece.
    *
-   * A key is met by a unique index on its table that is valid and ready (a
-   * failed CREATE INDEX CONCURRENTLY leaves one that is neither), immediate
-   * (ON CONFLICT refuses a deferrable arbiter), has exactly the key's columns
+   * A key is met by a unique index on its table that is valid (a failed
+   * CREATE INDEX CONCURRENTLY or an interrupted DROP INDEX CONCURRENTLY leaves
+   * one that is not; Postgres never marks an index valid before it is ready),
+   * immediate (ON CONFLICT refuses a deferrable arbiter), has exactly the key's columns
    * as its key columns (INCLUDE columns aside), compares them under
    * deterministic collations (a case-insensitive one would merge two
    * providers' user ids into one row), and has the key's predicate. A
@@ -473,7 +474,6 @@ export class PostgresStore implements HeimdallStore {
       JOIN pg_index i ON i.indrelid = to_regclass(required.table_name)
       WHERE i.indisunique
         AND i.indisvalid
-        AND i.indisready
         AND i.indimmediate
         AND i.indnkeyatts = cardinality(string_to_array(required.columns, ','))
         AND (
