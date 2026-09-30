@@ -187,8 +187,15 @@ function keyColumns(line: string, keyword: "PRIMARY KEY" | "UNIQUE"): string | u
  * speed lookups are not required; the unique ones are, by shape, in
  * REQUIRED_KEYS.
  *
- * Out of scope: CHECK constraints, triggers and row-level security. Each can
- * make a write fail on a database that passes this check.
+ * Out of scope, each able to make a write fail on a database that passes the
+ * check: CHECK constraints; triggers; row-level security; unique indexes
+ * beyond the required keys, or stricter than them, including the leftovers of
+ * an interrupted concurrent index build (a valid extra one refuses rows the
+ * store expects to write, and even an invalid one that is ready is enforced
+ * on writes); NOT NULL columns the schema does not declare and that have no
+ * default, which the store's INSERTs leave out; and SELECT granted column by
+ * column when a statement reads `SELECT *` or `RETURNING *`, which needs
+ * SELECT on every column the table has, not only the declared ones.
  */
 
 /** Every table the schema creates. */
