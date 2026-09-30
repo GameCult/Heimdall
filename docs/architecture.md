@@ -572,34 +572,35 @@ every app's audience or product data.
 
 ## Configuration split
 
-Suggested generic env surface:
+Heimdall reads plain settings from its environment and every secret from a
+file. A secret input `NAME` is configured as `NAME_FILE`, the absolute path of
+a file holding only that value; under Idunn the binding binds it in
+`[workload.secret_files]` to a `root:root 0400` credential. A blank file is
+refused at startup, and so is setting both `NAME` and `NAME_FILE`.
 
-- `GC_ACCESS_ENABLED=1`
+Plain settings:
+
 - `GC_ACCESS_BASE_URL=https://heimdall.gamecult.org`
-- `GC_ACCESS_INTERNAL_URL=http://127.0.0.1:4100`
-- `GC_ACCESS_SESSION_SECRET=...`
-- `GC_ACCESS_SIGNING_PRIVATE_KEY_PATH=/var/lib/heimdall/signing-key.pem`
+- `GC_ACCESS_ISSUER=https://heimdall.gamecult.org`
+- `GC_ACCESS_STORAGE_BACKEND=postgres`
+- `GC_ACCESS_SIGNING_PRIVATE_KEY_PATH=/etc/gamecult/heimdall/credentials/signing-key.pem`
 - `GC_ACCESS_SIGNING_PRIVATE_KEY_BOOTSTRAP=1`
 - `GC_ACCESS_SIGNING_KEY_ID=...`
-- `GC_ACCESS_TOKEN_ENCRYPTION_KEY_BASE64=...`
 - `GC_ACCESS_SESSION_TTL_SECONDS=3600`
 - `GC_ACCESS_STATE_TTL_SECONDS=600`
-- `GC_ACCESS_PROVIDER_DISCORD_CLIENT_ID=...`
-- `GC_ACCESS_PROVIDER_DISCORD_CLIENT_SECRET=...`
-- `GC_ACCESS_PROVIDER_DISCORD_BOT_TOKEN=...`
-- `GC_ACCESS_PROVIDER_PATREON_CLIENT_ID=...`
-- `GC_ACCESS_PROVIDER_PATREON_CLIENT_SECRET=...`
-- `GC_ACCESS_PROVIDER_PATREON_CAMPAIGN_ID=...`
-- `GC_ACCESS_PROVIDER_GITHUB_CLIENT_ID=...`
-- `GC_ACCESS_PROVIDER_GITHUB_CLIENT_SECRET=...`
-- `GC_ACCESS_PROVIDER_TWITCH_CLIENT_ID=...`
-- `GC_ACCESS_PROVIDER_TWITCH_CLIENT_SECRET=...`
-- `GC_ACCESS_PROVIDER_YOUTUBE_CLIENT_ID=...`
-- `GC_ACCESS_PROVIDER_YOUTUBE_CLIENT_SECRET=...`
-- `GC_ACCESS_PROVIDER_SPOTIFY_CLIENT_ID=...`
-- `GC_ACCESS_PROVIDER_SPOTIFY_CLIENT_SECRET=...`
-- `GC_ACCESS_ENTITLEMENT_CACHE_TTL_SECONDS=900`
-- `GC_ACCESS_PROVIDER_FAILURE_GRACE_SECONDS=3600`
+- `GC_ACCESS_PROVIDER_{DISCORD,PATREON,GITHUB,TWITCH,YOUTUBE,SPOTIFY}_CLIENT_ID=...`
+- `GC_ACCESS_APP_{APP_SLUG}_BACKEND_CALLBACK_URLS=...`
+
+Secret files:
+
+- `GC_ACCESS_DATABASE_URL_FILE=/etc/gamecult/heimdall/credentials/GC_ACCESS_DATABASE_URL`
+- `GC_ACCESS_TOKEN_ENCRYPTION_KEY_BASE64_FILE=...`
+- `GC_ACCESS_PROVIDER_{DISCORD,PATREON,GITHUB,TWITCH,YOUTUBE,SPOTIFY}_CLIENT_SECRET_FILE=...`
+- `GC_ACCESS_APP_{APP_SLUG}_SHARED_SECRET_FILE=...`
+- `GC_ACCESS_BIFROST_PATRON_SUPPORT_SECRET_FILE=...`
+
+`src/config.ts` is the complete list; `deployment/idunn/recipe.toml` declares
+the subset an Idunn binding may set.
 
 Only configure the providers Heimdall actually owns for a given deployment.
 
@@ -610,7 +611,7 @@ ephemeral dev signing key. That is acceptable for local iteration and
 absolutely not acceptable for real deployment.
 
 Managed provider tokens should be sealed at rest with a stable
-`GC_ACCESS_TOKEN_ENCRYPTION_KEY_BASE64` secret. The current runtime will still
+`GC_ACCESS_TOKEN_ENCRYPTION_KEY_BASE64_FILE` secret. The current runtime will still
 mint an ephemeral dev token key for in-memory local work, but persistent
 Postgres deployments should treat a missing token-encryption key as a hard
 misconfiguration, not a vibe.

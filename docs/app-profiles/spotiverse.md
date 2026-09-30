@@ -38,7 +38,7 @@ Everything below this line is still accurate. To bring Spotiverse back:
    **`http://127.0.0.1:8796/auth/heimdall/callback`**; that exact URL was the
    allowlisted value.
 3. Configure `GC_ACCESS_PROVIDER_SPOTIFY_CLIENT_ID` and
-   `GC_ACCESS_PROVIDER_SPOTIFY_CLIENT_SECRET` in the host service environment.
+   `GC_ACCESS_PROVIDER_SPOTIFY_CLIENT_SECRET_FILE` pointing at a credential file.
    They were removed from `/srv/heimdall/env/service.env` on retirement, so a
    fresh Spotify application registration may be needed.
 4. Restore the three tests from `5a15f71` if the capabilities they covered
@@ -80,8 +80,8 @@ Heimdall needs:
 
 ```text
 GC_ACCESS_PROVIDER_SPOTIFY_CLIENT_ID=...
-GC_ACCESS_PROVIDER_SPOTIFY_CLIENT_SECRET=...
-GC_ACCESS_APP_SPOTIVERSE_SHARED_SECRET=...
+GC_ACCESS_PROVIDER_SPOTIFY_CLIENT_SECRET_FILE=/absolute/path/to/spotify-client-secret
+GC_ACCESS_APP_SPOTIVERSE_SHARED_SECRET_FILE=/absolute/path/to/spotiverse-shared-secret
 GC_ACCESS_APP_SPOTIVERSE_BACKEND_CALLBACK_URLS=https://your-spotiverse-portal.example/auth/heimdall/callback
 ```
 
