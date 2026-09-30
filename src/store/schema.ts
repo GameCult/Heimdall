@@ -180,30 +180,25 @@ function keyColumns(line: string, keyword: "PRIMARY KEY" | "UNIQUE"): string | u
   return match ? columnList(match[1]!) : undefined;
 }
 
-/**
- * An index predicate in the form the schema check compares: lower case, with
- * no parentheses or white space. Postgres stores `a IS NOT NULL AND b IS NULL`
- * back as `((a IS NOT NULL) AND (b IS NULL))`; both reduce to the same text.
- */
-export function comparablePredicate(predicate: string): string {
-  return predicate.toLowerCase().replace(/[()\s]/g, "");
-}
-
 /*
  * What every start must find before it serves, read from the SQL above so the
  * two cannot drift. A start that applies the schema checks as well, because
- * CREATE ... IF NOT EXISTS leaves a damaged table as it is.
+ * CREATE ... IF NOT EXISTS leaves a damaged table as it is. Indexes that only
+ * speed lookups are not required; the unique ones are, by shape, in
+ * REQUIRED_KEYS.
+ *
+ * Out of scope: CHECK constraints, triggers and row-level security. Each can
+ * make a write fail on a database that passes this check.
  */
 
-/** Every table and index the schema creates. */
-export const REQUIRED_RELATIONS = [
-  ...schemaText.matchAll(/^CREATE (?:UNIQUE )?(?:TABLE|INDEX) IF NOT EXISTS (\w+)/gm),
-].map((match) => match[1]!);
+/** Every table the schema creates. */
+export const REQUIRED_TABLES = createdTables.map(({ table }) => table);
 
 /**
  * Every column a created table declares and every column the schema adds to
- * an existing table, each with its declared type: the store reads and writes
- * the values as that type, and a column retyped under it fails its queries.
+ * an existing table, each with its declared type, and whether it is nullable:
+ * the store reads and writes values as that type, and leaves a nullable
+ * column null, so a column retyped or made NOT NULL under it fails its writes.
  */
 export const REQUIRED_COLUMNS = [
   ...createdTables.flatMap(({ table, lines }) =>
@@ -211,24 +206,23 @@ export const REQUIRED_COLUMNS = [
       .filter((line) => !/^(?:PRIMARY KEY|UNIQUE)\b/.test(line))
       .map((line) => {
         const [, column, type] = /^(\w+) (\w+)/.exec(line)!;
-        return { table, column: column!, type: type! };
+        return { table, column: column!, type: type!, nullable: !/\b(?:NOT NULL|PRIMARY KEY)\b/.test(line) };
       })
   ),
-  ...[...schemaText.matchAll(/^ALTER TABLE (\w+) ADD COLUMN IF NOT EXISTS (\w+) (\w+)/gm)].map((match) => ({
+  ...[...schemaText.matchAll(/^ALTER TABLE (\w+) ADD COLUMN IF NOT EXISTS (\w+) (\w+)([^;]*);/gm)].map((match) => ({
     table: match[1]!,
     column: match[2]!,
     type: match[3]!,
+    nullable: !/\b(?:NOT NULL|PRIMARY KEY)\b/.test(match[4]!),
   })),
 ];
 
 /**
  * Every unique key the schema makes: the primary keys and unique constraints
  * of the created tables, and each unique index it creates, with that index's
- * predicate. The store relies on each as an immediate unique index on its
- * table whose key columns are exactly these, with exactly this predicate: ON
- * CONFLICT refuses a deferrable arbiter and cannot infer a partial or wider
- * one, and the partial attempt index is what keeps one unconsumed completion
- * per attempt (R21.1). Any index with that shape serves, whatever its name.
+ * predicate as the schema writes it (empty for none). Any index of the right
+ * shape serves, whatever its name; PostgresStore.checkSchema says what the
+ * right shape is.
  */
 export const REQUIRED_KEYS = [
   ...createdTables.flatMap(({ table, lines }) =>
@@ -241,6 +235,6 @@ export const REQUIRED_KEYS = [
   ...[...schemaText.matchAll(/^CREATE UNIQUE INDEX IF NOT EXISTS \w+\s+ON (\w+)\(([^)]*)\)(?:\s+WHERE ([^;]+))?;/gm)].map((match) => ({
     table: match[1]!,
     columns: columnList(match[2]!),
-    predicate: comparablePredicate(match[3] ?? ""),
+    predicate: (match[3] ?? "").replace(/\s+/g, " ").trim(),
   })),
 ];

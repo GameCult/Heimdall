@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient, type QueryResultRow } from "pg";
 import { type AppSlug, type HeimdallAuthAttemptStatus, type LinkedIdentityInput, type Provider } from "../contracts.js";
-import { CREATE_SCHEMA_SQL, REQUIRED_COLUMNS, REQUIRED_KEYS, REQUIRED_RELATIONS } from "./schema.js";
+import { CREATE_SCHEMA_SQL, REQUIRED_COLUMNS, REQUIRED_KEYS, REQUIRED_TABLES } from "./schema.js";
 import {
   type CreateAccountInput,
   type CreateAuthAttemptInput,
@@ -285,6 +285,85 @@ function mapAuthAttemptRow(row: AuthAttemptRow): StoredAuthAttempt {
 }
 
 /**
+ * The AND-ed conditions of a predicate as Postgres prints it, each without a
+ * pair of parentheses that encloses all of it. Postgres flattens a chain of
+ * ANDs into one list, so `((a) AND (b) AND (c))` yields `a`, `b`, `c`. An OR,
+ * or an AND nested under one, stays whole: `((a OR b) AND c)` yields `a OR b`
+ * and `c`, and `(a OR (b AND c))` yields itself. Quoted text is never split.
+ */
+export function predicateConditions(printed: string): string[] {
+  const unwrap = (text: string): string => {
+    let current = text.trim();
+    while (current.startsWith("(") && closingParenthesis(current, 0) === current.length - 1) {
+      current = current.slice(1, -1).trim();
+    }
+    return current;
+  };
+  const whole = unwrap(printed);
+  if (whole === "") return [];
+  const parts: string[] = [];
+  let depth = 0;
+  let quote: string | undefined;
+  let start = 0;
+  for (let position = 0; position < whole.length; position += 1) {
+    const character = whole[position]!;
+    if (quote) {
+      if (character === quote) quote = undefined;
+    } else if (character === "'" || character === '"') {
+      quote = character;
+    } else if (character === "(") {
+      depth += 1;
+    } else if (character === ")") {
+      depth -= 1;
+    } else if (depth === 0 && whole.startsWith(" AND ", position)) {
+      parts.push(whole.slice(start, position));
+      start = position + " AND ".length;
+      position = start - 1;
+    }
+  }
+  parts.push(whole.slice(start));
+  return parts.map(unwrap);
+}
+
+/** The index of the parenthesis closing the one at `open`, outside quoted text, or -1. */
+function closingParenthesis(text: string, open: number): number {
+  let depth = 0;
+  let quote: string | undefined;
+  for (let position = open; position < text.length; position += 1) {
+    const character = text[position]!;
+    if (quote) {
+      if (character === quote) quote = undefined;
+    } else if (character === "'" || character === '"') {
+      quote = character;
+    } else if (character === "(") {
+      depth += 1;
+    } else if (character === ")") {
+      depth -= 1;
+      if (depth === 0) return position;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Whether an index predicate, as Postgres prints it, keeps exactly the rows
+ * the declared one (printed the same way) does: the same set of AND-ed
+ * conditions, ignoring `key_column IS NOT NULL` unless the index treats NULLs
+ * as equal, since otherwise rows with a NULL key never collide anyway.
+ */
+export function samePredicate(declared: string, actual: string, keyColumns: string[], nullsNotDistinct: boolean): boolean {
+  // A key without a predicate must have none: ON CONFLICT cannot infer a
+  // partial index as its arbiter.
+  if (predicateConditions(declared).length === 0) return actual.trim() === "";
+  const redundant = new Set(nullsNotDistinct ? [] : keyColumns.map((column) => `${column} IS NOT NULL`));
+  const conditions = (printed: string) =>
+    [...new Set(predicateConditions(printed).filter((condition) => !redundant.has(condition)))].sort();
+  const left = conditions(declared);
+  const right = conditions(actual);
+  return left.length === right.length && left.every((condition, index) => condition === right[index]);
+}
+
+/**
  * What the store's statements do to each table, and so the privileges its
  * database role needs: it reads what it returns or looks up, inserts what it
  * creates, updates what it changes or upserts, and deletes nothing.
@@ -311,21 +390,43 @@ export class PostgresStore implements HeimdallStore {
 
   /**
    * Proves, before Heimdall serves, that the database can take its requests:
-   * every relation the schema makes, every column with its declared type,
-   * every unique key as the store relies on it, and every privilege in
-   * STORE_TABLE_PRIVILEGES. A missing or altered piece fails with code
-   * SCHEMA_MISSING and a missing privilege with SCHEMA_PRIVILEGES; neither
-   * error names the piece.
+   * every table the schema makes; every column with its declared type, and
+   * nullable where the schema leaves it nullable; every unique key; and every
+   * privilege in STORE_TABLE_PRIVILEGES, held on the table or on each of its
+   * columns. A missing or altered piece fails with code SCHEMA_MISSING and a
+   * missing privilege with SCHEMA_PRIVILEGES; neither error names the piece.
+   *
+   * A key is met by a unique index on its table that is valid and ready (a
+   * failed CREATE INDEX CONCURRENTLY leaves one that is neither), immediate
+   * (ON CONFLICT refuses a deferrable arbiter), has exactly the key's columns
+   * as its key columns (INCLUDE columns aside), compares them under
+   * deterministic collations (a case-insensitive one would merge two
+   * providers' user ids into one row), and has the key's predicate. A
+   * predicate matches when both, as Postgres prints them, are the same set of
+   * AND-ed conditions; a `key_column IS NOT NULL` condition may be absent on
+   * either side, because a unique index never makes NULL keys collide unless
+   * it is NULLS NOT DISTINCT.
+   *
+   * Postgres prints the declared predicates itself: they are indexed on a
+   * temporary copy of the table in a transaction that is rolled back.
    */
   async checkSchema(): Promise<void> {
+    const declaredPredicates = await this.printedDeclaredPredicates();
     const privileges = Object.entries(STORE_TABLE_PRIVILEGES).flatMap(([table, wanted]) =>
       wanted.map((privilege) => ({ table, privilege }))
     );
-    const result = await this.pool.query<{ kind: "missing" | "privilege" }>(
+    const result = await this.pool.query<{
+      kind: "missing" | "privilege" | "candidate";
+      key: number | null;
+      predicate: string | null;
+      nulls_not_distinct: boolean | null;
+    }>(
       `
-      SELECT 'missing' AS kind FROM unnest($1::text[]) AS name WHERE to_regclass(name) IS NULL
+      SELECT 'missing' AS kind, NULL::int AS key, NULL::text AS predicate, NULL::boolean AS nulls_not_distinct
+      FROM unnest($1::text[]) AS name WHERE to_regclass(name) IS NULL
       UNION ALL
-      SELECT 'missing' FROM unnest($2::text[], $3::text[], $4::text[]) AS required(table_name, column_name, type_name)
+      SELECT 'missing', NULL, NULL, NULL
+      FROM unnest($2::text[], $3::text[], $4::text[], $5::boolean[]) AS required(table_name, column_name, type_name, nullable)
       WHERE NOT EXISTS (
         SELECT 1 FROM pg_attribute a
         WHERE a.attrelid = to_regclass(required.table_name)
@@ -333,48 +434,97 @@ export class PostgresStore implements HeimdallStore {
           AND a.attnum > 0
           AND NOT a.attisdropped
           AND a.atttypid = to_regtype(required.type_name)
+          AND (NOT required.nullable OR NOT a.attnotnull)
       )
       UNION ALL
-      SELECT 'missing' FROM unnest($5::text[], $6::text[], $7::text[]) AS required(table_name, columns, predicate)
-      WHERE NOT EXISTS (
-        SELECT 1 FROM pg_index i
-        WHERE i.indrelid = to_regclass(required.table_name)
-          AND i.indisunique
-          AND i.indimmediate
-          AND coalesce(regexp_replace(lower(pg_get_expr(i.indpred, i.indrelid)), '[()[:space:]]', '', 'g'), '') = required.predicate
-          AND i.indnkeyatts = cardinality(string_to_array(required.columns, ','))
-          AND (
-            SELECT string_agg(a.attname, ',' ORDER BY a.attname)
-            FROM unnest(i.indkey::int2[]) WITH ORDINALITY AS key(attnum, position)
-            JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = key.attnum
-            WHERE key.position <= i.indnkeyatts
-          ) = required.columns
-      )
+      SELECT 'candidate', required.key::int, pg_get_expr(i.indpred, i.indrelid),
+        coalesce((to_jsonb(i) ->> 'indnullsnotdistinct')::boolean, false)
+      FROM unnest($6::text[], $7::text[]) WITH ORDINALITY AS required(table_name, columns, key)
+      JOIN pg_index i ON i.indrelid = to_regclass(required.table_name)
+      WHERE i.indisunique
+        AND i.indisvalid
+        AND i.indisready
+        AND i.indimmediate
+        AND i.indnkeyatts = cardinality(string_to_array(required.columns, ','))
+        AND (
+          SELECT string_agg(a.attname, ',' ORDER BY a.attname)
+          FROM unnest(i.indkey::int2[]) WITH ORDINALITY AS key(attnum, position)
+          JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = key.attnum
+          WHERE key.position <= i.indnkeyatts
+        ) = required.columns
+        AND NOT EXISTS (
+          SELECT 1 FROM unnest(i.indcollation::oid[]) WITH ORDINALITY AS collation(oid, position)
+          JOIN pg_collation c ON c.oid = collation.oid
+          WHERE collation.position <= i.indnkeyatts AND NOT c.collisdeterministic
+        )
       UNION ALL
-      SELECT 'privilege' FROM unnest($8::text[], $9::text[]) AS required(table_name, privilege)
-      WHERE to_regclass(required.table_name) IS NOT NULL
-        AND NOT has_table_privilege(to_regclass(required.table_name), required.privilege)
+      SELECT 'privilege', NULL, NULL, NULL
+      FROM unnest($8::text[], $9::text[]) AS required(table_name, privilege)
+      WHERE EXISTS (
+        SELECT 1 FROM unnest($2::text[], $3::text[]) AS used(table_name, column_name)
+        JOIN pg_attribute a ON a.attrelid = to_regclass(used.table_name) AND a.attname = used.column_name AND NOT a.attisdropped
+        WHERE used.table_name = required.table_name
+          AND NOT has_column_privilege(a.attrelid, a.attnum, required.privilege)
+      )
       `,
       [
-        REQUIRED_RELATIONS,
+        REQUIRED_TABLES,
         REQUIRED_COLUMNS.map((required) => required.table),
         REQUIRED_COLUMNS.map((required) => required.column),
         REQUIRED_COLUMNS.map((required) => required.type),
+        REQUIRED_COLUMNS.map((required) => required.nullable),
         REQUIRED_KEYS.map((required) => required.table),
         REQUIRED_KEYS.map((required) => required.columns),
-        REQUIRED_KEYS.map((required) => required.predicate),
         privileges.map((required) => required.table),
         privileges.map((required) => required.privilege),
       ]
     );
-    if (result.rows.some((row) => row.kind === "missing")) {
+    const keyMet = REQUIRED_KEYS.map((required, index) =>
+      result.rows.some(
+        (row) =>
+          row.kind === "candidate" &&
+          row.key === index + 1 &&
+          samePredicate(declaredPredicates[index]!, row.predicate ?? "", required.columns.split(","), row.nulls_not_distinct === true)
+      )
+    );
+    if (result.rows.some((row) => row.kind === "missing") || keyMet.includes(false)) {
       throw Object.assign(new Error("The Heimdall schema is not applied."), { code: "SCHEMA_MISSING" });
     }
-    if (result.rows.length > 0) {
+    if (result.rows.some((row) => row.kind === "privilege")) {
       throw Object.assign(new Error("The Heimdall database role lacks a privilege the store needs."), {
         code: "SCHEMA_PRIVILEGES",
       });
     }
+  }
+
+  /**
+   * Each REQUIRED_KEYS predicate as Postgres prints it back (empty for none).
+   * One simple-protocol round trip on one connection: a transaction that
+   * builds a temporary copy of each keyed table's declared columns, indexes
+   * it with the declared predicate, reads the printed form and rolls back.
+   * The names and SQL are the schema's own constants, never input.
+   */
+  private async printedDeclaredPredicates(): Promise<string[]> {
+    const partial = REQUIRED_KEYS.flatMap((required, index) => (required.predicate ? [{ ...required, index }] : []));
+    if (partial.length === 0) return REQUIRED_KEYS.map(() => "");
+    const statements = partial.flatMap(({ table, columns, predicate, index }) => {
+      const probe = `heimdall_key_probe_${index}`;
+      const declared = REQUIRED_COLUMNS.filter((column) => column.table === table)
+        .map((column) => `${column.column} ${column.type}`)
+        .join(", ");
+      return [
+        `CREATE TEMP TABLE ${probe} (${declared}) ON COMMIT DROP`,
+        `CREATE UNIQUE INDEX ${probe}_idx ON ${probe} (${columns}) WHERE ${predicate}`,
+      ];
+    });
+    const select = partial
+      .map(({ index }) => `SELECT ${index} AS key, pg_get_expr(indpred, indrelid) AS predicate FROM pg_index WHERE indexrelid = 'pg_temp.heimdall_key_probe_${index}_idx'::regclass`)
+      .join(" UNION ALL ");
+    const results = (await this.pool.query(["BEGIN", ...statements, select, "ROLLBACK"].join(";\n"))) as unknown as Array<{
+      rows: Array<{ key: number; predicate: string }>;
+    }>;
+    const printed = results[results.length - 2]!.rows;
+    return REQUIRED_KEYS.map((_, index) => printed.find((row) => row.key === index)?.predicate ?? "");
   }
 
   async close(): Promise<void> {

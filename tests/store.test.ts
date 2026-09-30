@@ -4,8 +4,14 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { newDb } from "pg-mem";
 import { type HeimdallConfig } from "../src/config.js";
 import { createStore } from "../src/store/index.js";
-import { createPostgresStore, PostgresStore, STORE_TABLE_PRIVILEGES } from "../src/store/postgres.js";
-import { comparablePredicate, REQUIRED_COLUMNS, REQUIRED_KEYS, REQUIRED_RELATIONS } from "../src/store/schema.js";
+import {
+  createPostgresStore,
+  PostgresStore,
+  predicateConditions,
+  samePredicate,
+  STORE_TABLE_PRIVILEGES,
+} from "../src/store/postgres.js";
+import { REQUIRED_COLUMNS, REQUIRED_KEYS, REQUIRED_TABLES } from "../src/store/schema.js";
 
 describe("PostgresStore", () => {
   it("round-trips core auth records through postgres", async () => {
@@ -216,19 +222,27 @@ describe("createPostgresStore", () => {
 });
 
 describe("PostgresStore.checkSchema", () => {
-  it("derives every relation, typed column and unique key from the schema", () => {
-    expect(REQUIRED_RELATIONS).toEqual(
-      expect.arrayContaining(["accounts", "audit_events", "auth_completions_attempt_unconsumed_unique_idx", "audit_events_lookup_idx"])
-    );
-    expect(REQUIRED_RELATIONS).toHaveLength(17);
+  it("derives every table, typed column and unique key from the schema", () => {
+    expect(REQUIRED_TABLES).toEqual([
+      "accounts",
+      "linked_identities",
+      "sessions",
+      "auth_attempts",
+      "private_command_receipts",
+      "auth_completions",
+      "capability_grants",
+      "entitlement_snapshots",
+      "audit_events",
+    ]);
     expect(REQUIRED_COLUMNS).toHaveLength(85);
     expect(REQUIRED_COLUMNS).toEqual(
       expect.arrayContaining([
-        { table: "auth_completions", column: "code", type: "TEXT" },
-        { table: "sessions", column: "access_revision", type: "INTEGER" },
-        { table: "linked_identities", column: "profile_json", type: "JSONB" },
-        { table: "entitlement_snapshots", column: "is_allowed", type: "BOOLEAN" },
-        { table: "auth_completions", column: "attempt_id", type: "TEXT" },
+        { table: "auth_completions", column: "code", type: "TEXT", nullable: false },
+        { table: "sessions", column: "access_revision", type: "INTEGER", nullable: false },
+        { table: "linked_identities", column: "profile_json", type: "JSONB", nullable: false },
+        { table: "linked_identities", column: "username", type: "TEXT", nullable: true },
+        { table: "entitlement_snapshots", column: "is_allowed", type: "BOOLEAN", nullable: false },
+        { table: "auth_completions", column: "attempt_id", type: "TEXT", nullable: true },
       ])
     );
     expect(REQUIRED_KEYS).toHaveLength(12);
@@ -237,38 +251,43 @@ describe("PostgresStore.checkSchema", () => {
         { table: "linked_identities", columns: "provider,provider_user_id", predicate: "" },
         { table: "private_command_receipts", columns: "app_slug,idempotency_key", predicate: "" },
         { table: "entitlement_snapshots", columns: "account_id,provider,scope", predicate: "" },
-        {
-          table: "auth_completions",
-          columns: "app_slug,attempt_id",
-          predicate: comparablePredicate("attempt_id IS NOT NULL AND consumed_at IS NULL"),
-        },
+        { table: "auth_completions", columns: "app_slug,attempt_id", predicate: "attempt_id IS NOT NULL AND consumed_at IS NULL" },
       ])
     );
   });
 
-  it("compares a predicate in the form Postgres stores it back", () => {
-    expect(comparablePredicate("((attempt_id IS NOT NULL) AND (consumed_at IS NULL))")).toBe(
-      comparablePredicate("attempt_id IS NOT NULL AND consumed_at IS NULL")
-    );
+  // Soul pass 6: stripping parentheses and case merged predicates of
+  // different meaning. These are Postgres's own printed forms.
+  it("splits a printed predicate only at its top-level ANDs", () => {
+    expect(predicateConditions("((a OR b) AND c)")).toEqual(["a OR b", "c"]);
+    expect(predicateConditions("(a OR (b AND c))")).toEqual(["a OR (b AND c)"]);
+    expect(predicateConditions("((attempt_id IS NOT NULL) AND (consumed_at IS NULL))")).toEqual([
+      "attempt_id IS NOT NULL",
+      "consumed_at IS NULL",
+    ]);
+    expect(predicateConditions("(s = 'x AND (y'::text)")).toEqual(["s = 'x AND (y'::text"]);
+    expect(predicateConditions("")).toEqual([]);
   });
 
-  function storeAnswering(kinds: string[]) {
-    return new PostgresStore({
-      query: (async () => ({ rows: kinds.map((kind) => ({ kind })) })) as never,
-      end: async () => undefined,
-    });
-  }
-
-  it("refuses with SCHEMA_MISSING when anything is missing, whatever else is", async () => {
-    await expect(storeAnswering(["privilege", "missing"]).checkSchema()).rejects.toMatchObject({ code: "SCHEMA_MISSING" });
+  it("matches predicates by their conditions, never by case or by dropping structure", () => {
+    const keys = ["app_slug", "attempt_id"];
+    expect(samePredicate("((a OR b) AND c)", "(a OR (b AND c))", keys, false)).toBe(false);
+    expect(samePredicate("(s = 'Pending'::text)", "(s = 'pending'::text)", keys, false)).toBe(false);
+    expect(samePredicate("((a) AND (b))", "((b) AND (a))", keys, false)).toBe(true);
+    expect(samePredicate("((a) AND (b))", "((a) AND (b) AND (c))", keys, false)).toBe(false);
   });
 
-  it("refuses with SCHEMA_PRIVILEGES when only a privilege is missing", async () => {
-    await expect(storeAnswering(["privilege"]).checkSchema()).rejects.toMatchObject({ code: "SCHEMA_PRIVILEGES" });
+  it("lets a key column's IS NOT NULL be absent only where NULL keys cannot collide", () => {
+    const keys = ["app_slug", "attempt_id"];
+    const declared = "((attempt_id IS NOT NULL) AND (consumed_at IS NULL))";
+    expect(samePredicate(declared, "(consumed_at IS NULL)", keys, false)).toBe(true);
+    expect(samePredicate(declared, "(consumed_at IS NULL)", keys, true)).toBe(false);
+    expect(samePredicate(declared, "((consumed_at IS NULL) AND (other IS NOT NULL))", keys, false)).toBe(false);
   });
 
-  it("passes when nothing is missing", async () => {
-    await expect(storeAnswering([]).checkSchema()).resolves.toBeUndefined();
+  it("requires a key without a predicate to have none", () => {
+    expect(samePredicate("", "", ["id"], false)).toBe(true);
+    expect(samePredicate("", "(id IS NOT NULL)", ["id"], false)).toBe(false);
   });
 });
 
@@ -470,9 +489,7 @@ describe.skipIf(!adminUrl)("startup against a live Postgres (HEIMDALL_TEST_PG_AD
 
   it("refuses each privilege taken away, and the store needs each one", async () => {
     const pairs = Object.entries(STORE_TABLE_PRIVILEGES).flatMap(([table, wanted]) => wanted.map((privilege) => ({ table, privilege })));
-    expect(Object.keys(STORE_TABLE_PRIVILEGES).sort()).toEqual(
-      REQUIRED_RELATIONS.filter((relation) => REQUIRED_COLUMNS.some((column) => column.table === relation)).sort()
-    );
+    expect(Object.keys(STORE_TABLE_PRIVILEGES).sort()).toEqual([...REQUIRED_TABLES].sort());
     for (const { table, privilege } of pairs) {
       const { name, owner } = await appliedDatabase();
       await grant(owner, { ...STORE_TABLE_PRIVILEGES, [table]: STORE_TABLE_PRIVILEGES[table]!.filter((p) => p !== privilege) });
@@ -507,41 +524,106 @@ describe.skipIf(!adminUrl)("startup against a live Postgres (HEIMDALL_TEST_PG_AD
     expect(await start(urlFor(name), true)).toBe(refusal("SCHEMA_MISSING"));
   });
 
+  it("serves every store operation with each privilege granted column by column", async () => {
+    const { name, owner } = await appliedDatabase();
+    await owner.query(`GRANT USAGE ON SCHEMA public TO ${role}`);
+    for (const [table, wanted] of Object.entries(STORE_TABLE_PRIVILEGES)) {
+      const columns = REQUIRED_COLUMNS.filter((column) => column.table === table).map((column) => column.column).join(", ");
+      for (const privilege of wanted) await owner.query(`GRANT ${privilege} (${columns}) ON ${table} TO ${role}`);
+    }
+
+    expect(await start(urlFor(name, role, rolePassword), false)).toBe("started");
+    const pool = fixturePool(urlFor(name, role, rolePassword));
+    cleanup.push(async () => {
+      await pool.end();
+    });
+    await exerciseStore(new PostgresStore(pool));
+  });
+
+  it("refuses a privilege held on only some of a table's columns", async () => {
+    const { name, owner } = await appliedDatabase();
+    await grant(owner, { ...STORE_TABLE_PRIVILEGES, audit_events: [] });
+    await owner.query(`GRANT INSERT (id) ON audit_events TO ${role}`);
+
+    expect(await start(urlFor(name, role, rolePassword), false)).toBe(refusal("SCHEMA_PRIVILEGES"));
+  });
+
   // Each damage below leaves a database whose shape still resembles the
-  // schema but on which a store write fails or R21.1 no longer holds.
+  // schema but on which a store write fails or R21.1 no longer holds. A step
+  // starting with "!" is expected to fail and leave its mark (a failed
+  // CREATE INDEX CONCURRENTLY leaves an invalid index behind).
+  const seedDuplicates = [
+    "INSERT INTO accounts VALUES ('acc', now(), now(), null, null)",
+    "INSERT INTO sessions VALUES ('s', 'acc', 'ghostlight', now(), now(), now() + interval '1 hour', '{}', 1)",
+  ];
   it.each([
     ["a key made DEFERRABLE (ON CONFLICT refuses it as an arbiter)",
-      "ALTER TABLE private_command_receipts DROP CONSTRAINT private_command_receipts_pkey; ALTER TABLE private_command_receipts ADD PRIMARY KEY (app_slug, idempotency_key) DEFERRABLE INITIALLY IMMEDIATE"],
+      ["ALTER TABLE private_command_receipts DROP CONSTRAINT private_command_receipts_pkey", "ALTER TABLE private_command_receipts ADD PRIMARY KEY (app_slug, idempotency_key) DEFERRABLE INITIALLY IMMEDIATE"]],
     ["a key narrowed to one column, the other only INCLUDEd",
-      "ALTER TABLE linked_identities DROP CONSTRAINT linked_identities_provider_provider_user_id_key; CREATE UNIQUE INDEX li_include ON linked_identities(provider) INCLUDE (provider_user_id)"],
+      ["ALTER TABLE linked_identities DROP CONSTRAINT linked_identities_provider_provider_user_id_key", "CREATE UNIQUE INDEX li_include ON linked_identities(provider) INCLUDE (provider_user_id)"]],
     ["a key widened by an expression column",
-      "ALTER TABLE linked_identities DROP CONSTRAINT linked_identities_provider_provider_user_id_key; CREATE UNIQUE INDEX li_expr ON linked_identities(provider, provider_user_id, lower(username))"],
+      ["ALTER TABLE linked_identities DROP CONSTRAINT linked_identities_provider_provider_user_id_key", "CREATE UNIQUE INDEX li_expr ON linked_identities(provider, provider_user_id, lower(username))"]],
     ["a key replaced by a partial one",
-      "ALTER TABLE entitlement_snapshots DROP CONSTRAINT entitlement_snapshots_account_id_provider_scope_key; CREATE UNIQUE INDEX es_partial ON entitlement_snapshots(account_id, provider, scope) WHERE is_allowed"],
+      ["ALTER TABLE entitlement_snapshots DROP CONSTRAINT entitlement_snapshots_account_id_provider_scope_key", "CREATE UNIQUE INDEX es_partial ON entitlement_snapshots(account_id, provider, scope) WHERE is_allowed"]],
     ["a key replaced by a plain index on the same columns",
-      "ALTER TABLE linked_identities DROP CONSTRAINT linked_identities_provider_provider_user_id_key; CREATE INDEX li_plain ON linked_identities(provider, provider_user_id)"],
+      ["ALTER TABLE linked_identities DROP CONSTRAINT linked_identities_provider_provider_user_id_key", "CREATE INDEX li_plain ON linked_identities(provider, provider_user_id)"]],
     ["a key replaced by one on other columns of the same count",
-      "ALTER TABLE linked_identities DROP CONSTRAINT linked_identities_provider_provider_user_id_key; CREATE UNIQUE INDEX li_other ON linked_identities(provider, username)"],
+      ["ALTER TABLE linked_identities DROP CONSTRAINT linked_identities_provider_provider_user_id_key", "CREATE UNIQUE INDEX li_other ON linked_identities(provider, username)"]],
+    ["a key left only as an invalid index by a failed concurrent build",
+      [...seedDuplicates,
+        "ALTER TABLE linked_identities DROP CONSTRAINT linked_identities_provider_provider_user_id_key",
+        "INSERT INTO linked_identities (id, account_id, provider, provider_user_id, created_at, updated_at) VALUES ('l1', 'acc', 'youtube', 'dup', now(), now()), ('l2', 'acc', 'youtube', 'dup', now(), now())",
+        "!CREATE UNIQUE INDEX CONCURRENTLY li_ccnew ON linked_identities(provider, provider_user_id)",
+        "DELETE FROM linked_identities WHERE id = 'l2'"]],
+    ["the attempt index left invalid over duplicate attempts by a failed concurrent build",
+      [...seedDuplicates,
+        "DROP INDEX auth_completions_attempt_unconsumed_unique_idx",
+        "INSERT INTO auth_completions (code, attempt_id, app_slug, provider, mode, account_id, session_id, return_to, payload_json, created_at, expires_at) VALUES ('c1', 'att', 'ghostlight', 'discord', 'sign_in', 'acc', 's', 'https://x/', '{}', now(), now() + interval '1 hour'), ('c2', 'att', 'ghostlight', 'discord', 'sign_in', 'acc', 's', 'https://x/', '{}', now(), now() + interval '1 hour')",
+        "!CREATE UNIQUE INDEX CONCURRENTLY auth_completions_attempt_unconsumed_unique_idx ON auth_completions(app_slug, attempt_id) WHERE attempt_id IS NOT NULL AND consumed_at IS NULL"]],
+    ["a key compared under a case-insensitive collation (two users' ids become one row)",
+      ["CREATE COLLATION heimdall_ci (provider = icu, locale = 'und-u-ks-level2', deterministic = false)",
+        "ALTER TABLE linked_identities DROP CONSTRAINT linked_identities_provider_provider_user_id_key",
+        "CREATE UNIQUE INDEX li_ci ON linked_identities(provider, provider_user_id COLLATE heimdall_ci)"]],
     ["the attempt index replaced by a plain one of the same name",
-      "DROP INDEX auth_completions_attempt_unconsumed_unique_idx; CREATE INDEX auth_completions_attempt_unconsumed_unique_idx ON auth_completions(app_slug, attempt_id)"],
+      ["DROP INDEX auth_completions_attempt_unconsumed_unique_idx", "CREATE INDEX auth_completions_attempt_unconsumed_unique_idx ON auth_completions(app_slug, attempt_id)"]],
     ["the attempt index made unique on every row (no predicate)",
-      "DROP INDEX auth_completions_attempt_unconsumed_unique_idx; CREATE UNIQUE INDEX auth_completions_attempt_unconsumed_unique_idx ON auth_completions(app_slug, attempt_id)"],
+      ["DROP INDEX auth_completions_attempt_unconsumed_unique_idx", "CREATE UNIQUE INDEX auth_completions_attempt_unconsumed_unique_idx ON auth_completions(app_slug, attempt_id)"]],
     ["the attempt index given another predicate",
-      "DROP INDEX auth_completions_attempt_unconsumed_unique_idx; CREATE UNIQUE INDEX auth_completions_attempt_unconsumed_unique_idx ON auth_completions(app_slug, attempt_id) WHERE attempt_id IS NOT NULL"],
-    ["a column retyped", "ALTER TABLE sessions ALTER COLUMN access_revision TYPE TEXT"],
-    ["a created table's column dropped", "ALTER TABLE auth_completions DROP COLUMN mode"],
-  ])("refuses %s", async (_damage, sql) => {
+      ["DROP INDEX auth_completions_attempt_unconsumed_unique_idx", "CREATE UNIQUE INDEX auth_completions_attempt_unconsumed_unique_idx ON auth_completions(app_slug, attempt_id) WHERE attempt_id IS NOT NULL"]],
+    ["the attempt index narrowed by an extra condition",
+      ["DROP INDEX auth_completions_attempt_unconsumed_unique_idx", "CREATE UNIQUE INDEX auth_completions_attempt_unconsumed_unique_idx ON auth_completions(app_slug, attempt_id) WHERE attempt_id IS NOT NULL AND consumed_at IS NULL AND app_slug <> 'ghostlight'"]],
+    ["the attempt index with a condition ORed into its predicate",
+      ["DROP INDEX auth_completions_attempt_unconsumed_unique_idx", "CREATE UNIQUE INDEX auth_completions_attempt_unconsumed_unique_idx ON auth_completions(app_slug, attempt_id) WHERE (attempt_id IS NOT NULL OR app_slug = 'x') AND consumed_at IS NULL"]],
+    ["the attempt index made NULLS NOT DISTINCT without excluding NULL attempts",
+      ["DROP INDEX auth_completions_attempt_unconsumed_unique_idx", "CREATE UNIQUE INDEX auth_completions_attempt_unconsumed_unique_idx ON auth_completions(app_slug, attempt_id) NULLS NOT DISTINCT WHERE consumed_at IS NULL"]],
+    ["a column retyped", ["ALTER TABLE sessions ALTER COLUMN access_revision TYPE TEXT"]],
+    ["a created table's column dropped", ["ALTER TABLE auth_completions DROP COLUMN mode"]],
+    ["NOT NULL added to a column the store leaves null", ["ALTER TABLE auth_completions ALTER COLUMN attempt_id SET NOT NULL"]],
+  ])("refuses %s", async (_damage, steps) => {
     const { name, owner } = await appliedDatabase();
-    await owner.query(sql);
+    for (const step of steps) {
+      if (step.startsWith("!")) await expect(owner.query(step.slice(1))).rejects.toBeDefined();
+      else await owner.query(step);
+    }
 
     expect(await start(urlFor(name), false)).toBe(refusal("SCHEMA_MISSING"));
   });
 
-  it("accepts a key index that carries extra INCLUDE columns", async () => {
+  // Each change below leaves a database the store serves exactly as before.
+  it.each([
+    ["a key index that carries extra INCLUDE columns",
+      ["ALTER TABLE linked_identities DROP CONSTRAINT linked_identities_provider_provider_user_id_key", "CREATE UNIQUE INDEX li_covering ON linked_identities(provider, provider_user_id) INCLUDE (username)"]],
+    ["the attempt index under another name", ["ALTER INDEX auth_completions_attempt_unconsumed_unique_idx RENAME TO attempt_idx_renamed"]],
+    ["the attempt index's conditions in the other order",
+      ["DROP INDEX auth_completions_attempt_unconsumed_unique_idx", "CREATE UNIQUE INDEX attempt_reordered ON auth_completions(app_slug, attempt_id) WHERE consumed_at IS NULL AND attempt_id IS NOT NULL"]],
+    // NULL attempt ids never collide in a unique index that treats NULLs as
+    // distinct (the default), so dropping that condition keeps the same rows unique.
+    ["the attempt index without its redundant attempt_id IS NOT NULL",
+      ["DROP INDEX auth_completions_attempt_unconsumed_unique_idx", "CREATE UNIQUE INDEX attempt_unconsumed ON auth_completions(app_slug, attempt_id) WHERE consumed_at IS NULL"]],
+    ["a lookup index dropped", ["DROP INDEX audit_events_lookup_idx", "DROP INDEX auth_completions_lookup_idx"]],
+  ])("accepts %s", async (_change, steps) => {
     const { name, owner } = await appliedDatabase();
-    await owner.query(
-      "ALTER TABLE linked_identities DROP CONSTRAINT linked_identities_provider_provider_user_id_key; CREATE UNIQUE INDEX li_covering ON linked_identities(provider, provider_user_id) INCLUDE (username)"
-    );
+    for (const step of steps) await owner.query(step);
 
     expect(await start(urlFor(name), false)).toBe("started");
   });
