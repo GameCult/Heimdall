@@ -56,6 +56,9 @@ function buildBrowserFallbackUrl(payload: BrowserHandoffPayload): string {
     }
   }
 
+  // URLSearchParams and the URL serializer percent-encode `"`, `<` and `>`,
+  // so the page can place this URL in an attribute as it is. Every other value
+  // in the page goes through serializeForScript; there is no template engine.
   url.hash = fragment.toString();
   return url.toString();
 }

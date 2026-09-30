@@ -1403,3 +1403,79 @@ describe("error answers never echo an input", () => {
     expect(deliveries[0]).not.toContain(CANARY);
   });
 });
+
+// The provider's error and error_description are relayed, but they arrive as
+// query parameters anyone can write: only RFC 6749's characters survive, each
+// is bounded, and the page cannot be made to run what they carry.
+describe("the relayed provider error", () => {
+  const injected = `<script>alert(1)</script>"\\\u0007é${"x".repeat(300)}`;
+  const allowed = /^[\x20-\x21\x23-\x5b\x5d-\x7e]*$/;
+
+  function providerErrorUrl(stateToken: string): string {
+    const query = new URLSearchParams({ state: stateToken, error: `${"e".repeat(100)}\u0000`, error_description: injected });
+    return `/v1/oauth/discord/callback?${query.toString()}`;
+  }
+
+  it("is printable and bounded in the JSON answer", async () => {
+    const app = await buildApp({ config: createTestConfig() });
+    apps.push(app);
+
+    const response = await app.inject({ method: "GET", url: providerErrorUrl(await startDiscordSignIn(app)) });
+
+    expect(response.statusCode).toBe(400);
+    const { providerError, providerErrorDescription } = response.json() as Record<string, string>;
+    expect(providerError).toBe("e".repeat(64));
+    expect(providerErrorDescription).toHaveLength(256);
+    expect(providerErrorDescription).toMatch(allowed);
+    expect(providerErrorDescription.startsWith("<script>alert(1)</script>xxx")).toBe(true);
+  });
+
+  it("cannot inject markup into the browser page, and is bounded there", async () => {
+    const app = await buildApp({ config: createTestConfig() });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "GET",
+      url: providerErrorUrl(await startDiscordSignIn(app)),
+      headers: { accept: "text/html" },
+    });
+
+    expect(response.headers["content-type"]).toContain("text/html");
+    expect(response.body.match(/<script/gi)).toHaveLength(1);
+    expect(response.body).not.toContain("<script>alert");
+    expect(response.body).not.toContain("x".repeat(257));
+  });
+
+  it("is printable and bounded in the backend handoff", async () => {
+    const deliveries: Array<Record<string, unknown>> = [];
+    globalThis.fetch = async (_input, init) => {
+      deliveries.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(null, { status: 204 });
+    };
+    const app = await buildApp({ config: createTestConfig() });
+    apps.push(app);
+    const start = await app.inject({
+      method: "POST",
+      url: "/v1/oauth/discord/start",
+      payload: {
+        appSlug: "repixelizer",
+        mode: "sign_in",
+        returnTo: "https://repixelizer.gamecult.org/app/",
+        handoff: {
+          kind: "backend_callback",
+          attemptId: "attempt-123",
+          callbackUrl: "https://repixelizer.gamecult.org/api/auth/heimdall/callback",
+        },
+      },
+    });
+    expect(start.statusCode).toBe(201);
+
+    await app.inject({ method: "GET", url: providerErrorUrl(start.json().stateToken as string) });
+
+    expect(deliveries).toHaveLength(1);
+    const description = String(deliveries[0]!.errorDescription);
+    expect(description).toHaveLength(256);
+    expect(description).toMatch(allowed);
+  });
+});
+

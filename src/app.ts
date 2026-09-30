@@ -238,6 +238,17 @@ export function verifyRefreshToken(
   return payload;
 }
 
+/**
+ * A provider's `error` and `error_description` as Heimdall relays them. They
+ * arrive as query parameters anyone can write, so only the characters RFC 6749
+ * (4.1.2.1) allows in them survive, and each is cut to a bound. The browser
+ * page escapes what is left for its own contexts.
+ */
+function relayedProviderText(value: string | undefined, bound: number): string | undefined {
+  const printable = value?.replace(/[^\x20-\x21\x23-\x5b\x5d-\x7e]/g, "").slice(0, bound);
+  return printable ? printable : undefined;
+}
+
 function prefersHtml(acceptHeader: string | undefined): boolean {
   if (!acceptHeader) {
     return false;
@@ -959,6 +970,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       };
 
       if (request.query.error) {
+        const providerError = relayedProviderText(request.query.error, 64);
+        const providerErrorDescription = relayedProviderText(request.query.error_description, 256);
         await denyBrowserAttempt("provider_error");
         if (handoff.kind === "backend_callback") {
           await maybeDeliverBackendHandoff(handoff, {
@@ -973,7 +986,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
             returnTo: statePayload.return_to,
             connection: statePayload.connection,
             error: "provider_error",
-            errorDescription: request.query.error_description ?? request.query.error,
+            errorDescription: providerErrorDescription ?? providerError,
           });
         }
 
@@ -989,7 +1002,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
               returnTo: statePayload.return_to,
               ...(handoff.kind === "backend_callback" ? { attemptId: handoff.attemptId } : {}),
               error: "provider_error",
-              errorDescription: request.query.error_description ?? request.query.error,
+              errorDescription: providerErrorDescription ?? providerError,
             })
           );
         }
@@ -998,8 +1011,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         return {
           error: "provider_error",
           provider: request.params.provider,
-          providerError: request.query.error,
-          providerErrorDescription: request.query.error_description,
+          providerError,
+          providerErrorDescription,
           returnTo: statePayload.return_to,
         };
       }
