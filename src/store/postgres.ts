@@ -364,6 +364,36 @@ export function samePredicate(declared: string, actual: string, keyColumns: stri
 }
 
 /**
+ * Each REQUIRED_KEYS predicate as Postgres prints it back (empty for none).
+ * One simple-protocol round trip on one connection: a transaction that
+ * builds a temporary copy of each keyed table's declared columns, indexes
+ * it with the declared predicate, reads the printed form and rolls back.
+ * The names and SQL are the schema's own constants, never input.
+ */
+async function printedDeclaredPredicates(pool: Pick<Pool, "query">): Promise<string[]> {
+  const partial = REQUIRED_KEYS.flatMap((required, index) => (required.predicate ? [{ ...required, index }] : []));
+  if (partial.length === 0) return REQUIRED_KEYS.map(() => "");
+  const statements = partial.flatMap(({ table, columns, predicate, index }) => {
+    const probe = `heimdall_key_probe_${index}`;
+    const declared = REQUIRED_COLUMNS.filter((column) => column.table === table)
+      .map((column) => `${column.column} ${column.type}`)
+      .join(", ");
+    return [
+      `CREATE TEMP TABLE ${probe} (${declared}) ON COMMIT DROP`,
+      `CREATE UNIQUE INDEX ${probe}_idx ON ${probe} (${columns}) WHERE ${predicate}`,
+    ];
+  });
+  const select = partial
+    .map(({ index }) => `SELECT ${index} AS key, pg_get_expr(indpred, indrelid) AS predicate FROM pg_index WHERE indexrelid = 'pg_temp.heimdall_key_probe_${index}_idx'::regclass`)
+    .join(" UNION ALL ");
+  const results = (await pool.query(["BEGIN", ...statements, select, "ROLLBACK"].join(";\n"))) as unknown as Array<{
+    rows: Array<{ key: number; predicate: string }>;
+  }>;
+  const printed = results[results.length - 2]!.rows;
+  return REQUIRED_KEYS.map((_, index) => printed.find((row) => row.key === index)?.predicate ?? "");
+}
+
+/**
  * What the store's statements do to each table, and so the privileges its
  * database role needs: it reads what it returns or looks up, inserts what it
  * creates, updates what it changes or upserts, and deletes nothing.
@@ -411,7 +441,7 @@ export class PostgresStore implements HeimdallStore {
    * temporary copy of the table in a transaction that is rolled back.
    */
   async checkSchema(): Promise<void> {
-    const declaredPredicates = await this.printedDeclaredPredicates();
+    const declaredPredicates = await printedDeclaredPredicates(this.pool);
     const privileges = Object.entries(STORE_TABLE_PRIVILEGES).flatMap(([table, wanted]) =>
       wanted.map((privilege) => ({ table, privilege }))
     );
@@ -495,36 +525,6 @@ export class PostgresStore implements HeimdallStore {
         code: "SCHEMA_PRIVILEGES",
       });
     }
-  }
-
-  /**
-   * Each REQUIRED_KEYS predicate as Postgres prints it back (empty for none).
-   * One simple-protocol round trip on one connection: a transaction that
-   * builds a temporary copy of each keyed table's declared columns, indexes
-   * it with the declared predicate, reads the printed form and rolls back.
-   * The names and SQL are the schema's own constants, never input.
-   */
-  private async printedDeclaredPredicates(): Promise<string[]> {
-    const partial = REQUIRED_KEYS.flatMap((required, index) => (required.predicate ? [{ ...required, index }] : []));
-    if (partial.length === 0) return REQUIRED_KEYS.map(() => "");
-    const statements = partial.flatMap(({ table, columns, predicate, index }) => {
-      const probe = `heimdall_key_probe_${index}`;
-      const declared = REQUIRED_COLUMNS.filter((column) => column.table === table)
-        .map((column) => `${column.column} ${column.type}`)
-        .join(", ");
-      return [
-        `CREATE TEMP TABLE ${probe} (${declared}) ON COMMIT DROP`,
-        `CREATE UNIQUE INDEX ${probe}_idx ON ${probe} (${columns}) WHERE ${predicate}`,
-      ];
-    });
-    const select = partial
-      .map(({ index }) => `SELECT ${index} AS key, pg_get_expr(indpred, indrelid) AS predicate FROM pg_index WHERE indexrelid = 'pg_temp.heimdall_key_probe_${index}_idx'::regclass`)
-      .join(" UNION ALL ");
-    const results = (await this.pool.query(["BEGIN", ...statements, select, "ROLLBACK"].join(";\n"))) as unknown as Array<{
-      rows: Array<{ key: number; predicate: string }>;
-    }>;
-    const printed = results[results.length - 2]!.rows;
-    return REQUIRED_KEYS.map((_, index) => printed.find((row) => row.key === index)?.predicate ?? "");
   }
 
   async close(): Promise<void> {
