@@ -1511,7 +1511,64 @@ describe("the failed-callback audit event", () => {
       mode: "sign_in",
       errorClass: "Error",
       errorCode: "ENOTFOUND",
+      providerStatus: null,
     });
     expect(JSON.stringify(events)).not.toContain("CANARY");
+  });
+});
+
+describe("the failed-callback audit event for a provider's HTTP refusal", () => {
+  async function auditAfterTokenExchangeAnswers(response: () => Response) {
+    globalThis.fetch = async () => response();
+    const store = new InMemoryStore();
+    const app = await buildApp({ config: createTestConfig(), store, oauthRuntimes: createOAuthRuntimeRegistry() });
+    apps.push(app);
+    const stateToken = await startDiscordSignIn(app);
+    const callback = await app.inject({
+      method: "GET",
+      url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(stateToken)}`,
+    });
+    expect(callback.statusCode).toBe(502);
+    const events = [...(store as unknown as { auditEvents: Map<string, { eventType: string; eventPayloadJson: unknown }> }).auditEvents.values()];
+    return events.filter((event) => event.eventType === "oauth_callback_failed");
+  }
+
+  it("keeps the provider's status as a number and never its body", async () => {
+    const failed = await auditAfterTokenExchangeAnswers(
+      () => new Response('{"error":"invalid_grant","echo":"CANARYbody"}', { status: 401 })
+    );
+
+    expect(failed).toHaveLength(1);
+    expect(failed[0]!.eventPayloadJson).toEqual({
+      provider: "discord",
+      mode: "sign_in",
+      errorClass: "ProviderHttpError",
+      errorCode: null,
+      providerStatus: 401,
+    });
+    expect(JSON.stringify(failed)).not.toContain("CANARY");
+  });
+
+  it("keeps no status that is not an HTTP status", async () => {
+    const store = new InMemoryStore();
+    const app = await buildApp({
+      config: createTestConfig(),
+      store,
+      oauthRuntimes: {
+        discord: {
+          ...createMockDiscordRuntime(),
+          async exchangeAuthorizationCode() {
+            throw Object.assign(new Error("refused"), { status: 9999 });
+          },
+        },
+      },
+    });
+    apps.push(app);
+    const stateToken = await startDiscordSignIn(app);
+    await app.inject({ method: "GET", url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(stateToken)}` });
+
+    const events = [...(store as unknown as { auditEvents: Map<string, { eventType: string; eventPayloadJson: Record<string, unknown> }> }).auditEvents.values()];
+    const failed = events.find((event) => event.eventType === "oauth_callback_failed");
+    expect(failed?.eventPayloadJson.providerStatus).toBeNull();
   });
 });

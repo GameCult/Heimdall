@@ -1332,8 +1332,9 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         // This path catches store and provider failures: a Postgres or
         // resolver error names a constraint, the host or the database, and
         // JSON.parse quotes the provider's response body. The audit event
-        // keeps the error's class and code.
+        // keeps the error's class, its code, and a provider's HTTP status.
         const code = (error as { code?: unknown }).code;
+        const status = (error as { status?: unknown }).status;
         const errorClass = error instanceof Error && /^[A-Za-z]{1,64}$/.test(error.name) ? error.name : "Error";
         const failure = "The provider callback could not be completed.";
         const nowIso = new Date().toISOString();
@@ -1346,6 +1347,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
             mode: statePayload.mode,
             errorClass,
             errorCode: typeof code === "string" && /^[A-Za-z0-9_]{1,64}$/.test(code) ? code : null,
+            providerStatus: typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599 ? status : null,
           },
           createdAt: nowIso,
         });

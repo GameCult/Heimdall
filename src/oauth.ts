@@ -59,8 +59,19 @@ export interface OAuthProviderRuntime {
   }): Promise<EntitlementEvaluation>;
 }
 
-function buildErrorMessage(status: number, body: string, fallback: string): string {
-  return `${fallback} (status ${status}): ${body || "empty response"}`;
+/**
+ * A provider answered with a non-2xx status. It carries the status and never
+ * the response body: a provider's body can quote the request, and whatever
+ * catches this may record or print it.
+ */
+export class ProviderHttpError extends Error {
+  readonly status: number;
+
+  constructor(status: number, failure: string) {
+    super(`${failure} (status ${status}).`);
+    this.name = "ProviderHttpError";
+    this.status = status;
+  }
 }
 
 async function fetchJson<T>(input: string | URL, init: RequestInit, fallbackError: string): Promise<T> {
@@ -68,7 +79,7 @@ async function fetchJson<T>(input: string | URL, init: RequestInit, fallbackErro
   const text = await response.text();
 
   if (!response.ok) {
-    throw new Error(buildErrorMessage(response.status, text, fallbackError));
+    throw new ProviderHttpError(response.status, fallbackError);
   }
 
   return (text ? JSON.parse(text) : {}) as T;
@@ -926,10 +937,10 @@ async function evaluateDiscordEntitlements(options: {
     };
   }
 
-  const text = await response.text();
   if (!response.ok) {
-    throw new Error(buildErrorMessage(response.status, text, "Discord guild member lookup failed"));
+    throw new ProviderHttpError(response.status, "Discord guild member lookup failed");
   }
+  const text = await response.text();
 
   const member = (text ? JSON.parse(text) : {}) as {
     nick?: string;
