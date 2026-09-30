@@ -1,6 +1,6 @@
 import { createHmac, randomUUID } from "node:crypto";
 import cors from "@fastify/cors";
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyError, type FastifyInstance } from "fastify";
 import { type AppCaller, isAppCaller, resolveAppCaller } from "./app-caller.js";
 import { deliverBackendHandoff, type BackendHandoffPayload } from "./backend-handoff.js";
 import {
@@ -532,7 +532,7 @@ export async function startOAuthFlow(
   const { config, keys } = ctx;
   const profile = getAppProfile(input.appSlug);
   if (!profile) {
-    return { statusCode: 404, body: { error: "unknown_app", detail: `No app '${input.appSlug}' is registered.` } };
+    return { statusCode: 404, body: { error: "unknown_app", detail: "No app is registered under that slug." } };
   }
 
   if (!supportsProvider(profile, provider)) {
@@ -736,6 +736,31 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     ...(options.oauthRuntimes ?? {}),
   };
   const app = Fastify({ logger: false });
+  // Fastify's default handlers answer with the error's message, and those
+  // messages carry input: pg and Node name the database host or the database
+  // (which a misbound URL fills with part of a secret), JSON.parse quotes the
+  // request body, and the media-type and not-found errors quote a header and
+  // the path. So every framework answer here is built from fixed text, the
+  // error code and the route's own schema, never from the message.
+  app.setErrorHandler((error: FastifyError, request, reply) => {
+    const status = error.statusCode !== undefined && error.statusCode >= 400 && error.statusCode < 600 ? error.statusCode : 500;
+    const code = typeof error.code === "string" ? error.code : "error";
+    reply.code(status);
+    if (status >= 500) {
+      console.error(`Heimdall ${request.method} ${request.routeOptions.url ?? "(no route)"} failed (${code}).`);
+      return { error: "internal_error" };
+    }
+    if (error.validation) {
+      // Ajv's messages and schema paths come from the route's schema, not the request.
+      const failures = error.validation.map((failure) => `${failure.schemaPath} ${failure.message ?? failure.keyword}`);
+      return { error: "invalid_request", detail: `${error.validationContext ?? "request"}: ${failures.join("; ")}` };
+    }
+    return { error: "invalid_request", code };
+  });
+  app.setNotFoundHandler((_request, reply) => {
+    reply.code(404);
+    return { error: "not_found" };
+  });
   app.decorate("heimdallContext", { config, keys, store, oauthRuntimes, tokenCustody });
   app.addHook("onClose", async () => {
     await store.close();
@@ -788,7 +813,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       const profile = getAppProfile(request.params.appSlug);
       if (!profile) {
         reply.code(404);
-        return { error: "unknown_app", detail: `No app '${request.params.appSlug}' is registered.` };
+        return { error: "unknown_app", detail: "No app is registered under that slug." };
       }
       return serializeAppProfile(profile);
     }
@@ -1289,6 +1314,11 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : "OAuth callback failed.";
+        // What leaves Heimdall is fixed text. This path catches store and
+        // provider failures: a Postgres error names a constraint, the host or
+        // the database, and JSON.parse quotes the provider's response body.
+        // The full text stays in the audit event.
+        const failure = "The provider callback could not be completed.";
         const nowIso = new Date().toISOString();
         await denyBrowserAttempt("oauth_callback_failed");
         await store.createAuditEvent({
@@ -1316,7 +1346,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
               returnTo: statePayload.return_to,
               connection: statePayload.connection,
               error: "oauth_callback_failed",
-              errorDescription: message,
+              errorDescription: failure,
             });
           } catch {}
         }
@@ -1333,7 +1363,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
               returnTo: statePayload.return_to,
               ...(handoff.kind === "backend_callback" ? { attemptId: handoff.attemptId } : {}),
               error: "oauth_callback_failed",
-              errorDescription: message,
+              errorDescription: failure,
             })
           );
         }
@@ -1341,10 +1371,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         reply.code(502);
         return {
           error: "oauth_callback_failed",
-          // Deliberately not `message`: this path catches store failures, and a
-          // Postgres unique violation would otherwise hand the caller a
-          // constraint name. The full text is in the audit event above.
-          detail: "The provider callback could not be completed.",
+          detail: failure,
           provider: request.params.provider,
           appSlug: statePayload.app_slug,
           returnTo: statePayload.return_to,
@@ -1544,7 +1571,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       const profile = getAppProfile(request.params.appSlug);
       if (!profile) {
         reply.code(404);
-        return { error: "unknown_app", detail: `No app '${request.params.appSlug}' is registered.` };
+        return { error: "unknown_app", detail: "No app is registered under that slug." };
       }
       if (!resolveAppCaller(config, profile.slug, request.headers)) {
         reply.code(401);
@@ -1695,7 +1722,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       const profile = getAppProfile(request.params.appSlug);
       if (!profile) {
         reply.code(404);
-        return { error: "unknown_app", detail: `No app '${request.params.appSlug}' is registered.` };
+        return { error: "unknown_app", detail: "No app is registered under that slug." };
       }
       if (!resolveAppCaller(config, profile.slug, request.headers)) {
         reply.code(401);

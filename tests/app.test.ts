@@ -1221,3 +1221,172 @@ describe("Heimdall service", () => {
     expect(tokenSet.scope).toEqual(["user:read:email"]);
   });
 });
+
+// An answer never carries an input value. The canary stands in for whatever a
+// failure could quote: part of a misbound database URL in a pg or resolver
+// error, a request body in a JSON parse error, a header or a path.
+describe("error answers never echo an input", () => {
+  const CANARY = "CANARY";
+
+  function failingStore(): InMemoryStore {
+    const store = new InMemoryStore();
+    store.consumeAuthCompletion = async () => {
+      throw Object.assign(new Error(`getaddrinfo ENOTFOUND ${CANARY}host.invalid`), {
+        code: "ENOTFOUND",
+        hostname: `${CANARY}host.invalid`,
+      });
+    };
+    return store;
+  }
+
+  it("answers a store failure with a fixed 500 body and logs only the route and code", async () => {
+    const app = await buildApp({ config: createTestConfig(), store: failingStore() });
+    apps.push(app);
+    const logged: string[] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => void logged.push(args.map(String).join(" "));
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/apps/bifrost/auth-completions/redeem",
+        payload: { completionCode: "x" },
+      });
+
+      expect(response.statusCode).toBe(500);
+      expect(response.json()).toEqual({ error: "internal_error" });
+    } finally {
+      console.error = originalError;
+    }
+    expect(logged).toEqual(["Heimdall POST /v1/apps/:appSlug/auth-completions/redeem failed (ENOTFOUND)."]);
+  });
+
+  it("answers a body that is not JSON without quoting it", async () => {
+    const app = await buildApp({ config: createTestConfig() });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/apps/bifrost/auth-completions/redeem",
+      headers: { "content-type": "application/json" },
+      payload: `${CANARY}notjson`,
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error).toBe("invalid_request");
+    expect(response.body).not.toContain(CANARY);
+  });
+
+  it("answers an unsupported media type without quoting the header", async () => {
+    const app = await buildApp({ config: createTestConfig() });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/apps/bifrost/auth-completions/redeem",
+      headers: { "content-type": `application/${CANARY}` },
+      payload: "x",
+    });
+
+    expect(response.statusCode).toBe(415);
+    expect(response.body).not.toContain(CANARY);
+  });
+
+  it("names the failed schema rule without quoting the request", async () => {
+    const app = await buildApp({ config: createTestConfig() });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/apps/bifrost/auth-completions/redeem",
+      payload: { [`${CANARY}extra`]: `${CANARY}value` },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error).toBe("invalid_request");
+    expect(response.json().detail).toMatch(/^body: #\//);
+    expect(response.body).not.toContain(CANARY);
+  });
+
+  it("answers an unknown route or app without quoting the path", async () => {
+    const app = await buildApp({ config: createTestConfig() });
+    apps.push(app);
+
+    const route = await app.inject({ method: "GET", url: `/v1/${CANARY}route` });
+    expect(route.statusCode).toBe(404);
+    expect(route.json()).toEqual({ error: "not_found" });
+
+    const unknownApp = await app.inject({ method: "GET", url: `/v1/apps/${CANARY}app` });
+    expect(unknownApp.statusCode).toBe(404);
+    expect(unknownApp.json().error).toBe("unknown_app");
+    expect(unknownApp.body).not.toContain(CANARY);
+
+    const start = await app.inject({
+      method: "POST",
+      url: "/v1/oauth/discord/start",
+      payload: { appSlug: `${CANARY}app`, mode: "sign_in", returnTo: "https://repixelizer.gamecult.org/app/" },
+    });
+    expect(start.statusCode).toBe(400);
+    expect(start.body).not.toContain(CANARY);
+  });
+
+  function failingDiscordRuntime(): OAuthProviderRuntime {
+    return {
+      ...createMockDiscordRuntime(),
+      async exchangeAuthorizationCode() {
+        throw new SyntaxError(`Unexpected token 'a', "access_token=${CANARY}token" is not valid JSON`);
+      },
+    };
+  }
+
+  it("renders a failed provider callback page without the failure's text", async () => {
+    const app = await buildApp({ config: createTestConfig(), oauthRuntimes: { discord: failingDiscordRuntime() } });
+    apps.push(app);
+
+    const stateToken = await startDiscordSignIn(app);
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(stateToken)}`,
+      headers: { accept: "text/html" },
+    });
+
+    expect(response.headers["content-type"]).toContain("text/html");
+    expect(response.body).toContain("oauth_callback_failed");
+    expect(response.body).not.toContain(CANARY);
+  });
+
+  it("delivers a failed provider callback to the app backend without the failure's text", async () => {
+    const deliveries: string[] = [];
+    globalThis.fetch = async (_input, init) => {
+      deliveries.push(String(init?.body));
+      return new Response(null, { status: 204 });
+    };
+    const app = await buildApp({ config: createTestConfig(), oauthRuntimes: { discord: failingDiscordRuntime() } });
+    apps.push(app);
+
+    const start = await app.inject({
+      method: "POST",
+      url: "/v1/oauth/discord/start",
+      payload: {
+        appSlug: "repixelizer",
+        mode: "sign_in",
+        returnTo: "https://repixelizer.gamecult.org/app/",
+        handoff: {
+          kind: "backend_callback",
+          attemptId: "attempt-123",
+          callbackUrl: "https://repixelizer.gamecult.org/api/auth/heimdall/callback",
+        },
+      },
+    });
+    expect(start.statusCode).toBe(201);
+    const response = await app.inject({
+      method: "GET",
+      url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(start.json().stateToken as string)}`,
+    });
+
+    expect(response.statusCode).toBe(502);
+    expect(response.body).not.toContain(CANARY);
+    expect(deliveries).toHaveLength(1);
+    expect(JSON.parse(deliveries[0]!)).toMatchObject({ status: "error", error: "oauth_callback_failed" });
+    expect(deliveries[0]).not.toContain(CANARY);
+  });
+});
