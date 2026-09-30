@@ -14,13 +14,13 @@ export interface TokenCustody {
 function decodeConfiguredKey(base64Value: string): Buffer {
   const normalized = base64Value.trim();
   if (!normalized) {
-    throw new Error("GC_ACCESS_TOKEN_ENCRYPTION_KEY_BASE64 is set but empty.");
+    throw new Error("GC_ACCESS_TOKEN_ENCRYPTION_KEY_BASE64_FILE is set but empty.");
   }
 
   const key = Buffer.from(normalized, "base64");
   if (key.byteLength !== TOKEN_KEY_BYTES) {
     throw new Error(
-      `GC_ACCESS_TOKEN_ENCRYPTION_KEY_BASE64 must decode to exactly ${TOKEN_KEY_BYTES} bytes for AES-256-GCM.`
+      `GC_ACCESS_TOKEN_ENCRYPTION_KEY_BASE64_FILE must decode to exactly ${TOKEN_KEY_BYTES} bytes for AES-256-GCM.`
     );
   }
 
@@ -51,7 +51,7 @@ export function createTokenCustody(config: HeimdallConfig): TokenCustody {
     : (() => {
         if (config.storage.backend === "postgres") {
           throw new Error(
-            "GC_ACCESS_TOKEN_ENCRYPTION_KEY_BASE64 is required when Heimdall uses persistent postgres storage."
+            "GC_ACCESS_TOKEN_ENCRYPTION_KEY_BASE64_FILE is required when Heimdall uses persistent postgres storage."
           );
         }
 

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { appSlugs, providers, type AppSlug, type Provider } from "./contracts.js";
@@ -120,11 +121,47 @@ function readIdunnCandidateBind(
   return { host, port };
 }
 
+/**
+ * Read one secret input. Its value lives in a file named by `NAME_FILE`: under
+ * Idunn that is a systemd credential, so the value never enters a binding, a
+ * unit, a plan or the process environment. One trailing newline is stripped.
+ *
+ * LEGACY SHIM, deleted with the legacy EnvironmentFile unit (secret-files
+ * Cut 5): when `NAME_FILE` is absent, the plaintext `NAME` is read instead.
+ * Setting both is refused, so one input has one owner. Under Idunn the recipe
+ * declares only the `_FILE` names, so the plaintext form cannot be bound there.
+ *
+ * Errors name the variable and the path, never a value or a file's contents.
+ */
+export function readSecretInput(env: NodeJS.ProcessEnv, name: string): string | undefined {
+  const fileVariable = `${name}_FILE`;
+  const filePath = env[fileVariable];
+  const plaintext = env[name];
+
+  if (filePath !== undefined && plaintext !== undefined) {
+    throw new Error(`${name} and ${fileVariable} are both set; set only ${fileVariable}.`);
+  }
+
+  if (filePath === undefined) {
+    return plaintext;
+  }
+
+  let contents: string;
+  try {
+    contents = readFileSync(filePath, "utf8");
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code ?? "read error";
+    throw new Error(`${fileVariable} names ${filePath}, which could not be read (${code}).`);
+  }
+
+  return contents.replace(/\r?\n$/, "");
+}
+
 function readProviderConfig(env: NodeJS.ProcessEnv, provider: Provider): ProviderClientConfig {
   const prefix = `GC_ACCESS_PROVIDER_${provider.toUpperCase()}`;
   const config: ProviderClientConfig = {};
   const clientId = env[`${prefix}_CLIENT_ID`];
-  const clientSecret = env[`${prefix}_CLIENT_SECRET`];
+  const clientSecret = readSecretInput(env, `${prefix}_CLIENT_SECRET`);
 
   if (clientId) {
     config.clientId = clientId;
@@ -200,8 +237,9 @@ export function loadConfig(
   const issuer = trimTrailingSlash(env.GC_ACCESS_ISSUER ?? publicBaseUrl);
   const dataRoot =
     stateRootArgument ?? env.GC_ACCESS_DATA_ROOT ?? path.join(workspaceRoot, ".heimdall-data");
+  const databaseUrl = readSecretInput(env, "GC_ACCESS_DATABASE_URL");
   const storageBackend =
-    env.GC_ACCESS_STORAGE_BACKEND === "postgres" || env.GC_ACCESS_DATABASE_URL ? "postgres" : "memory";
+    env.GC_ACCESS_STORAGE_BACKEND === "postgres" || databaseUrl ? "postgres" : "memory";
   const providersConfig = Object.fromEntries(
     providers.map((provider) => [provider, readProviderConfig(env, provider)])
   ) as Record<Provider, ProviderClientConfig>;
@@ -209,7 +247,7 @@ export function loadConfig(
     appSlugs
       .map((appSlug) => {
         const envKey = `GC_ACCESS_APP_${appSlug.toUpperCase()}_SHARED_SECRET`;
-        return [appSlug, env[envKey]];
+        return [appSlug, readSecretInput(env, envKey)];
       })
       .filter(([, value]) => Boolean(value))
   ) as Partial<Record<AppSlug, string>>;
@@ -285,20 +323,22 @@ export function loadConfig(
     config.signingKeyId = env.GC_ACCESS_SIGNING_KEY_ID;
   }
 
-  if (env.GC_ACCESS_TOKEN_ENCRYPTION_KEY_BASE64) {
-    config.tokenEncryptionKeyBase64 = env.GC_ACCESS_TOKEN_ENCRYPTION_KEY_BASE64;
+  const tokenEncryptionKeyBase64 = readSecretInput(env, "GC_ACCESS_TOKEN_ENCRYPTION_KEY_BASE64");
+  if (tokenEncryptionKeyBase64) {
+    config.tokenEncryptionKeyBase64 = tokenEncryptionKeyBase64;
   }
 
   if (env.GC_ACCESS_BIFROST_PATRON_SUPPORT_ENDPOINT) {
     config.bifrostPatronSupportEndpoint = env.GC_ACCESS_BIFROST_PATRON_SUPPORT_ENDPOINT;
   }
 
-  if (env.GC_ACCESS_BIFROST_PATRON_SUPPORT_SECRET) {
-    config.bifrostPatronSupportSecret = env.GC_ACCESS_BIFROST_PATRON_SUPPORT_SECRET;
+  const bifrostPatronSupportSecret = readSecretInput(env, "GC_ACCESS_BIFROST_PATRON_SUPPORT_SECRET");
+  if (bifrostPatronSupportSecret) {
+    config.bifrostPatronSupportSecret = bifrostPatronSupportSecret;
   }
 
-  if (env.GC_ACCESS_DATABASE_URL) {
-    config.storage.databaseUrl = env.GC_ACCESS_DATABASE_URL;
+  if (databaseUrl) {
+    config.storage.databaseUrl = databaseUrl;
   }
 
   return config;

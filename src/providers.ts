@@ -21,7 +21,7 @@ export const providerCatalog: Record<Provider, ProviderDescriptor> = {
     defaultScopes: ["identify", "guilds.members.read"],
     roles: ["identity", "entitlement"],
     clientIdEnv: "GC_ACCESS_PROVIDER_DISCORD_CLIENT_ID",
-    clientSecretEnv: "GC_ACCESS_PROVIDER_DISCORD_CLIENT_SECRET",
+    clientSecretEnv: "GC_ACCESS_PROVIDER_DISCORD_CLIENT_SECRET_FILE",
   },
   patreon: {
     key: "patreon",
@@ -30,7 +30,7 @@ export const providerCatalog: Record<Provider, ProviderDescriptor> = {
     defaultScopes: ["identity", "identity[email]"],
     roles: ["identity", "entitlement"],
     clientIdEnv: "GC_ACCESS_PROVIDER_PATREON_CLIENT_ID",
-    clientSecretEnv: "GC_ACCESS_PROVIDER_PATREON_CLIENT_SECRET",
+    clientSecretEnv: "GC_ACCESS_PROVIDER_PATREON_CLIENT_SECRET_FILE",
   },
   github: {
     key: "github",
@@ -39,7 +39,7 @@ export const providerCatalog: Record<Provider, ProviderDescriptor> = {
     defaultScopes: ["read:user", "user:email"],
     roles: ["identity", "managed_credential"],
     clientIdEnv: "GC_ACCESS_PROVIDER_GITHUB_CLIENT_ID",
-    clientSecretEnv: "GC_ACCESS_PROVIDER_GITHUB_CLIENT_SECRET",
+    clientSecretEnv: "GC_ACCESS_PROVIDER_GITHUB_CLIENT_SECRET_FILE",
   },
   twitch: {
     key: "twitch",
@@ -48,7 +48,7 @@ export const providerCatalog: Record<Provider, ProviderDescriptor> = {
     defaultScopes: ["user:read:email"],
     roles: ["identity", "managed_credential"],
     clientIdEnv: "GC_ACCESS_PROVIDER_TWITCH_CLIENT_ID",
-    clientSecretEnv: "GC_ACCESS_PROVIDER_TWITCH_CLIENT_SECRET",
+    clientSecretEnv: "GC_ACCESS_PROVIDER_TWITCH_CLIENT_SECRET_FILE",
   },
   youtube: {
     key: "youtube",
@@ -62,7 +62,7 @@ export const providerCatalog: Record<Provider, ProviderDescriptor> = {
     ],
     roles: ["identity", "managed_credential"],
     clientIdEnv: "GC_ACCESS_PROVIDER_YOUTUBE_CLIENT_ID",
-    clientSecretEnv: "GC_ACCESS_PROVIDER_YOUTUBE_CLIENT_SECRET",
+    clientSecretEnv: "GC_ACCESS_PROVIDER_YOUTUBE_CLIENT_SECRET_FILE",
     additionalAuthorizationParams: {
       access_type: "offline",
       include_granted_scopes: "true",
@@ -80,7 +80,7 @@ export const providerCatalog: Record<Provider, ProviderDescriptor> = {
     ],
     roles: ["identity", "managed_credential"],
     clientIdEnv: "GC_ACCESS_PROVIDER_SPOTIFY_CLIENT_ID",
-    clientSecretEnv: "GC_ACCESS_PROVIDER_SPOTIFY_CLIENT_SECRET",
+    clientSecretEnv: "GC_ACCESS_PROVIDER_SPOTIFY_CLIENT_SECRET_FILE",
   },
 };
 
