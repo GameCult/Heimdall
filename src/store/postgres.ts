@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient, type QueryResultRow } from "pg";
 import { type AppSlug, type HeimdallAuthAttemptStatus, type LinkedIdentityInput, type Provider } from "../contracts.js";
-import { CREATE_SCHEMA_SQL } from "./schema.js";
+import { CREATE_SCHEMA_SQL, REQUIRED_COLUMNS, REQUIRED_RELATIONS } from "./schema.js";
 import {
   type CreateAccountInput,
   type CreateAuthAttemptInput,
@@ -291,9 +291,34 @@ export class PostgresStore implements HeimdallStore {
     await this.pool.query(CREATE_SCHEMA_SQL);
   }
 
-  /** Opens a connection and runs a trivial query, so a start that does not apply the schema still proves the URL. */
-  async checkConnection(): Promise<void> {
-    await this.pool.query("SELECT 1");
+  /**
+   * Proves, for a start that does not apply the schema, that the URL connects
+   * and that the database holds every relation and column the schema makes.
+   * A missing one fails with code SCHEMA_MISSING.
+   */
+  async checkSchema(): Promise<void> {
+    const result = await this.pool.query<{ missing: string }>(
+      `
+      SELECT name AS missing FROM unnest($1::text[]) AS name WHERE to_regclass(name) IS NULL
+      UNION ALL
+      SELECT required.table_name || '.' || required.column_name
+      FROM unnest($2::text[], $3::text[]) AS required(table_name, column_name)
+      WHERE NOT EXISTS (
+        SELECT 1 FROM information_schema.columns c
+        WHERE c.table_schema = current_schema()
+          AND c.table_name = required.table_name
+          AND c.column_name = required.column_name
+      )
+      `,
+      [
+        REQUIRED_RELATIONS,
+        REQUIRED_COLUMNS.map((required) => required.table),
+        REQUIRED_COLUMNS.map((required) => required.column),
+      ]
+    );
+    if (result.rows.length > 0) {
+      throw Object.assign(new Error("The Heimdall schema is not applied."), { code: "SCHEMA_MISSING" });
+    }
   }
 
   async close(): Promise<void> {

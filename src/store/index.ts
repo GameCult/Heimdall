@@ -14,9 +14,10 @@ export async function createStore(config: HeimdallConfig): Promise<HeimdallStore
 
   const store = createPostgresStore(config.storage.databaseUrl ?? "postgres://127.0.0.1/heimdall");
   try {
-    // Connect on every start, whether or not it applies the schema, so a
-    // misbound URL fails here rather than in the first request.
-    await (config.storage.applySchemaOnStartup ? store.ensureSchema() : store.checkConnection());
+    // Every start connects, and one that does not apply the schema proves it
+    // is there, so a misbound URL or an empty database fails here rather than
+    // in the first request.
+    await (config.storage.applySchemaOnStartup ? store.ensureSchema() : store.checkSchema());
   } catch (error) {
     // pg's and Node's errors name the host, the database or the URL itself,
     // and any of those can hold part of a secret that was bound or escaped

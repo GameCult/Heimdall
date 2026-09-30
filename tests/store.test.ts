@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { newDb } from "pg-mem";
 import { createPostgresStore, PostgresStore } from "../src/store/postgres.js";
+import { REQUIRED_COLUMNS, REQUIRED_RELATIONS } from "../src/store/schema.js";
 
 describe("PostgresStore", () => {
   it("round-trips core auth records through postgres", async () => {
@@ -207,5 +208,37 @@ describe("createPostgresStore", () => {
     expect(logged).toEqual([
       "Heimdall lost an idle Postgres connection (57P01); the pool reconnects on the next query.",
     ]);
+  });
+});
+
+describe("PostgresStore.checkSchema", () => {
+  it("requires every table and index the schema creates and every column it adds", () => {
+    expect(REQUIRED_RELATIONS).toEqual(
+      expect.arrayContaining(["accounts", "audit_events", "auth_completions_attempt_unconsumed_unique_idx", "audit_events_lookup_idx"])
+    );
+    expect(REQUIRED_RELATIONS).toHaveLength(17);
+    expect(REQUIRED_COLUMNS).toEqual([{ table: "auth_completions", column: "attempt_id" }]);
+  });
+
+  function storeAnswering(missing: string[]) {
+    const queries: unknown[][] = [];
+    const store = new PostgresStore({
+      query: (async (_text: string, values: unknown[]) => {
+        queries.push(values);
+        return { rows: missing.map((name) => ({ missing: name })) };
+      }) as never,
+      end: async () => undefined,
+    });
+    return { store, queries };
+  }
+
+  it("refuses with SCHEMA_MISSING when anything is missing", async () => {
+    const { store, queries } = storeAnswering(["auth_completions.attempt_id"]);
+    await expect(store.checkSchema()).rejects.toMatchObject({ code: "SCHEMA_MISSING" });
+    expect(queries).toEqual([[REQUIRED_RELATIONS, ["auth_completions"], ["attempt_id"]]]);
+  });
+
+  it("passes when nothing is missing", async () => {
+    await expect(storeAnswering([]).store.checkSchema()).resolves.toBeUndefined();
   });
 });

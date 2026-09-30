@@ -162,3 +162,16 @@ CREATE TABLE IF NOT EXISTS audit_events (
 CREATE INDEX IF NOT EXISTS audit_events_lookup_idx
   ON audit_events(account_id, session_id, app_slug, created_at);
 `;
+
+/**
+ * What a start that does not apply the schema must find, read from the SQL
+ * above so the two cannot drift: every table and index it creates, and every
+ * column it adds to an existing table.
+ */
+export const REQUIRED_RELATIONS = [
+  ...CREATE_SCHEMA_SQL.matchAll(/^CREATE (?:UNIQUE )?(?:TABLE|INDEX) IF NOT EXISTS (\w+)/gm),
+].map((match) => match[1]!);
+
+export const REQUIRED_COLUMNS = [
+  ...CREATE_SCHEMA_SQL.matchAll(/^ALTER TABLE (\w+) ADD COLUMN IF NOT EXISTS (\w+)/gm),
+].map((match) => ({ table: match[1]!, column: match[2]! }));
