@@ -26,18 +26,23 @@ Do not trust this file for the exact live HEAD. Always check git.
 
 ## Active Work
 
-Joystick H1 is the active, M1-critical cut (operator ruling 2026-10-18):
-campaign `joystick:campaign:self`, target `joystick:target:r1`, branch
-`eureka/joystick-h1`. Read the campaign and target in the typed mind; do not
-re-derive them here. The Ghostlight KLTST canaries below stay open, behind H1.
+Joystick H1 is merged and live (PR GameCult/Heimdall#1; campaign
+`joystick:campaign:self`). Next: `joystick:follow_up:h1-live-round-trips`, then
+StreamPixels S0/S1 (other sessions). Open Heimdall follow-ups, by id:
+`joystick:follow_up:cross-process-failed-refresh-marker`,
+`joystick:follow_up:connect-start-needs-app-auth`,
+`joystick:follow_up:heimdall-idunn-onboarding`,
+`joystick:follow_up:joystick-viewer-signin-public-bot`. The Ghostlight KLTST
+canaries below stay open, behind them.
 
 ## Current Orientation
 
-Deploy facts below are last-recorded, from 2026-08-22 (`1086aee`); HEAD has
-moved ~100 commits past it. Check Yggdrasil, not this file, for what runs.
+Yggdrasil runs Heimdall `d51fa6b`, hand-deployed 2026-10-19 15:51Z;
+gamecult-ops `210a1af` records backup, rollback and provenance. Facts below
+about Odin, Ghostlight and CultLib pins were verified at `1086aee` (2026-08-22)
+and are not re-verified at `d51fa6b`.
 
-- Yggdrasil runs Heimdall
-  `1086aee01169bf60e8a492b2740db1c6f3e8cabf` with CultLib
+- At `1086aee01169bf60e8a492b2740db1c6f3e8cabf` Heimdall ran with CultLib
   `5cefa0db0079a8e3ee22f29d7b9e6e5aa60912a9`
 - Heimdall publishes four redacted access records to Odin under unique keys:
   `eve:provider:heimdall`, `heimdall:command-boundary`,
@@ -157,8 +162,7 @@ moved ~100 commits past it. Check Yggdrasil, not this file, for what runs.
   over `cultnet.transport.rudp.v0` when `GC_ACCESS_IDUNN_RUDP_HEALTH` is
   configured; HTTP `/healthz`, JWKS, discovery, systemd, and nginx routing
   remain compatibility witnesses
-- Yggdrasil now runs Heimdall commit
-  `1086aee01169bf60e8a492b2740db1c6f3e8cabf`. Heimdall persists its private
+- Since `1086aee` Heimdall persists its private
   provider-health identity at `/srv/heimdall/keys/provider-health-identity.cc`
   and publishes canonical signed health independently of the slower Verse
   snapshot cadence. Idunn owns the exact root trust binding, authenticated
@@ -180,7 +184,7 @@ moved ~100 commits past it. Check Yggdrasil, not this file, for what runs.
 
 ## Next Real Move
 
-Joystick H1 first (see Active Work). Everything below is the standing queue.
+The Active Work follow-ups first. Everything below is the standing queue.
 
 Do not continue implementation automatically from a rehydrate-only request.
 
