@@ -188,7 +188,6 @@ export async function requestProviderTokens(
   if (
     typeof answer !== "object" ||
     answer === null ||
-    Array.isArray(answer) ||
     typeof (answer as { access_token?: unknown }).access_token !== "string" ||
     !(answer as { access_token: string }).access_token ||
     (answer as { error?: unknown }).error !== undefined
