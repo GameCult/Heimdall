@@ -2,7 +2,7 @@ import { inspect } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { type HeimdallConfig } from "../src/config.js";
 import { providers, type Provider } from "../src/contracts.js";
-import { requestProviderTokens } from "../src/oauth.js";
+import { createOAuthRuntimeRegistry, requestProviderTokens } from "../src/oauth.js";
 import { providerCatalog } from "../src/providers.js";
 
 const originalFetch = globalThis.fetch;
@@ -136,6 +136,33 @@ describe("requestProviderTokens follows the provider descriptor", () => {
     const before = Date.now();
     const tokens = await requestProviderTokens("twitch", configFor(), { grant_type: "refresh_token", refresh_token: "R" });
     expect(Date.parse(tokens.expiresAt ?? "") - before).toBeLessThan(3600 * 1000 + 5_000);
+  });
+
+  it.each([
+    ["exactly a year", 31_536_000, 31_536_000],
+    ["a second over a year", 31_536_001, 3600],
+    ["3e11", 3e11, 3600],
+    ["3e11 as a string", "300000000000", 3600],
+  ])("takes an expires_in of %s as %i seconds' worth of lifetime", async (_n, expiresIn, seconds) => {
+    capture(() => new Response(JSON.stringify({ access_token: "a", expires_in: expiresIn }), { status: 200 }));
+    const before = Date.now();
+    const tokens = await requestProviderTokens("twitch", configFor(), { grant_type: "refresh_token", refresh_token: "R" });
+    expect(Date.parse(tokens.expiresAt ?? "") - before).toBeGreaterThanOrEqual(seconds * 1000 - 1000);
+    expect(Date.parse(tokens.expiresAt ?? "") - before).toBeLessThan(seconds * 1000 + 5_000);
+  });
+
+  it.each([
+    ["no refresh_token", {}],
+    ["an empty refresh_token", { refresh_token: "" }],
+  ])("a rotating provider's code exchange with %s is a typed malformed token set; a non-rotating one is not", async (_n, extra) => {
+    capture(() => new Response(JSON.stringify({ access_token: "a", expires_in: 3600, ...extra }), { status: 200 }));
+    const runtimes = createOAuthRuntimeRegistry();
+    const exchange = { config: configFor(), code: "c", redirectUri: "https://h/cb" };
+    await expect(runtimes.joystick.exchangeAuthorizationCode(exchange)).rejects.toMatchObject({
+      name: "ProviderResponseError",
+      code: "provider_body_not_token_set",
+    });
+    expect((await runtimes.twitch.exchangeAuthorizationCode(exchange)).refreshToken).toBeUndefined();
   });
 
   it.each([

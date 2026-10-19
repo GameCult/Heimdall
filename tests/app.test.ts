@@ -1367,14 +1367,15 @@ describe("Heimdall service", () => {
     }
 
     it.each([
-      ["no connection", {}],
-      ["an account connection", { connection: { kind: "account", targetId: "victim-1" } }],
-      ["an empty targetId", { connection: { kind: "creator", targetId: "" } }],
-    ])("refuses a joystick connect with %s at start, before any redirect", async (_name, extra) => {
+      ["no connection", {}, "creator_connection_required"],
+      ["an account connection", { connection: { kind: "account", targetId: "victim-1" } }, "creator_connection_required"],
+      ["an empty targetId", { connection: { kind: "creator", targetId: "" } }, "invalid_request"],
+    ])("refuses a joystick connect with %s at start, before any redirect", async (_name, extra, error) => {
       const app = await buildApp({ config: createTestConfig() });
       apps.push(app);
       const start = await connect(app, extra);
       expect(start.statusCode).toBe(400);
+      expect(start.json().error).toBe(error);
       expect(start.json().authorizationUrl).toBeUndefined();
       expect(start.json().stateToken).toBeUndefined();
     });
