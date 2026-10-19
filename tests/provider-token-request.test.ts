@@ -1,3 +1,4 @@
+import { inspect } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { type HeimdallConfig } from "../src/config.js";
 import { providers, type Provider } from "../src/contracts.js";
@@ -112,5 +113,35 @@ describe("requestProviderTokens follows the provider descriptor", () => {
     await expect(
       requestProviderTokens("patreon", config, { grant_type: "refresh_token", refresh_token: "r" })
     ).rejects.toThrow("Patreon OAuth is not fully configured.");
+  });
+});
+
+describe("oauthError is a closed set", () => {
+  const refresh = { grant_type: "refresh_token", refresh_token: "r" } as const;
+  async function failure(body: string, status = 400) {
+    capture(() => new Response(body, { status }));
+    return requestProviderTokens("twitch", configFor(), refresh).then(
+      () => {
+        throw new Error("expected a refusal");
+      },
+      (error: unknown) => error as Error & { oauthError?: string }
+    );
+  }
+
+  it("takes invalid_grant from the body and carries nothing else of it", async () => {
+    const error = await failure(JSON.stringify({ error: "invalid_grant", error_description: "CANARY" }));
+    expect(error.oauthError).toBe("invalid_grant");
+    expect(`${error.message} ${error.stack} ${inspect(error, { depth: 5, showHidden: true })} ${JSON.stringify(error)}`).not.toContain("CANARY");
+  });
+
+  it.each([
+    ["an error outside the RFC set", JSON.stringify({ error: "CANARY_unknown" })],
+    ["a non-string error", JSON.stringify({ error: { code: "invalid_grant" } })],
+    ["a body that is not JSON", "CANARY <html>"],
+    ["JSON null", "null"],
+  ])("leaves oauthError undefined for %s", async (_name, body) => {
+    const error = await failure(body);
+    expect(error.oauthError).toBeUndefined();
+    expect(`${error.message} ${inspect(error, { depth: 5, showHidden: true })}`).not.toContain("CANARY");
   });
 });

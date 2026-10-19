@@ -34,6 +34,7 @@ import {
   summarizePatreonMemberships,
   type OAuthRuntimeRegistry,
 } from "./oauth.js";
+import { ManagedCredentialRefreshFailed, refreshManagedCredential } from "./managed-credential.js";
 import { buildAuthorizationUrl, providerCatalog, providerExpectedEnv } from "./providers.js";
 import { createRuntimeKeyMaterial, signJwt, verifyJwt } from "./signing.js";
 import { createStore, type HeimdallStore } from "./store/index.js";
@@ -43,8 +44,6 @@ import {
   type StoredLinkedIdentity,
   type UpsertLinkedIdentityInput,
 } from "./store/types.js";
-
-const MANAGED_CREDENTIAL_REFRESH_SKEW_MS = 5 * 60 * 1000;
 
 export interface BuildAppOptions {
   config?: HeimdallConfig;
@@ -367,63 +366,6 @@ function centsToDecimalString(cents: number): string {
   return (cents / 100).toFixed(2);
 }
 
-async function refreshLinkedIdentityCredentialIfNeeded(options: {
-  config: HeimdallConfig;
-  store: HeimdallStore;
-  tokenCustody: TokenCustody;
-  oauthRuntimes: OAuthRuntimeRegistry;
-  linkedIdentity: StoredLinkedIdentity;
-  now: string;
-}): Promise<StoredLinkedIdentity> {
-  const expiresAt = options.linkedIdentity.tokenExpiresAt ? Date.parse(options.linkedIdentity.tokenExpiresAt) : undefined;
-  if (
-    !expiresAt ||
-    expiresAt - Date.now() > MANAGED_CREDENTIAL_REFRESH_SKEW_MS ||
-    !options.linkedIdentity.refreshTokenEncrypted
-  ) {
-    return options.linkedIdentity;
-  }
-
-  const runtime = options.oauthRuntimes[options.linkedIdentity.provider];
-  if (!runtime.refreshAccessToken) {
-    return options.linkedIdentity;
-  }
-
-  const refreshToken = options.tokenCustody.decrypt(options.linkedIdentity.refreshTokenEncrypted);
-  const refreshed = await runtime.refreshAccessToken({
-    config: options.config,
-    refreshToken,
-  });
-
-  const upsertInput: UpsertLinkedIdentityInput = {
-    id: options.linkedIdentity.id,
-    accountId: options.linkedIdentity.accountId,
-    provider: options.linkedIdentity.provider,
-    providerUserId: options.linkedIdentity.providerUserId,
-    accessTokenEncrypted: options.tokenCustody.encrypt(refreshed.accessToken),
-    refreshTokenEncrypted: options.tokenCustody.encrypt(refreshed.refreshToken ?? refreshToken),
-    scopes: refreshed.scope.length ? refreshed.scope : options.linkedIdentity.scopes,
-    profileJson: options.linkedIdentity.profileJson,
-    createdAt: options.linkedIdentity.createdAt,
-    updatedAt: options.now,
-  };
-  const tokenExpiresAt = refreshed.expiresAt ?? options.linkedIdentity.tokenExpiresAt;
-  if (tokenExpiresAt !== undefined) {
-    upsertInput.tokenExpiresAt = tokenExpiresAt;
-  }
-  if (options.linkedIdentity.username !== undefined) {
-    upsertInput.username = options.linkedIdentity.username;
-  }
-  if (options.linkedIdentity.displayName !== undefined) {
-    upsertInput.displayName = options.linkedIdentity.displayName;
-  }
-  if (options.linkedIdentity.primaryEmail !== undefined) {
-    upsertInput.primaryEmail = options.linkedIdentity.primaryEmail;
-  }
-
-  return options.store.upsertLinkedIdentity(upsertInput);
-}
-
 function storedIdentityToResolvedIdentity(identity: StoredLinkedIdentity) {
   const resolved = {
     provider: identity.provider,
@@ -450,7 +392,6 @@ async function evaluateStoredEntitlements(options: {
   appSlug: AppSlug;
   accountId: string;
   entitlementPolicies: OAuthEntitlementPolicy[];
-  now: string;
 }): Promise<string[]> {
   const profile = getAppProfile(options.appSlug);
   if (!profile) {
@@ -460,19 +401,13 @@ async function evaluateStoredEntitlements(options: {
   const facts: string[] = [];
 
   for (const storedIdentity of linkedIdentities) {
-    if (!profile.entitlementSources.includes(storedIdentity.provider) || !storedIdentity.accessTokenEncrypted) {
+    if (!profile.entitlementSources.includes(storedIdentity.provider)) {
       continue;
     }
 
-    const linkedIdentity = await refreshLinkedIdentityCredentialIfNeeded({
-      config: options.config,
-      store: options.store,
-      tokenCustody: options.tokenCustody,
-      oauthRuntimes: options.oauthRuntimes,
-      linkedIdentity: storedIdentity,
-      now: options.now,
-    });
-    if (!linkedIdentity.accessTokenEncrypted) {
+    const refreshed = await refreshManagedCredential(options, storedIdentity);
+    const linkedIdentity = refreshed.identity;
+    if (refreshed.kind === "revoked" || !linkedIdentity.accessTokenEncrypted) {
       continue;
     }
 
@@ -714,7 +649,6 @@ export async function refreshAppSession(
     appSlug,
     accountId: refreshClaim.account_id,
     entitlementPolicies,
-    now: nowIso,
   });
   const issueInput: IssueAccessClaimInput = {
     appSlug,
@@ -1620,21 +1554,15 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       }
 
       const storedLinkedIdentity = await store.findStoredLinkedIdentityForAccount(request.body.accountId, "patreon");
-      if (!storedLinkedIdentity?.accessTokenEncrypted) {
+      if (!storedLinkedIdentity) {
         reply.code(404);
         return { error: "patreon_identity_not_linked" };
       }
 
       const now = new Date().toISOString();
-      const linkedIdentity = await refreshLinkedIdentityCredentialIfNeeded({
-        config,
-        store,
-        tokenCustody,
-        oauthRuntimes,
-        linkedIdentity: storedLinkedIdentity,
-        now,
-      });
-      if (!linkedIdentity.accessTokenEncrypted) {
+      const refreshed = await refreshManagedCredential({ config, store, tokenCustody, oauthRuntimes }, storedLinkedIdentity);
+      const linkedIdentity = refreshed.identity;
+      if (refreshed.kind === "revoked" || !linkedIdentity.accessTokenEncrypted) {
         reply.code(404);
         return { error: "patreon_identity_not_linked" };
       }
@@ -1772,22 +1700,24 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       }
 
       const storedLinkedIdentity = await store.findStoredLinkedIdentityForAccount(request.body.accountId, request.body.provider);
-      if (!storedLinkedIdentity?.accessTokenEncrypted) {
+      if (!storedLinkedIdentity) {
         reply.code(404);
         return { error: "managed_credential_not_found" };
       }
-      const now = new Date().toISOString();
-      const linkedIdentity = await refreshLinkedIdentityCredentialIfNeeded({
-        config,
-        store,
-        tokenCustody,
-        oauthRuntimes,
-        linkedIdentity: storedLinkedIdentity,
-        now,
-      });
-      if (!linkedIdentity.accessTokenEncrypted) {
-        reply.code(404);
-        return { error: "managed_credential_not_found" };
+      let refreshed;
+      try {
+        refreshed = await refreshManagedCredential({ config, store, tokenCustody, oauthRuntimes }, storedLinkedIdentity);
+      } catch (error) {
+        if (error instanceof ManagedCredentialRefreshFailed) {
+          reply.code(502);
+          return { error: error.code, provider: error.provider };
+        }
+        throw error;
+      }
+      const linkedIdentity = refreshed.identity;
+      if (refreshed.kind === "revoked" || !linkedIdentity.accessTokenEncrypted) {
+        reply.code(410);
+        return { error: "managed_credential_revoked", provider: linkedIdentity.provider };
       }
 
       const response: {

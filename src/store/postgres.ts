@@ -8,6 +8,7 @@ import {
   type CreateAuthCompletionInput,
   type CreateAuditEventInput,
   type CreateCapabilityGrantInput,
+  type CredentialDecision,
   type CreateEntitlementSnapshotInput,
   type CreateSessionInput,
   type CreatePrivateCommandReceiptInput,
@@ -546,7 +547,7 @@ export async function checkSchemaRequirements(pool: Pick<Pool, "query">, require
 }
 
 export class PostgresStore implements HeimdallStore {
-  constructor(private readonly pool: Pick<Pool, "query" | "end">) {}
+  constructor(private readonly pool: Pick<Pool, "query" | "end" | "connect">) {}
 
   async ensureSchema(): Promise<void> {
     await this.pool.query(CREATE_SCHEMA_SQL);
@@ -720,6 +721,60 @@ export class PostgresStore implements HeimdallStore {
     );
 
     return mapLinkedIdentityRow(expectRow(result.rows[0], "upsertLinkedIdentity"));
+  }
+
+  async updateLinkedIdentityCredential(
+    id: string,
+    decide: (locked: StoredLinkedIdentity) => Promise<CredentialDecision>,
+  ): Promise<StoredLinkedIdentity | null> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      try {
+        const locked = await client.query<LinkedIdentityRow>(
+          "SELECT * FROM linked_identities WHERE id = $1 FOR UPDATE",
+          [id]
+        );
+        if (!locked.rowCount) {
+          await client.query("COMMIT");
+          return null;
+        }
+        const row = mapLinkedIdentityRow(expectRow(locked.rows[0], "updateLinkedIdentityCredential"));
+        const decision = await decide(row);
+        let committed = row;
+        if (decision.kind !== "keep") {
+          const rotated = decision.kind === "rotate" ? decision : undefined;
+          const written = await client.query<LinkedIdentityRow>(
+            `
+            UPDATE linked_identities
+            SET access_token_encrypted = $2,
+                refresh_token_encrypted = $3,
+                token_expires_at = $4,
+                scopes = $5,
+                updated_at = $6
+            WHERE id = $1
+            RETURNING *
+            `,
+            [
+              id,
+              nullable(rotated?.accessTokenEncrypted),
+              nullable(rotated?.refreshTokenEncrypted),
+              nullable(rotated?.tokenExpiresAt),
+              (rotated?.scopes ?? row.scopes).join(" "),
+              decision.updatedAt,
+            ]
+          );
+          committed = mapLinkedIdentityRow(expectRow(written.rows[0], "updateLinkedIdentityCredential"));
+        }
+        await client.query("COMMIT");
+        return committed;
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      }
+    } finally {
+      client.release();
+    }
   }
 
   async listLinkedIdentitiesForAccount(accountId: string): Promise<LinkedIdentityInput[]> {

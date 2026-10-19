@@ -61,6 +61,25 @@ export interface OAuthProviderRuntime {
   }): Promise<EntitlementEvaluation>;
 }
 
+const oauthErrorCodes = [
+  "invalid_request",
+  "invalid_client",
+  "invalid_grant",
+  "unauthorized_client",
+  "unsupported_grant_type",
+  "invalid_scope",
+] as const;
+export type OAuthErrorCode = (typeof oauthErrorCodes)[number];
+
+function readOAuthErrorCode(text: string): OAuthErrorCode | undefined {
+  try {
+    const error = (JSON.parse(text) as { error?: unknown } | null)?.error;
+    return oauthErrorCodes.find((code) => code === error);
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * A provider answer Heimdall cannot use: a non-2xx status, or a body that is
  * not JSON. It carries the status and a code, never the body or the parser's
@@ -71,12 +90,18 @@ export interface OAuthProviderRuntime {
 export class ProviderResponseError extends Error {
   readonly status: number;
   readonly code: "provider_status" | "provider_body_not_json";
+  /**
+   * The RFC 6749 section 5.2 error code of a refusal, when the provider sent
+   * one from that closed set. The only value taken from a provider's body.
+   */
+  readonly oauthError: OAuthErrorCode | undefined;
 
-  constructor(status: number, code: ProviderResponseError["code"], failure: string) {
+  constructor(status: number, code: ProviderResponseError["code"], failure: string, oauthError?: OAuthErrorCode) {
     super(`${failure} (status ${status}, ${code}).`);
     this.name = "ProviderResponseError";
     this.status = status;
     this.code = code;
+    this.oauthError = oauthError;
   }
 }
 
@@ -84,7 +109,7 @@ export class ProviderResponseError extends Error {
 async function readProviderJson<T>(response: Response, failure: string): Promise<T> {
   const text = await response.text();
   if (!response.ok) {
-    throw new ProviderResponseError(response.status, "provider_status", failure);
+    throw new ProviderResponseError(response.status, "provider_status", failure, readOAuthErrorCode(text));
   }
   if (!text) {
     return {} as T;

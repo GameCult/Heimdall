@@ -5,7 +5,7 @@ import { buildApp, errorIdentity } from "../src/app.js";
 import { deliverBackendHandoff, type BackendHandoffPayload } from "../src/backend-handoff.js";
 import { type HeimdallConfig, loadConfig } from "../src/config.js";
 import { entitlementFacts, identityFacts } from "../src/facts.js";
-import { createOAuthRuntimeRegistry, type OAuthProviderRuntime } from "../src/oauth.js";
+import { createOAuthRuntimeRegistry, ProviderResponseError, type OAuthProviderRuntime } from "../src/oauth.js";
 import { verifyJwt } from "../src/signing.js";
 import { InMemoryStore } from "../src/store/index.js";
 
@@ -1236,6 +1236,117 @@ describe("Heimdall service", () => {
       })
     );
     expect(credentialResponse.body).not.toContain("rotated-twitch-refresh-token");
+  });
+
+  it("revocation-is-typed: a revoked identity contributes no entitlement at session refresh", async () => {
+    const store = new InMemoryStore();
+    let evaluations = 0;
+    const base = createMockDiscordRuntime();
+    const app = await buildApp({
+      config: createTestConfig(),
+      store,
+      oauthRuntimes: {
+        discord: {
+          ...base,
+          async exchangeAuthorizationCode() {
+            return {
+              accessToken: "expired-discord-access-token",
+              refreshToken: "discord-refresh-token",
+              tokenType: "Bearer",
+              scope: ["identify"],
+              expiresAt: "2026-04-26T13:00:00.000Z",
+              raw: {},
+            };
+          },
+          async refreshAccessToken() {
+            throw new ProviderResponseError(400, "provider_status", "Discord token refresh failed", "invalid_grant");
+          },
+          async evaluateEntitlements(options) {
+            evaluations += 1;
+            return base.evaluateEntitlements(options);
+          },
+        },
+      },
+    });
+    apps.push(app);
+
+    const stateToken = await startDiscordSignIn(app);
+    const callbackResponse = await app.inject({
+      method: "GET",
+      url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(stateToken)}`,
+    });
+    expect(callbackResponse.statusCode).toBe(201);
+    const evaluationsAtSignIn = evaluations;
+
+    const refreshResponse = await app.inject({
+      method: "POST",
+      url: "/v1/apps/repixelizer/sessions/refresh",
+      headers: { "x-heimdall-app-secret": "repixelizer-secret" },
+      payload: {
+        refreshToken: callbackResponse.json().refreshToken as string,
+        entitlementPolicies: [{ kind: "discord_role_access", guildId: "gamecult-guild", allowedRoleIds: ["role-repixelizer"] }],
+      },
+    });
+
+    expect(refreshResponse.statusCode).toBe(201);
+    expect(evaluations).toBe(evaluationsAtSignIn);
+    const accountId = callbackResponse.json().account.id as string;
+    const row = await store.findStoredLinkedIdentityForAccount(accountId, "discord");
+    expect(row?.accessTokenEncrypted).toBeUndefined();
+    expect(row?.refreshTokenEncrypted).toBeUndefined();
+  });
+
+  it("revocation-is-typed: a revoked Patreon identity is not linked for Bifrost sync and Bifrost is not called", async () => {
+    const baseConfig = createTestConfig();
+    const store = new InMemoryStore();
+    const app = await buildApp({
+      config: {
+        ...baseConfig,
+        bifrostPatronSupportEndpoint: "https://bifrost.gamecult.org/heimdall/patron-support/events",
+        bifrostPatronSupportSecret: "bifrost-support-secret",
+      },
+      store,
+      oauthRuntimes: {
+        patreon: {
+          ...createOAuthRuntimeRegistry().patreon,
+          async refreshAccessToken() {
+            throw new ProviderResponseError(400, "provider_status", "Patreon token refresh failed", "invalid_grant");
+          },
+        },
+      },
+    });
+    apps.push(app);
+    const context = getHeimdallContext(app);
+    const now = "2026-06-09T17:00:00.000Z";
+    await store.createAccount({ id: "acct-p", createdAt: now, lastSeenAt: now });
+    await store.upsertLinkedIdentity({
+      accountId: "acct-p",
+      provider: "patreon",
+      providerUserId: "patreon-user-456",
+      accessTokenEncrypted: context.tokenCustody.encrypt("patreon-access-token"),
+      refreshTokenEncrypted: context.tokenCustody.encrypt("patreon-refresh-token"),
+      tokenExpiresAt: "2026-06-09T17:01:00.000Z",
+      scopes: [],
+      profileJson: {},
+      createdAt: now,
+      updatedAt: now,
+    });
+    const urls: string[] = [];
+    globalThis.fetch = async (input) => {
+      urls.push(String(input));
+      return new Response("unexpected", { status: 500 });
+    };
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/apps/bifrost/patron-support/sync",
+      headers: { "x-heimdall-app-secret": "bifrost-secret" },
+      payload: { accountId: "acct-p", requiredTierTitle: "Inner Sanctum", supportedAtUtc: now },
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({ error: "patreon_identity_not_linked" });
+    expect(urls).toEqual([]);
   });
 
   it("no longer honors a global shared secret across apps", async () => {

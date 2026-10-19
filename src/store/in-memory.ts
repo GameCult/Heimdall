@@ -6,6 +6,7 @@ import {
   type CreateAuthCompletionInput,
   type CreateAuditEventInput,
   type CreateCapabilityGrantInput,
+  type CredentialDecision,
   type CreateEntitlementSnapshotInput,
   type CreateSessionInput,
   type CreatePrivateCommandReceiptInput,
@@ -37,6 +38,8 @@ function isGrantActive(grant: StoredCapabilityGrant, appSlug: AppSlug, at: strin
 }
 
 export class InMemoryStore implements HeimdallStore {
+  /** Tail of each linked identity's credential-decision chain; an entry is removed when it drains. */
+  private readonly credentialChains = new Map<string, Promise<unknown>>();
   private readonly accounts = new Map<string, StoredAccount>();
   private readonly linkedIdentities = new Map<string, StoredLinkedIdentity>();
   private readonly grants = new Map<string, StoredCapabilityGrant>();
@@ -172,6 +175,45 @@ export class InMemoryStore implements HeimdallStore {
 
     this.linkedIdentities.set(id, clone(linkedIdentity));
     return clone(linkedIdentity);
+  }
+
+  async updateLinkedIdentityCredential(
+    id: string,
+    decide: (locked: StoredLinkedIdentity) => Promise<CredentialDecision>,
+  ): Promise<StoredLinkedIdentity | null> {
+    const previous = this.credentialChains.get(id) ?? Promise.resolve();
+    const run = previous.then(async () => {
+      const current = this.linkedIdentities.get(id);
+      if (!current) {
+        return null;
+      }
+      const decision = await decide(clone(current));
+      if (decision.kind === "keep") {
+        return clone(current);
+      }
+      const next: StoredLinkedIdentity = { ...current, updatedAt: decision.updatedAt };
+      delete next.accessTokenEncrypted;
+      delete next.refreshTokenEncrypted;
+      delete next.tokenExpiresAt;
+      if (decision.kind === "rotate") {
+        next.accessTokenEncrypted = decision.accessTokenEncrypted;
+        next.refreshTokenEncrypted = decision.refreshTokenEncrypted;
+        if (decision.tokenExpiresAt !== undefined) {
+          next.tokenExpiresAt = decision.tokenExpiresAt;
+        }
+        next.scopes = [...decision.scopes];
+      }
+      this.linkedIdentities.set(id, clone(next));
+      return clone(next);
+    });
+    const tail = run.catch(() => undefined);
+    this.credentialChains.set(id, tail);
+    void tail.then(() => {
+      if (this.credentialChains.get(id) === tail) {
+        this.credentialChains.delete(id);
+      }
+    });
+    return run;
   }
 
   async listLinkedIdentitiesForAccount(accountId: string): Promise<LinkedIdentityInput[]> {
