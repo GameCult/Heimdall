@@ -16,11 +16,11 @@
     {
       "id": "eureka/joystick-h1",
       "hypothesis": "One locked refresh primitive plus a Joystick OAuth provider in Heimdall lets StreamPixels ingest Joystick without ever presenting a provider refresh token.",
-      "status": "active",
+      "status": "accepted",
       "artifacts": [
         "state/map.yaml"
       ],
-      "notes": "Campaign joystick:campaign:self, target joystick:target:r1. Hands owns code in a separate worktree."
+      "notes": "Merged as PR GameCult/Heimdall#1 (d51fa6b), deployed to Yggdrasil 2026-10-19 15:51Z; gamecult-ops 210a1af. Campaign joystick:campaign:self."
     }
   ]
 }
