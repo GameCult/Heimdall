@@ -59,13 +59,14 @@ data_flow:
     - reject per-request auth round-trip chatter
 
 active_subgoals:
-  - Pressure the deployed Ghostlight gamecult.heimdall.access integration with two- and eight-account human canaries.
+  - ACTIVE, M1-critical (operator ruling 2026-10-18): Joystick H1, campaign joystick:campaign:self (branch eureka/joystick-h1). Joystick OAuth provider, joystick as a streampixels viewer provider, one locked refresh primitive for every provider replacing refreshLinkedIdentityCredentialIfNeeded.
+  - OPEN, behind H1: pressure the deployed Ghostlight gamecult.heimdall.access integration with two- and eight-account human canaries.
   - Keep the shared architecture explicit and separate from app profiles.
   - Preserve the default boundary that app-domain data remains app-owned.
   - Align the plan to Heimdall as a Yggdrasil-hosted authority service.
   - Publish Heimdall daemon health and boundary state for Idunn/Odin without moving auth truth out of Heimdall.
   - Verify the Discord and Patreon Repixelizer auth paths with real provider credentials, stable signing, persistent storage, and live browser callback verification.
-  - Wire StreamPixels through Heimdall for Twitch/YouTube viewer identity and managed creator-provider credentials without moving StreamPixels domain state into Heimdall.
+  - Wire StreamPixels through Heimdall for Twitch/YouTube (Joystick joins under H1) viewer identity and managed creator-provider credentials without moving StreamPixels domain state into Heimdall.
 
 accepted_design:
   - `gamecult.heimdall.access` owns access-gate representation and browser navigation semantics; it has no access-grant or provider-state authority.
@@ -125,5 +126,5 @@ rejected_paths:
     reason: reusing auth mechanics does not justify centralizing app-domain audience or product data
 
 current_status:
-  summary: Yggdrasil runs the gamecult.heimdall.access plugin and encrypted loopback begin, complete, refresh, and logout plane at 1086aee01169bf60e8a492b2740db1c6f3e8cabf. Odin returns all four redacted discovery records, Ghostlight resolves the boundary through Odin, and live anonymous auth.begin is accepted without exposing claims or secrets.
-  next_action: Run separate-account KLTST completion, refresh, logout, privacy, and stale-attempt canaries through the deployed Ghostlight Eve host; keep provider credential rotation on the operator list because prior tool output exposed OAuth secrets.
+  summary: Active work is Joystick H1 (campaign joystick:campaign:self). Last recorded Yggdrasil deploy (not verifiable from this repo; HEAD is far past it, see git): Yggdrasil runs the gamecult.heimdall.access plugin and encrypted loopback begin, complete, refresh, and logout plane at 1086aee01169bf60e8a492b2740db1c6f3e8cabf. Odin returns all four redacted discovery records, Ghostlight resolves the boundary through Odin, and live anonymous auth.begin is accepted without exposing claims or secrets.
+  next_action: Land Joystick H1 per campaign joystick:campaign:self and target joystick:target:r1 (worktree and branch eureka/joystick-h1). Then, still open, run separate-account KLTST completion, refresh, logout, privacy, and stale-attempt canaries through the deployed Ghostlight Eve host; keep provider credential rotation on the operator list because prior tool output exposed OAuth secrets.

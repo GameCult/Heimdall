@@ -12,6 +12,15 @@
         "docs/implementation-plan.md"
       ],
       "notes": "Current mainline. Repixelizer is the first auth-blank binding target; StreamPixels is the migration and boundary stress test."
+    },
+    {
+      "id": "eureka/joystick-h1",
+      "hypothesis": "One locked refresh primitive plus a Joystick OAuth provider in Heimdall lets StreamPixels ingest Joystick without ever presenting a provider refresh token.",
+      "status": "active",
+      "artifacts": [
+        "state/map.yaml"
+      ],
+      "notes": "Campaign joystick:campaign:self, target joystick:target:r1. Hands owns code in a separate worktree."
     }
   ]
 }
