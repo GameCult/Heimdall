@@ -27,7 +27,7 @@ Do not trust this file for the exact live HEAD. Always check git.
 ## Active Work
 
 Joystick H1 is merged and live (PR GameCult/Heimdall#1; campaign
-`joystick:campaign:self`). Next: `joystick:follow_up:h1-live-round-trips`, then
+`joystick:campaign:self`). Next: `joystick:follow_up:h1-joystick-consent-round-trip`, then
 StreamPixels S0/S1 (other sessions). Open Heimdall follow-ups, by id:
 `joystick:follow_up:cross-process-failed-refresh-marker`,
 `joystick:follow_up:connect-start-needs-app-auth`,

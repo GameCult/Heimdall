@@ -59,7 +59,7 @@ data_flow:
     - reject per-request auth round-trip chatter
 
 active_subgoals:
-  - Joystick H1 is merged and live (PR GameCult/Heimdall#1, d51fa6b; campaign joystick:campaign:self). Open follow-ups by id: joystick:follow_up:h1-live-round-trips (next), cross-process-failed-refresh-marker, connect-start-needs-app-auth, heimdall-idunn-onboarding, joystick-viewer-signin-public-bot. StreamPixels S0/S1 run in other sessions.
+  - Joystick H1 is merged and live (PR GameCult/Heimdall#1, d51fa6b; campaign joystick:campaign:self). Open follow-ups by id: joystick:follow_up:h1-joystick-consent-round-trip (next), cross-process-failed-refresh-marker, connect-start-needs-app-auth, heimdall-idunn-onboarding, joystick-viewer-signin-public-bot. StreamPixels S0/S1 run in other sessions.
   - OPEN, behind the H1 live round-trips: pressure the deployed Ghostlight gamecult.heimdall.access integration with two- and eight-account human canaries.
   - Keep the shared architecture explicit and separate from app profiles.
   - Preserve the default boundary that app-domain data remains app-owned.
@@ -127,4 +127,4 @@ rejected_paths:
 
 current_status:
   summary: Yggdrasil runs Heimdall release d51fa6b (hand-deployed 2026-10-19 15:51Z, gamecult-ops 210a1af), which includes Joystick H1 (PR #1). The plugin and encrypted loopback begin, complete, refresh and logout plane, the Odin discovery records and Ghostlight resolution were verified at 1086aee (2026-08-22) and are not re-verified at d51fa6b.
-  next_action: Run joystick:follow_up:h1-live-round-trips, then StreamPixels S0/S1 (other sessions). Still open behind that: separate-account KLTST completion, refresh, logout, privacy, and stale-attempt canaries through the deployed Ghostlight Eve host; keep provider credential rotation on the operator list because prior tool output exposed OAuth secrets.
+  next_action: Run joystick:follow_up:h1-joystick-consent-round-trip, then StreamPixels S0/S1 (other sessions). Still open behind that: separate-account KLTST completion, refresh, logout, privacy, and stale-attempt canaries through the deployed Ghostlight Eve host; keep provider credential rotation on the operator list because prior tool output exposed OAuth secrets.
