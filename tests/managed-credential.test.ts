@@ -381,6 +381,31 @@ for (const { kind, live } of rigKinds) describe.skipIf(live && !adminUrl)(`manag
       expect(rig.custody.decrypt(outcome.identity.accessTokenEncrypted!)).toBe("access-1");
     });
 
+    it("single flight: concurrent refreshes against a never-answering endpoint make one provider call per process, and every caller gets the typed failure", timeout, async () => {
+      const rig = await makeRig(provider);
+      const endpoint = installTokenEndpoint(provider, "refresh-0");
+      endpoint.mode = "hang";
+      const snapshot = await rig.row();
+      const ctxFor = (store: HeimdallStore) => ({ config: rig.config, store, tokenCustody: rig.custody, oauthRuntimes: createOAuthRuntimeRegistry(), timeoutMs: 150 });
+
+      const results = await Promise.allSettled(
+        Array.from({ length: 12 }, (_, i) => refreshManagedCredential(ctxFor(rig.stores[i % rig.stores.length]!), snapshot))
+      );
+
+      expect(results.map((r) => r.status)).toEqual(Array(12).fill("rejected"));
+      for (const result of results) {
+        expect((result as PromiseRejectedResult).reason).toBeInstanceOf(ManagedCredentialRefreshFailed);
+      }
+      expect(endpoint.calls).toBe(rig.stores.length);
+      expect(rig.custody.decrypt((await rig.row()).refreshTokenEncrypted!)).toBe("refresh-0");
+
+      // The burst is over: a later independent request tries again.
+      endpoint.mode = "normal";
+      const later = await refreshManagedCredential(ctxFor(rig.stores[0]!), await rig.row());
+      expect(later.kind).toBe("current");
+      expect(endpoint.calls).toBe(rig.stores.length + 1);
+    });
+
     it("a snapshot taken before another caller's refresh does not decide: the locked row does", timeout, async () => {
       const rig = await makeRig(provider);
       const endpoint = installTokenEndpoint(provider, "refresh-0");

@@ -490,7 +490,12 @@ Important behavior:
   access/refresh tokens. The refresh runs under a row lock on the linked
   identity (`SELECT ... FOR UPDATE`), so a given refresh token is presented to
   the provider once across concurrent requests and across two Heimdall
-  processes sharing one database. The provider call is bounded at 10 seconds
+  processes sharing one database. Within one process, concurrent refreshes of
+  one identity share a single attempt and its outcome (success or failure), so
+  nobody re-presents a token behind a failed holder in that burst. Residual
+  risk, accepted: the guard is one presentation per process per burst, so N
+  Heimdall processes can present one token N times after a transient failure.
+  The provider call is bounded at 10 seconds
 - a provider whose refresh tokens rotate (Joystick) fails closed: a refresh
   response without a new refresh token revokes the credential instead of
   keeping the old token

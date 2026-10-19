@@ -61,17 +61,30 @@ function withoutTokens(identity: StoredLinkedIdentity): StoredLinkedIdentity {
 }
 
 /**
+ * Refreshes in flight in this process, per store and linked identity. The row
+ * lock serialises processes; it cannot tell a waiter that queued behind a
+ * failed holder from a caller that arrived after the failure, so each waiter
+ * would present the same refresh token again. Callers that arrive while an
+ * attempt is in flight join it and receive its outcome, success or failure.
+ * The entry lives exactly as long as the attempt: a later request retries.
+ *
+ * Accepted residual risk (docs/service-contract.md): one presentation per
+ * process per burst, so N processes may present one token N times.
+ */
+const refreshesInFlight = new WeakMap<HeimdallStore, Map<string, Promise<ManagedCredentialOutcome>>>();
+
+/**
  * The one refresh policy. `snapshot` is a hint: it may skip the lock when no
  * refresh is due and never decides one. The row's lock owns when a refresh
- * token is presented; the decision is made on the row as read under it.
+ * token is presented across processes; this process makes one attempt per
+ * identity at a time; the decision is made on the row as read under the lock.
  */
 export async function refreshManagedCredential(
   ctx: ManagedCredentialContext,
   snapshot: StoredLinkedIdentity
 ): Promise<ManagedCredentialOutcome> {
   const clock = ctx.clock ?? Date.now;
-  const provider = snapshot.provider;
-  const runtime = ctx.oauthRuntimes[provider];
+  const runtime = ctx.oauthRuntimes[snapshot.provider];
 
   if (!snapshot.accessTokenEncrypted) {
     return { kind: "revoked", identity: snapshot };
@@ -79,6 +92,30 @@ export async function refreshManagedCredential(
   if (!dueForRefresh(snapshot, runtime, clock())) {
     return { kind: "current", identity: snapshot };
   }
+
+  let inFlight = refreshesInFlight.get(ctx.store);
+  if (!inFlight) {
+    inFlight = new Map();
+    refreshesInFlight.set(ctx.store, inFlight);
+  }
+  const joined = inFlight.get(snapshot.id);
+  if (joined) {
+    return joined;
+  }
+  const attempt = refreshUnderLock(ctx, snapshot).finally(() => {
+    inFlight.delete(snapshot.id);
+  });
+  inFlight.set(snapshot.id, attempt);
+  return attempt;
+}
+
+async function refreshUnderLock(
+  ctx: ManagedCredentialContext,
+  snapshot: StoredLinkedIdentity
+): Promise<ManagedCredentialOutcome> {
+  const clock = ctx.clock ?? Date.now;
+  const provider = snapshot.provider;
+  const runtime = ctx.oauthRuntimes[provider];
 
   let revocation: ManagedCredentialRevocationReason | undefined;
   const decide = async (locked: StoredLinkedIdentity): Promise<CredentialDecision> => {
