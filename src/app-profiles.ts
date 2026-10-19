@@ -3,7 +3,7 @@ import {
   type CapabilityDefinition,
   type CapabilityMode,
 } from "./capability-rules.js";
-import { type AppSlug, type LinkedIdentityInput, type OAuthEntitlementPolicy, type Provider } from "./contracts.js";
+import { type AppSlug, type LinkedIdentityInput, type OAuthEntitlementPolicy, type OAuthMode, type Provider } from "./contracts.js";
 import { entitlementFacts, grantFacts, identityFacts } from "./facts.js";
 
 export type { CapabilityDefinition, CapabilityMode };
@@ -222,12 +222,17 @@ export function serializeAppProfile(profile: AppProfile): Record<string, unknown
   };
 }
 
-export function supportsProvider(profile: AppProfile, provider: Provider): boolean {
-  return (
-    profile.identityProviders.includes(provider) ||
-    profile.managedConnectionProviders.includes(provider) ||
-    profile.entitlementSources.includes(provider)
-  );
+/**
+ * Whether the profile admits this provider for this mode. The role lists
+ * decide: `sign_in` and `link` mint viewer identity, so they take only
+ * `identityProviders`; `connect` takes custody of a creator credential, so it
+ * takes only `managedConnectionProviders`. A provider in neither list for the
+ * mode is refused before any redirect.
+ */
+export function admitsProviderForMode(profile: AppProfile, provider: Provider, mode: OAuthMode): boolean {
+  return mode === "connect"
+    ? profile.managedConnectionProviders.includes(provider)
+    : profile.identityProviders.includes(provider);
 }
 
 /**

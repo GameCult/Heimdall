@@ -42,7 +42,7 @@ In the service-first Heimdall version, the most likely reusable slice is:
 
 - provider OAuth authority
 - identity-linking authority
-- managed Twitch/YouTube/Joystick credential custody for creator connections (Joystick is a managed connection only, not a viewer sign-in provider)
+- managed Twitch/YouTube/Joystick credential custody for creator connections (Joystick is a managed connection only, not a viewer sign-in provider: `startOAuthFlow` admits `sign_in` and `link` only for `identityProviders` and `connect` only for `managedConnectionProviders`, and refuses anything else before any redirect)
 - entitlement refresh
 - shared claim semantics
 

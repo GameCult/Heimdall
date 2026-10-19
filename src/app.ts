@@ -23,7 +23,7 @@ import {
   type Provider,
 } from "./contracts.js";
 import { issueAccessClaim, type IssueAccessClaimInput } from "./claims.js";
-import { builtInAppProfiles, getAppProfile, isAllowedReturnOrigin, serializeAppProfile, supportsProvider } from "./app-profiles.js";
+import { builtInAppProfiles, getAppProfile, isAllowedReturnOrigin, serializeAppProfile, admitsProviderForMode } from "./app-profiles.js";
 import { renderBrowserHandoffPage } from "./browser-handoff.js";
 import { type HeimdallConfig, loadConfig } from "./config.js";
 import { createTokenCustody, type TokenCustody } from "./custody.js";
@@ -494,10 +494,10 @@ export async function startOAuthFlow(
     return { statusCode: 404, body: { error: "unknown_app", detail: "No app is registered under that slug." } };
   }
 
-  if (!supportsProvider(profile, provider)) {
+  if (!admitsProviderForMode(profile, provider, input.mode)) {
     return {
       statusCode: 400,
-      body: { error: "provider_not_supported_for_app", provider, appSlug: profile.slug },
+      body: { error: "provider_not_supported_for_app", provider, mode: input.mode, appSlug: profile.slug },
     };
   }
 

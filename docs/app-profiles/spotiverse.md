@@ -20,7 +20,7 @@
 > still reports `providers=2/6`, which counts it.
 >
 > **Why it was removed anyway:** `/v1/oauth/spotify/start` is gated by
-> `supportsProvider(profile, provider)`, so a provider with no app behind it is
+> `admitsProviderForMode(profile, provider, mode)`, so a provider with no app behind it is
 > unreachable. While the profile existed, that path was publicly reachable and
 > would have run a real OAuth handshake against a real client secret, taking
 > custody of a user's Spotify refresh token on behalf of a consumer that could

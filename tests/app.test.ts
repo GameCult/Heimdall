@@ -2,6 +2,7 @@ import { inspect } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { type FastifyInstance } from "fastify";
 import { buildApp, errorIdentity } from "../src/app.js";
+import { builtInAppProfiles } from "../src/app-profiles.js";
 import { deliverBackendHandoff, type BackendHandoffPayload } from "../src/backend-handoff.js";
 import { type HeimdallConfig, loadConfig } from "../src/config.js";
 import { entitlementFacts, identityFacts } from "../src/facts.js";
@@ -1373,6 +1374,33 @@ describe("Heimdall service", () => {
       expect(url.searchParams.get("redirect_uri")).toBe("https://heimdall.gamecult.org/v1/oauth/joystick/callback");
     });
 
+    it.each(["sign_in", "link"] as const)(
+      "refuses %s for joystick on streampixels before any redirect, and Deru's managed row is untouched",
+      async (mode) => {
+        const store = new InMemoryStore();
+        const app = await buildApp({ config: createTestConfig(), store });
+        apps.push(app);
+        stubJoystick({ channel_id: "deru-chan", username: "deru" });
+        const stateToken = (await connect(app)).json().stateToken as string;
+        const connected = await app.inject({
+          method: "GET",
+          url: `/v1/oauth/joystick/callback?code=a&state=${encodeURIComponent(stateToken)}`,
+        });
+        const accountId = connected.json().account.id as string;
+        const before = await store.findStoredLinkedIdentityForAccount(accountId, "joystick");
+
+        const start = await app.inject({
+          method: "POST",
+          url: "/v1/oauth/joystick/start",
+          payload: { appSlug: "streampixels", mode, returnTo: "https://streampixels.gamecult.org/auth/connect" },
+        });
+        expect(start.statusCode).toBe(400);
+        expect(start.json()).toMatchObject({ error: "provider_not_supported_for_app", provider: "joystick", mode });
+        expect(start.json().authorizationUrl).toBeUndefined();
+        expect(await store.findStoredLinkedIdentityForAccount(accountId, "joystick")).toEqual(before);
+      }
+    );
+
     function stubJoystick(identity: Record<string, unknown>) {
       const calls: Array<{ url: string; headers: Record<string, string>; body?: URLSearchParams | undefined }> = [];
       globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
@@ -1988,5 +2016,32 @@ describe("what may be recorded about a caught error", () => {
     ["a thrown null", null, { errorClass: "Error", errorCode: null }],
   ])("filters %s", (_case, error, expected) => {
     expect(errorIdentity(error)).toEqual(expected);
+  });
+});
+
+describe("OAuth start admits a provider by the profile's role for the mode", () => {
+  const allProviders = ["discord", "patreon", "github", "twitch", "youtube", "spotify", "joystick"] as const;
+  const modes = ["sign_in", "link", "connect"] as const;
+
+  it("sign_in and link take identityProviders only; connect takes managedConnectionProviders only, for every profile", async () => {
+    const app = await buildApp({ config: createTestConfig() });
+    try {
+      for (const profile of Object.values(builtInAppProfiles)) {
+        for (const provider of allProviders) {
+          for (const mode of modes) {
+            const start = await app.inject({
+              method: "POST",
+              url: `/v1/oauth/${provider}/start`,
+              payload: { appSlug: profile.slug, mode, returnTo: `${profile.allowedReturnOrigins[0]}/x` },
+            });
+            const roleList = mode === "connect" ? profile.managedConnectionProviders : profile.identityProviders;
+            const refused = start.json().error === "provider_not_supported_for_app";
+            expect([profile.slug, provider, mode, refused]).toEqual([profile.slug, provider, mode, !roleList.includes(provider)]);
+          }
+        }
+      }
+    } finally {
+      await app.close();
+    }
   });
 });
