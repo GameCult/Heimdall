@@ -90,13 +90,13 @@ export async function issueAccessClaim(options: {
   const facts = withoutCapabilities
     ? []
     : normalizeFacts(options.input.accountId, options.input.linkedIdentities, options.input.facts);
-  const sharedCapabilities = withoutCapabilities
-    ? []
-    : evaluateSharedCapabilities(profile, {
-        accountId: options.input.accountId,
-        facts: new Set(facts),
-        identities: options.input.linkedIdentities,
-      });
+  // Every shared capability needs a non-empty anyOf (capability-rules), so an
+  // empty fact set yields no capabilities: facts are the one owner of that.
+  const sharedCapabilities = evaluateSharedCapabilities(profile, {
+    accountId: options.input.accountId,
+    facts: new Set(facts),
+    identities: options.input.linkedIdentities,
+  });
 
   const issuedAt = nowEpochSeconds();
   const ttlSeconds = clampTtlSeconds(
