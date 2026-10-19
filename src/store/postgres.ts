@@ -159,8 +159,8 @@ function mapLinkedIdentityRow(row: LinkedIdentityRow): StoredLinkedIdentity {
     providerUserId: row.provider_user_id,
     scopes: parseScopes(row.scopes),
     profileJson: row.profile_json,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
+    createdAt: new Date(row.created_at).toISOString(),
+    updatedAt: new Date(row.updated_at).toISOString(),
   };
 
   if (row.username) {
@@ -184,7 +184,7 @@ function mapLinkedIdentityRow(row: LinkedIdentityRow): StoredLinkedIdentity {
   }
 
   if (row.token_expires_at) {
-    // pg hands back a Date for TIMESTAMPTZ whatever the row type says; the port promises an ISO string.
+    // pg hands back a Date for TIMESTAMPTZ whatever the row type says; the port promises ISO strings.
     identity.tokenExpiresAt = new Date(row.token_expires_at).toISOString();
   }
 
