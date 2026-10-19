@@ -90,14 +90,70 @@ describe("requestProviderTokens follows the provider descriptor", () => {
     expect(calls[1]!.body.has("code")).toBe(false);
   });
 
+  const everyProvider = Object.keys(providerCatalog) as Provider[];
+
+  it("gives every provider a default access-token lifetime of 3600 seconds", () => {
+    for (const provider of everyProvider) {
+      expect(providerCatalog[provider].defaultAccessTokenLifetimeSeconds).toBe(3600);
+    }
+  });
+
+  // expires_in is RECOMMENDED (RFC 6749 5.1): unusable means the default, never an unknown expiry.
   it.each([
-    ["no expires_in", { access_token: "a" }],
-    ["a zero expires_in", { access_token: "a", expires_in: 0 }],
-    ["a string expires_in", { access_token: "a", expires_in: "3600" }],
-  ])("sets no expiry and no refresh token for %s", async (_n, body) => {
-    capture(() => new Response(JSON.stringify(body), { status: 200 }));
+    ["no expires_in", undefined, 3600],
+    ["a zero expires_in", 0, 3600],
+    ["a negative expires_in", -5, 3600],
+    ["a null expires_in", null, 3600],
+    ["an object expires_in", {}, 3600],
+    ["a non-numeric string", "abc", 3600],
+    ["an empty string", "", 3600],
+    ["a negative string", "-1", 3600],
+    ["a zero string", "0", 3600],
+    ["a fractional string", "12.5", 3600],
+    ["an exponent string", "1e3", 3600],
+    ["a numeric string", "7200", 7200],
+    ["a padded numeric string", " 7200 ", 7200],
+    ["a number", 7200, 7200],
+  ])("stores now plus the right lifetime for %s, on every provider and grant", async (_n, expiresIn, seconds) => {
+    for (const provider of everyProvider) {
+      for (const grant of [
+        { grant_type: "authorization_code", code: "c", redirect_uri: "u" } as const,
+        { grant_type: "refresh_token", refresh_token: "R" } as const,
+      ]) {
+        capture(() => new Response(JSON.stringify({ access_token: "a", ...(expiresIn === undefined ? {} : { expires_in: expiresIn }) }), { status: 200 }));
+        const before = Date.now();
+        const tokens = await requestProviderTokens(provider, configFor(), grant);
+        const stored = Date.parse(tokens.expiresAt ?? "");
+        expect(stored - before).toBeGreaterThanOrEqual(seconds * 1000);
+        expect(stored - before).toBeLessThan(seconds * 1000 + 5_000);
+        expect(tokens.refreshToken).toBeUndefined();
+      }
+    }
+  });
+
+  it("takes the default lifetime for an expires_in too large to be a date", async () => {
+    capture(() => new Response('{"access_token":"a","expires_in":1e999}', { status: 200 }));
+    const before = Date.now();
     const tokens = await requestProviderTokens("twitch", configFor(), { grant_type: "refresh_token", refresh_token: "R" });
-    expect(tokens.expiresAt).toBeUndefined();
+    expect(Date.parse(tokens.expiresAt ?? "") - before).toBeLessThan(3600 * 1000 + 5_000);
+  });
+
+  it.each([
+    ["a number", 42],
+    ["an object", { a: 1 }],
+    ["an array", ["r"]],
+    ["true", true],
+    ["null", null],
+  ])("refuses a 2xx whose refresh_token is %s as a malformed token set", async (_n, refreshToken) => {
+    capture(() => new Response(JSON.stringify({ access_token: "a", refresh_token: refreshToken, expires_in: 3600 }), { status: 200 }));
+    await expect(
+      requestProviderTokens("twitch", configFor(), { grant_type: "refresh_token", refresh_token: "R" })
+    ).rejects.toMatchObject({ code: "provider_body_not_token_set" });
+  });
+
+  it("reads an empty-string refresh_token as no refresh token", async () => {
+    capture(() => new Response(JSON.stringify({ access_token: "a", refresh_token: "", expires_in: 3600 }), { status: 200 }));
+    const tokens = await requestProviderTokens("twitch", configFor(), { grant_type: "refresh_token", refresh_token: "R" });
     expect(tokens.refreshToken).toBeUndefined();
   });
 

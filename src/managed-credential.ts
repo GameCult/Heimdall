@@ -150,9 +150,9 @@ async function refreshUnderLock(
       refreshTokenEncrypted = locked.refreshTokenEncrypted!;
     }
 
-    // An answer without expires_in leaves the expiry unknown. The old expiry is
-    // already due, so keeping it would refresh again on every resolve; an
-    // unknown expiry is never due (dueForRefresh).
+    // The token set always carries an expiry (the provider's, or the
+    // descriptor's default lifetime): the old one is already due, and an
+    // unknown one would never come due (dueForRefresh).
     const tokenExpiresAt = refreshed.expiresAt;
     return {
       kind: "rotate",

@@ -196,11 +196,18 @@ export async function requestProviderTokens(
   }
   const tokenResponse = answer as {
     access_token: string;
-    refresh_token?: string;
+    refresh_token?: unknown;
     token_type?: string;
-    expires_in?: number;
+    expires_in?: unknown;
     scope?: string | string[];
   };
+
+  // A refresh token that is present must be a string: anything else is a
+  // malformed grant answer, refused here as a typed failure rather than
+  // reaching custody as a TypeError.
+  if (tokenResponse.refresh_token !== undefined && typeof tokenResponse.refresh_token !== "string") {
+    throw new ProviderResponseError(response.status, "provider_body_not_token_set", failure);
+  }
 
   const tokenSet: OAuthTokenSet = {
     accessToken: tokenResponse.access_token,
@@ -211,10 +218,17 @@ export async function requestProviderTokens(
   if (tokenResponse.refresh_token) {
     tokenSet.refreshToken = tokenResponse.refresh_token;
   }
-  if (typeof tokenResponse.expires_in === "number" && tokenResponse.expires_in > 0) {
-    tokenSet.expiresAt = new Date(Date.now() + tokenResponse.expires_in * 1000).toISOString();
-  }
+  // Nothing issued here has an unknown expiry: an answer without a usable
+  // expires_in takes the descriptor's default lifetime.
+  const lifetimeSeconds = usableExpiresIn(tokenResponse.expires_in) ?? descriptor.defaultAccessTokenLifetimeSeconds;
+  tokenSet.expiresAt = new Date(Date.now() + lifetimeSeconds * 1000).toISOString();
   return tokenSet;
+}
+
+/** A positive finite number, or a string that is a positive integer. */
+function usableExpiresIn(value: unknown): number | undefined {
+  const seconds = typeof value === "string" && /^\s*\d+\s*$/.test(value) ? Number(value) : value;
+  return typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0 ? seconds : undefined;
 }
 
 function sharedRuntimeExchange(provider: Provider): OAuthProviderRuntime["exchangeAuthorizationCode"] {

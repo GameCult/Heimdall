@@ -53,7 +53,23 @@ function testConfig(): HeimdallConfig {
   } as unknown as HeimdallConfig;
 }
 
-type Mode = "normal" | "invalid_grant" | "invalid_client" | "server_error" | "not_json" | "no_refresh_token" | "hang";
+type Mode =
+  | "normal"
+  | "invalid_grant"
+  | "invalid_client"
+  | "server_error"
+  | "not_json"
+  | "no_refresh_token"
+  | "empty_refresh_token"
+  | "bad_refresh_token"
+  | "no_expires_in"
+  | "unusable_expires_in"
+  | "string_expires_in"
+  | "hang";
+
+function expiresInFor(mode: Mode): unknown {
+  return mode === "unusable_expires_in" ? "soon" : mode === "string_expires_in" ? "7200" : 3600;
+}
 
 /**
  * A provider token endpoint with single-use refresh tokens. Presenting a
@@ -95,7 +111,18 @@ function installTokenEndpoint(provider: Provider, firstRefreshToken: string) {
         return new Response(JSON.stringify({ access_token: "access-norefresh", token_type: "Bearer", expires_in: 3600 }), {
           status: 200,
         });
-      case "normal": {
+      case "empty_refresh_token":
+        return new Response(JSON.stringify({ access_token: "access-empty", refresh_token: "", token_type: "Bearer", expires_in: 3600 }), {
+          status: 200,
+        });
+      case "bad_refresh_token":
+        return new Response(JSON.stringify({ access_token: "access-bad", refresh_token: 42, token_type: "Bearer", expires_in: 3600 }), {
+          status: 200,
+        });
+      case "normal":
+      case "no_expires_in":
+      case "unusable_expires_in":
+      case "string_expires_in": {
         if (state.installationRevoked || presented !== state.live) {
           state.installationRevoked = true;
           return new Response(JSON.stringify({ error: "invalid_grant", error_description: "reused CANARY" }), { status: 400 });
@@ -107,7 +134,7 @@ function installTokenEndpoint(provider: Provider, firstRefreshToken: string) {
             access_token: `access-${state.issued}`,
             refresh_token: state.live,
             token_type: "Bearer",
-            expires_in: 3600,
+            ...(state.mode === "no_expires_in" ? {} : { expires_in: expiresInFor(state.mode) }),
           }),
           { status: 200 }
         );
@@ -329,7 +356,7 @@ for (const { kind, live } of rigKinds) describe.skipIf(live && !adminUrl)(`manag
       expect(first.body + second.body + JSON.stringify(events)).not.toContain("CANARY");
     });
 
-    it.each(["invalid_client", "server_error", "not_json", "hang"] as const)(
+    it.each(["invalid_client", "server_error", "not_json", "bad_refresh_token", "hang"] as const)(
       "transient failure (%s) keeps custody: 502, tokens byte-identical, nothing leaked",
       timeout,
       async (mode) => {
@@ -422,15 +449,16 @@ for (const { kind, live } of rigKinds) describe.skipIf(live && !adminUrl)(`manag
     });
 
     if (providerCatalog[provider].rotatesRefreshTokens) {
-      it("rotation-fails-closed: a response without a refresh token revokes, 410, and the old token is never presented again", timeout, async () => {
+      it.each(["no_refresh_token", "empty_refresh_token"] as const)("rotation-fails-closed: a response with %s revokes, 410, and the old token is never presented again", timeout, async (mode) => {
         const rig = await makeRig(provider);
         const endpoint = installTokenEndpoint(provider, "refresh-0");
-        endpoint.mode = "no_refresh_token";
+        endpoint.mode = mode;
 
         const first = await rig.resolve();
         expect(first.statusCode).toBe(410);
         expect(first.json).toEqual({ error: "managed_credential_revoked", provider });
         expect(first.body).not.toContain("access-norefresh");
+        expect(first.body).not.toContain("access-empty");
         const row = await rig.row();
         expect(row.accessTokenEncrypted).toBeUndefined();
         expect(row.refreshTokenEncrypted).toBeUndefined();
@@ -444,16 +472,55 @@ for (const { kind, live } of rigKinds) describe.skipIf(live && !adminUrl)(`manag
         ]);
       });
     } else {
-      it("a response without a refresh token keeps the old one for a non-rotating provider", timeout, async () => {
+      it.each(["no_refresh_token", "empty_refresh_token"] as const)("a response with %s keeps the old one for a non-rotating provider", timeout, async (mode) => {
         const rig = await makeRig(provider);
         const endpoint = installTokenEndpoint(provider, "refresh-0");
-        endpoint.mode = "no_refresh_token";
+        endpoint.mode = mode;
         const answer = await rig.resolve();
         expect(answer.statusCode).toBe(200);
-        expect(answer.json.accessToken).toBe("access-norefresh");
+        expect(answer.json.accessToken).toBe(mode === "no_refresh_token" ? "access-norefresh" : "access-empty");
         expect(rig.custody.decrypt((await rig.row()).refreshTokenEncrypted!)).toBe("refresh-0");
       });
     }
+
+    it.each([
+      ["no expires_in", "no_expires_in", 3600],
+      ["an unusable expires_in", "unusable_expires_in", 3600],
+      ["a numeric-string expires_in", "string_expires_in", 7200],
+    ] as const)(
+      "refresh-once-per-token: an answer with %s stores now plus %s s, not the old due expiry, and resolve refreshes again only once it passes",
+      timeout,
+      async (_name, mode, seconds) => {
+        const rig = await makeRig(provider);
+        const endpoint = installTokenEndpoint(provider, "refresh-0");
+        endpoint.mode = mode;
+
+        const before = Date.now();
+        expect((await rig.resolve()).statusCode).toBe(200);
+        expect(endpoint.calls).toBe(1);
+        const stored = Date.parse((await rig.row()).tokenExpiresAt!);
+        expect(stored - before).toBeGreaterThanOrEqual(seconds * 1000 - 1000);
+        expect(stored - before).toBeLessThan(seconds * 1000 + 10_000);
+
+        expect((await rig.resolve()).statusCode).toBe(200);
+        expect(endpoint.calls).toBe(1);
+
+        // The stored expiry passes: the next resolve refreshes.
+        const past = new Date(Date.now() - 1000).toISOString();
+        await rig.stores[0]!.updateLinkedIdentityCredential(rig.identityId, async (locked) => ({
+          kind: "rotate",
+          accessTokenEncrypted: locked.accessTokenEncrypted!,
+          refreshTokenEncrypted: locked.refreshTokenEncrypted!,
+          tokenExpiresAt: past,
+          scopes: locked.scopes,
+          updatedAt: past,
+        }));
+        expect((await rig.resolve()).statusCode).toBe(200);
+        expect(endpoint.calls).toBe(2);
+        const again = Date.parse((await rig.row()).tokenExpiresAt!);
+        expect(again).toBeGreaterThan(Date.now() + MANAGED_CREDENTIAL_REFRESH_SKEW_MS);
+      }
+    );
 
     it("a row with no access token resolves as revoked (410), a missing row as not found (404)", timeout, async () => {
       const rig = await makeRig(provider, { accessToken: null, refreshToken: null });
@@ -882,6 +949,8 @@ describe("refresh answer classification", () => {
     ["a 2xx with JSON null", "null", 200],
     ["a 2xx with a JSON array", "[]", 200],
     ["a 2xx with a non-string access token", JSON.stringify({ access_token: 7, refresh_token: "r" }), 200],
+    ["a 2xx with a numeric refresh token", JSON.stringify({ access_token: "a", refresh_token: 42 }), 200],
+    ["a 2xx with an object refresh token", JSON.stringify({ access_token: "a", refresh_token: { r: 1 } }), 200],
     ["a 2xx with an empty access token", JSON.stringify({ access_token: "", refresh_token: "r" }), 200],
     ["a 2xx that is not JSON", "<html>", 200],
     ["a 5xx page", "upstream exploded", 502],
@@ -924,27 +993,50 @@ describe("refresh answer classification", () => {
     });
   });
 
-  it("a rotating provider's well-formed answer without a refresh token still revokes (rotation_missing)", async () => {
+  it.each([
+    ["without a refresh token", { access_token: "a", expires_in: 3600 }],
+    ["with an empty refresh token", { access_token: "a", refresh_token: "", expires_in: 3600 }],
+  ])("a rotating provider's well-formed answer %s still revokes (rotation_missing)", async (_n, body) => {
     const store = new InMemoryStore();
     const row = await seedRow(store, "joystick");
-    answer(JSON.stringify({ access_token: "a", expires_in: 3600 }), 200);
+    answer(JSON.stringify(body), 200);
     expect((await refreshManagedCredential(ctxFor(store), row)).kind).toBe("revoked");
     expect((await store.findStoredLinkedIdentity("joystick", row.providerUserId))!.refreshTokenEncrypted).toBeUndefined();
   });
 
-  it("an answer without expires_in stores the expiry as unknown, and the next resolve does not refresh again", async () => {
+  it.each([
+    ["no expires_in", {}],
+    ["a non-numeric string expires_in", { expires_in: "soon" }],
+  ])("an answer with %s stores now plus the default lifetime; resolve refreshes once it passes", async (_n, extra) => {
     const store = new InMemoryStore();
-    const row = await seedRow(store, "twitch");
-    const calls = answer(JSON.stringify({ access_token: "access-1", refresh_token: "refresh-1" }), 200);
-    const first = await refreshManagedCredential(ctxFor(store), row);
+    const seeded = await seedRow(store, "twitch");
+    // Due against the real clock, which the token answer's expiry is computed from.
+    const row = (await store.updateLinkedIdentityCredential(seeded.id, async (locked) => ({
+      kind: "rotate",
+      accessTokenEncrypted: locked.accessTokenEncrypted!,
+      refreshTokenEncrypted: locked.refreshTokenEncrypted!,
+      tokenExpiresAt: new Date().toISOString(),
+      scopes: locked.scopes,
+      updatedAt: new Date().toISOString(),
+    })))!;
+    const calls = answer(JSON.stringify({ access_token: "access-1", refresh_token: "refresh-1", ...extra }), 200);
+    let skew = 0;
+    const ctx = { ...ctxFor(store), clock: () => Date.now() + skew };
+    const before = Date.now();
+    const first = await refreshManagedCredential(ctx, row);
     expect(first.kind).toBe("current");
-    expect(first.identity.tokenExpiresAt).toBeUndefined();
     const stored = (await store.findStoredLinkedIdentity("twitch", row.providerUserId))!;
-    expect(stored.tokenExpiresAt).toBeUndefined();
+    const expiry = Date.parse(stored.tokenExpiresAt!);
+    expect(expiry - before).toBeGreaterThanOrEqual(providerCatalog.twitch.defaultAccessTokenLifetimeSeconds * 1000);
+    expect(expiry - before).toBeLessThan(providerCatalog.twitch.defaultAccessTokenLifetimeSeconds * 1000 + 5_000);
     expect(custody.decrypt(stored.accessTokenEncrypted!)).toBe("access-1");
 
-    await refreshManagedCredential(ctxFor(store), stored);
+    await refreshManagedCredential(ctx, stored);
     expect(calls).toEqual(["refresh-0"]);
+
+    skew = providerCatalog.twitch.defaultAccessTokenLifetimeSeconds * 1000;
+    await refreshManagedCredential(ctx, stored);
+    expect(calls).toEqual(["refresh-0", "refresh-1"]);
   });
 
   it("a non-rotating provider keeps the locked row's refresh token, not the snapshot's", async () => {

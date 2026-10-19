@@ -493,7 +493,8 @@ Important behavior:
   processes sharing one database. Within one process, concurrent refreshes of
   one identity share a single attempt and its outcome (success or failure), so
   nobody re-presents a token behind a failed holder in that burst. Residual
-  risk, accepted: the guard is one presentation per process per burst, so N
+  risk, tracked as follow-up `joystick:follow_up:cross-process-failed-refresh-marker`:
+  the guard is one presentation per process per burst, so N
   Heimdall processes can present one token N times after a transient failure.
   The provider call is bounded at 10 seconds
 - a provider whose refresh tokens rotate (Joystick) fails closed: a refresh
@@ -508,10 +509,14 @@ Important behavior:
 - `502 {"error":"managed_credential_refresh_failed","provider":...}`: the
   refresh failed for any reason that is not a grant verdict (invalid client,
   a 401 or 5xx whatever its body says, timeout, a 2xx without a string
-  `access_token` or carrying an `error`, an empty or non-JSON body). Stored
-  tokens are untouched and a later request may succeed. An answer without
-  `expires_in` stores the expiry as unknown, and an unknown expiry is never
-  due, so it does not trigger another refresh
+  `access_token` or carrying an `error`, a `refresh_token` that is present but
+  not a string, an empty or non-JSON body). Stored tokens are untouched and a
+  later request may succeed. An empty-string `refresh_token` counts as missing,
+  so a rotating provider revokes (`rotation_missing`). A token answer without a
+  usable `expires_in` (absent, non-numeric, or not a positive number or
+  positive-integer string) stores the expiry as now plus the provider's default
+  access-token lifetime (3600 seconds), so an expiry is never unknown and the
+  credential always comes due for refresh
 - app-local binding, diagnostics, subscription setup, and runtime behavior stay
   app-owned
 
