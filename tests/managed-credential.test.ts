@@ -562,7 +562,7 @@ for (const { kind, live } of rigKinds) describe.skipIf(live && !adminUrl)(`manag
 
     async function flow(rig: Rig, provider: "joystick" | "twitch" | "youtube", mode: "connect" | "sign_in") {
       const app = rig.apps[0]!;
-      const start = await app.inject({ method: "POST", url: `/v1/oauth/${provider}/start`, payload: { appSlug: "streampixels", mode, returnTo } });
+      const start = await app.inject({ method: "POST", url: `/v1/oauth/${provider}/start`, payload: { appSlug: "streampixels", mode, returnTo, ...(mode === "connect" ? { connection: { kind: "creator", targetId: "creator-1" } } : {}) } });
       expect(start.statusCode).toBe(201);
       const callback = await app.inject({
         method: "GET",

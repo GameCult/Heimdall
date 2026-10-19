@@ -1356,14 +1356,58 @@ describe("Heimdall service", () => {
   });
 
   describe("joystick connect", () => {
-    async function connect(app: FastifyInstance) {
+    const creator = { kind: "creator", targetId: "creator-1" };
+    async function connect(app: FastifyInstance, extra: Record<string, unknown> = { connection: creator }) {
       const start = await app.inject({
         method: "POST",
         url: "/v1/oauth/joystick/start",
-        payload: { appSlug: "streampixels", mode: "connect", returnTo: "https://streampixels.gamecult.org/auth/connect" },
+        payload: { appSlug: "streampixels", mode: "connect", returnTo: "https://streampixels.gamecult.org/auth/connect", ...extra },
       });
       return start;
     }
+
+    it.each([
+      ["no connection", {}],
+      ["an account connection", { connection: { kind: "account", targetId: "victim-1" } }],
+      ["an empty targetId", { connection: { kind: "creator", targetId: "" } }],
+    ])("refuses a joystick connect with %s at start, before any redirect", async (_name, extra) => {
+      const app = await buildApp({ config: createTestConfig() });
+      apps.push(app);
+      const start = await connect(app, extra);
+      expect(start.statusCode).toBe(400);
+      expect(start.json().authorizationUrl).toBeUndefined();
+      expect(start.json().stateToken).toBeUndefined();
+    });
+
+    it.each([
+      ["no connection", null],
+      ["an account connection", { kind: "account", targetId: "victim-1" }],
+      ["an empty targetId", { kind: "creator", targetId: "" }],
+    ])("the callback refuses a signed joystick connect with %s before the code exchange, and nothing is written", async (_name, connection) => {
+      const dir = mkdtempSync(join(tmpdir(), "heimdall-forge-"));
+      try {
+        const config = { ...createTestConfig(), signingPrivateKeyPath: join(dir, "signing.pem"), bootstrapSigningPrivateKeyOnMissing: true };
+        const store = new InMemoryStore();
+        const app = await buildApp({ config, store });
+        apps.push(app);
+        const keys = createRuntimeKeyMaterial({ ...config, bootstrapSigningPrivateKeyOnMissing: false });
+        const calls = stubJoystick({ channel_id: "chan-forged", username: "deru" });
+        const stateToken = (await connect(app)).json().stateToken as string;
+        const verified = verifyJwt(stateToken, keys.publicKey);
+        expect(verified.valid).toBe(true);
+        const forged = signJwt({ ...(verified as { payload: Record<string, unknown> }).payload, connection }, keys);
+
+        const callback = await app.inject({
+          method: "GET",
+          url: `/v1/oauth/joystick/callback?code=c&state=${encodeURIComponent(forged)}`,
+        });
+        expect(callback.statusCode).toBeGreaterThanOrEqual(400);
+        expect(calls).toEqual([]);
+        expect(await store.findStoredLinkedIdentity("joystick", "chan-forged")).toBeNull();
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
 
     it("starts a streampixels connect at joystick.tv with the five scopes and the callback redirect", async () => {
       const app = await buildApp({ config: createTestConfig() });
@@ -2096,10 +2140,19 @@ describe("callbackMint", () => {
     ["discord", "connect", "refused"],
     ["discord", "sign_in", "refused"],
   ] as const)("%s %s on streampixels is %s", (provider, mode, expected) => {
-    expect(callbackMint(streampixels, provider, mode)).toBe(expected);
+    expect(callbackMint(streampixels, provider, mode, { kind: "creator", targetId: "creator-1" })).toBe(expected);
+  });
+
+  it.each([
+    ["null", null],
+    ["undefined", undefined],
+    ["an account binding", { kind: "account", targetId: "a-1" }],
+    ["an empty creator targetId", { kind: "creator", targetId: "" }],
+  ] as const)("a joystick connect with %s is refused", (_name, connection) => {
+    expect(callbackMint(streampixels, "joystick", "connect", connection)).toBe("refused");
   });
 
   it("keeps Bifrost's discord connect a viewer session", () => {
-    expect(callbackMint(builtInAppProfiles.bifrost!, "discord", "connect")).toBe("viewer_session");
+    expect(callbackMint(builtInAppProfiles.bifrost!, "discord", "connect", null)).toBe("viewer_session");
   });
 });

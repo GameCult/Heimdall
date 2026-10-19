@@ -501,6 +501,16 @@ export async function startOAuthFlow(
     };
   }
 
+  if (callbackMint(profile, provider, input.mode, input.connection) === "refused") {
+    return {
+      statusCode: 400,
+      body: {
+        error: "creator_connection_required",
+        detail: `${provider} on ${profile.slug} is a managed creator connection: connect needs connection.kind creator and a targetId.`,
+      },
+    };
+  }
+
   if (!isAllowedReturnOrigin(profile, input.returnTo)) {
     return {
       statusCode: 400,
@@ -1009,7 +1019,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
       try {
         const callbackProfile = getAppProfile(statePayload.app_slug);
-        const mint = callbackProfile ? callbackMint(callbackProfile, request.params.provider, statePayload.mode) : "refused";
+        const mint = callbackProfile ? callbackMint(callbackProfile, request.params.provider, statePayload.mode, statePayload.connection) : "refused";
         if (mint === "refused") {
           throw new Error("The signed state names a mode the provider has no role for in this app.");
         }

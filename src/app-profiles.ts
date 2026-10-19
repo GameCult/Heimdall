@@ -3,7 +3,7 @@ import {
   type CapabilityDefinition,
   type CapabilityMode,
 } from "./capability-rules.js";
-import { type AppSlug, type LinkedIdentityInput, type OAuthEntitlementPolicy, type OAuthMode, type Provider } from "./contracts.js";
+import { type AppSlug, type LinkedIdentityInput, type OAuthConnectionBinding, type OAuthEntitlementPolicy, type OAuthMode, type Provider } from "./contracts.js";
 import { entitlementFacts, grantFacts, identityFacts } from "./facts.js";
 
 export type { CapabilityDefinition, CapabilityMode };
@@ -257,15 +257,27 @@ export function isAllowedReturnOrigin(profile: AppProfile, returnTo: string): bo
  * is only an early refusal). `viewer_session`: the provider is one of the
  * profile's `identityProviders`, so the completion signs the account in with
  * the profile's capabilities. `custody_only`: a `connect` for a provider that
- * is only a managed connection (Joystick on StreamPixels) stores the creator
- * credential and mints a claim with no capabilities and no refresh token.
- * `refused`: any other combination, which the start gate never admits.
+ * is only a managed connection (Joystick on StreamPixels), bound to a creator
+ * target, stores the creator credential and mints a claim with no capabilities
+ * and no refresh token. Without a creator binding it is `refused`, as is any
+ * other combination. The start gate asks this same question, so an unbound
+ * connect never reaches a redirect.
  */
 export type CallbackMint = "viewer_session" | "custody_only" | "refused";
 
-export function callbackMint(profile: AppProfile, provider: Provider, mode: OAuthMode): CallbackMint {
+export function callbackMint(
+  profile: AppProfile,
+  provider: Provider,
+  mode: OAuthMode,
+  connection: OAuthConnectionBinding | null | undefined
+): CallbackMint {
   if (profile.identityProviders.includes(provider)) {
     return "viewer_session";
   }
-  return mode === "connect" && profile.managedConnectionProviders.includes(provider) ? "custody_only" : "refused";
+  return mode === "connect" &&
+    profile.managedConnectionProviders.includes(provider) &&
+    connection?.kind === "creator" &&
+    connection.targetId !== ""
+    ? "custody_only"
+    : "refused";
 }
