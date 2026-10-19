@@ -225,13 +225,15 @@ export function serializeAppProfile(profile: AppProfile): Record<string, unknown
 /**
  * Whether the profile admits this provider for this mode. The role lists
  * decide: `sign_in` and `link` mint viewer identity, so they take only
- * `identityProviders`; `connect` takes custody of a creator credential, so it
- * takes only `managedConnectionProviders`. A provider in neither list for the
- * mode is refused before any redirect.
+ * `identityProviders`; a provider that is only a managed connection (Joystick)
+ * can never sign anyone in or link. `connect` takes either list:
+ * `managedConnectionProviders` for creator credentials, and
+ * `identityProviders` because Bifrost and its siblings already connect their
+ * identity providers. A provider in neither list is refused before any redirect.
  */
 export function admitsProviderForMode(profile: AppProfile, provider: Provider, mode: OAuthMode): boolean {
   return mode === "connect"
-    ? profile.managedConnectionProviders.includes(provider)
+    ? profile.managedConnectionProviders.includes(provider) || profile.identityProviders.includes(provider)
     : profile.identityProviders.includes(provider);
 }
 

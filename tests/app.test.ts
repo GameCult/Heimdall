@@ -2023,7 +2023,7 @@ describe("OAuth start admits a provider by the profile's role for the mode", () 
   const allProviders = ["discord", "patreon", "github", "twitch", "youtube", "spotify", "joystick"] as const;
   const modes = ["sign_in", "link", "connect"] as const;
 
-  it("sign_in and link take identityProviders only; connect takes managedConnectionProviders only, for every profile", async () => {
+  it("sign_in and link take identityProviders only; connect takes managedConnectionProviders or identityProviders, for every profile", async () => {
     const app = await buildApp({ config: createTestConfig() });
     try {
       for (const profile of Object.values(builtInAppProfiles)) {
@@ -2034,7 +2034,10 @@ describe("OAuth start admits a provider by the profile's role for the mode", () 
               url: `/v1/oauth/${provider}/start`,
               payload: { appSlug: profile.slug, mode, returnTo: `${profile.allowedReturnOrigins[0]}/x` },
             });
-            const roleList = mode === "connect" ? profile.managedConnectionProviders : profile.identityProviders;
+            const roleList =
+              mode === "connect"
+                ? [...profile.managedConnectionProviders, ...profile.identityProviders]
+                : profile.identityProviders;
             const refused = start.json().error === "provider_not_supported_for_app";
             expect([profile.slug, provider, mode, refused]).toEqual([profile.slug, provider, mode, !roleList.includes(provider)]);
           }
