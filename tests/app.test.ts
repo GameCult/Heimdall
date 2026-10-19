@@ -1374,7 +1374,7 @@ describe("Heimdall service", () => {
     });
 
     function stubJoystick(identity: Record<string, unknown>) {
-      const calls: Array<{ url: string; headers: Record<string, string>; body?: URLSearchParams }> = [];
+      const calls: Array<{ url: string; headers: Record<string, string>; body?: URLSearchParams | undefined }> = [];
       globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
         const url = String(input);
         calls.push({ url, headers: (init?.headers ?? {}) as Record<string, string>, body: init?.body as URLSearchParams | undefined });
