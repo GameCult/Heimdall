@@ -41,6 +41,9 @@ export interface OAuthCallbackContext {
   entitlementPolicy: OAuthEntitlementPolicy | null;
 }
 
+/** A token set whose access-token expiry is known: the provider's own, or the descriptor's default. */
+export type ExpiringTokenSet = OAuthTokenSet & { expiresAt: string };
+
 export interface OAuthProviderRuntime {
   exchangeAuthorizationCode(options: {
     config: HeimdallConfig;
@@ -51,7 +54,7 @@ export interface OAuthProviderRuntime {
     config: HeimdallConfig;
     refreshToken: string;
     signal?: AbortSignal;
-  }): Promise<OAuthTokenSet>;
+  }): Promise<ExpiringTokenSet>;
   resolveIdentity(options: { config: HeimdallConfig; accessToken: string }): Promise<ResolvedIdentity>;
   evaluateEntitlements(options: {
     config: HeimdallConfig;
@@ -156,7 +159,7 @@ export async function requestProviderTokens(
   config: HeimdallConfig,
   grant: TokenGrant,
   signal?: AbortSignal
-): Promise<OAuthTokenSet> {
+): Promise<ExpiringTokenSet> {
   const descriptor = providerCatalog[provider];
   const providerConfig = config.providers[provider];
   if (!providerConfig.clientId || !providerConfig.clientSecret) {
@@ -209,19 +212,19 @@ export async function requestProviderTokens(
     throw new ProviderResponseError(response.status, "provider_body_not_token_set", failure);
   }
 
-  const tokenSet: OAuthTokenSet = {
+  // Nothing issued here has an unknown expiry: an answer without a usable
+  // expires_in takes the descriptor's default lifetime.
+  const lifetimeSeconds = usableExpiresIn(tokenResponse.expires_in) ?? descriptor.defaultAccessTokenLifetimeSeconds;
+  const tokenSet: ExpiringTokenSet = {
     accessToken: tokenResponse.access_token,
     tokenType: tokenResponse.token_type ?? "Bearer",
     scope: normalizeScopes(tokenResponse.scope),
+    expiresAt: new Date(Date.now() + lifetimeSeconds * 1000).toISOString(),
     raw: tokenResponse as unknown as Record<string, unknown>,
   };
   if (tokenResponse.refresh_token) {
     tokenSet.refreshToken = tokenResponse.refresh_token;
   }
-  // Nothing issued here has an unknown expiry: an answer without a usable
-  // expires_in takes the descriptor's default lifetime.
-  const lifetimeSeconds = usableExpiresIn(tokenResponse.expires_in) ?? descriptor.defaultAccessTokenLifetimeSeconds;
-  tokenSet.expiresAt = new Date(Date.now() + lifetimeSeconds * 1000).toISOString();
   return tokenSet;
 }
 

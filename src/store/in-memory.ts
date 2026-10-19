@@ -198,9 +198,7 @@ export class InMemoryStore implements HeimdallStore {
       if (decision.kind === "rotate") {
         next.accessTokenEncrypted = decision.accessTokenEncrypted;
         next.refreshTokenEncrypted = decision.refreshTokenEncrypted;
-        if (decision.tokenExpiresAt !== undefined) {
-          next.tokenExpiresAt = decision.tokenExpiresAt;
-        }
+        next.tokenExpiresAt = decision.tokenExpiresAt;
         next.scopes = [...decision.scopes];
       }
       this.linkedIdentities.set(id, clone(next));

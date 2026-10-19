@@ -738,6 +738,7 @@ for (const { kind, live } of rigKinds) describe.skipIf(live && !adminUrl)(`manag
               kind: "rotate",
               accessTokenEncrypted: `A${n}`,
               refreshTokenEncrypted: `R${n}`,
+              tokenExpiresAt: new Date(Date.now() + 3600_000).toISOString(),
               scopes: locked.scopes,
               updatedAt: new Date().toISOString(),
             };

@@ -150,15 +150,14 @@ async function refreshUnderLock(
       refreshTokenEncrypted = locked.refreshTokenEncrypted!;
     }
 
-    // The token set always carries an expiry (the provider's, or the
+    // The refreshed set always carries an expiry (the provider's, or the
     // descriptor's default lifetime): the old one is already due, and an
     // unknown one would never come due (dueForRefresh).
-    const tokenExpiresAt = refreshed.expiresAt;
     return {
       kind: "rotate",
       accessTokenEncrypted: ctx.tokenCustody.encrypt(refreshed.accessToken),
       refreshTokenEncrypted,
-      ...(tokenExpiresAt !== undefined ? { tokenExpiresAt } : {}),
+      tokenExpiresAt: refreshed.expiresAt,
       scopes: refreshed.scope.length ? refreshed.scope : locked.scopes,
       updatedAt,
     };

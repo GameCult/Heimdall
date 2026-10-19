@@ -67,7 +67,7 @@ export type CredentialDecision =
       kind: "rotate";
       accessTokenEncrypted: string;
       refreshTokenEncrypted: string;
-      tokenExpiresAt?: string;
+      tokenExpiresAt: string;
       scopes: string[];
       updatedAt: string;
     }
