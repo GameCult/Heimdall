@@ -6,6 +6,11 @@ export interface ProviderDescriptor {
   key: Provider;
   displayName: string;
   authorizationEndpoint: string;
+  tokenEndpoint: string;
+  /** RFC 7591 names: how the client authenticates at the token endpoint. */
+  tokenEndpointAuthMethod: "client_secret_basic" | "client_secret_post";
+  /** True when a refresh response replaces the refresh token and the old one dies. */
+  rotatesRefreshTokens: boolean;
   defaultScopes: string[];
   roles: ProviderRole[];
   clientIdEnv: string;
@@ -18,6 +23,9 @@ export const providerCatalog: Record<Provider, ProviderDescriptor> = {
     key: "discord",
     displayName: "Discord",
     authorizationEndpoint: "https://discord.com/oauth2/authorize",
+    tokenEndpoint: "https://discord.com/api/v10/oauth2/token",
+    tokenEndpointAuthMethod: "client_secret_basic",
+    rotatesRefreshTokens: false,
     defaultScopes: ["identify", "guilds.members.read"],
     roles: ["identity", "entitlement"],
     clientIdEnv: "GC_ACCESS_PROVIDER_DISCORD_CLIENT_ID",
@@ -27,6 +35,9 @@ export const providerCatalog: Record<Provider, ProviderDescriptor> = {
     key: "patreon",
     displayName: "Patreon",
     authorizationEndpoint: "https://www.patreon.com/oauth2/authorize",
+    tokenEndpoint: "https://www.patreon.com/api/oauth2/token",
+    tokenEndpointAuthMethod: "client_secret_post",
+    rotatesRefreshTokens: false,
     defaultScopes: ["identity", "identity[email]"],
     roles: ["identity", "entitlement"],
     clientIdEnv: "GC_ACCESS_PROVIDER_PATREON_CLIENT_ID",
@@ -36,6 +47,9 @@ export const providerCatalog: Record<Provider, ProviderDescriptor> = {
     key: "github",
     displayName: "GitHub",
     authorizationEndpoint: "https://github.com/login/oauth/authorize",
+    tokenEndpoint: "https://github.com/login/oauth/access_token",
+    tokenEndpointAuthMethod: "client_secret_post",
+    rotatesRefreshTokens: false,
     defaultScopes: ["read:user", "user:email"],
     roles: ["identity", "managed_credential"],
     clientIdEnv: "GC_ACCESS_PROVIDER_GITHUB_CLIENT_ID",
@@ -45,6 +59,9 @@ export const providerCatalog: Record<Provider, ProviderDescriptor> = {
     key: "twitch",
     displayName: "Twitch",
     authorizationEndpoint: "https://id.twitch.tv/oauth2/authorize",
+    tokenEndpoint: "https://id.twitch.tv/oauth2/token",
+    tokenEndpointAuthMethod: "client_secret_post",
+    rotatesRefreshTokens: false,
     defaultScopes: ["user:read:email"],
     roles: ["identity", "managed_credential"],
     clientIdEnv: "GC_ACCESS_PROVIDER_TWITCH_CLIENT_ID",
@@ -54,6 +71,9 @@ export const providerCatalog: Record<Provider, ProviderDescriptor> = {
     key: "youtube",
     displayName: "YouTube",
     authorizationEndpoint: "https://accounts.google.com/o/oauth2/v2/auth",
+    tokenEndpoint: "https://oauth2.googleapis.com/token",
+    tokenEndpointAuthMethod: "client_secret_post",
+    rotatesRefreshTokens: false,
     defaultScopes: [
       "openid",
       "email",
@@ -73,6 +93,9 @@ export const providerCatalog: Record<Provider, ProviderDescriptor> = {
     key: "spotify",
     displayName: "Spotify",
     authorizationEndpoint: "https://accounts.spotify.com/authorize",
+    tokenEndpoint: "https://accounts.spotify.com/api/token",
+    tokenEndpointAuthMethod: "client_secret_basic",
+    rotatesRefreshTokens: false,
     defaultScopes: [
       "user-read-currently-playing",
       "user-read-playback-state",

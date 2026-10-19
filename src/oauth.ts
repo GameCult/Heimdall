@@ -7,6 +7,7 @@ import {
 } from "./contracts.js";
 import { type HeimdallConfig } from "./config.js";
 import { entitlementFacts } from "./facts.js";
+import { providerCatalog } from "./providers.js";
 import { type CreateEntitlementSnapshotInput } from "./store/types.js";
 
 export interface OAuthTokenSet {
@@ -49,6 +50,7 @@ export interface OAuthProviderRuntime {
   refreshAccessToken?(options: {
     config: HeimdallConfig;
     refreshToken: string;
+    signal?: AbortSignal;
   }): Promise<OAuthTokenSet>;
   resolveIdentity(options: { config: HeimdallConfig; accessToken: string }): Promise<ResolvedIdentity>;
   evaluateEntitlements(options: {
@@ -106,512 +108,88 @@ function normalizeScopes(scope: string | string[] | undefined): string[] {
   return scope?.split(/\s+/).filter(Boolean) ?? [];
 }
 
-async function exchangeDiscordAuthorizationCode(options: {
-  config: HeimdallConfig;
-  code: string;
-  redirectUri: string;
-}): Promise<OAuthTokenSet> {
-  const providerConfig = options.config.providers.discord;
+export type TokenGrant =
+  | { grant_type: "authorization_code"; code: string; redirect_uri: string }
+  | { grant_type: "refresh_token"; refresh_token: string };
+
+/**
+ * The one token request: endpoint, client authentication and rotation all come
+ * from the provider's descriptor. `basic` sends the client as an Authorization
+ * header and nothing in the body; `post` sends it in the body. A refresh token
+ * is returned only when the provider sent one; keeping or discarding the old
+ * one is the caller's rule (ProviderDescriptor.rotatesRefreshTokens).
+ */
+export async function requestProviderTokens(
+  provider: Provider,
+  config: HeimdallConfig,
+  grant: TokenGrant,
+  signal?: AbortSignal
+): Promise<OAuthTokenSet> {
+  const descriptor = providerCatalog[provider];
+  const providerConfig = config.providers[provider];
   if (!providerConfig.clientId || !providerConfig.clientSecret) {
-    throw new Error("Discord OAuth is not fully configured.");
+    throw new Error(`${descriptor.displayName} OAuth is not fully configured.`);
   }
 
-  const body = new URLSearchParams({
-    grant_type: "authorization_code",
-    code: options.code,
-    redirect_uri: options.redirectUri,
-  });
-  const basicAuth = Buffer.from(`${providerConfig.clientId}:${providerConfig.clientSecret}`).toString("base64");
-  const tokenResponse = await fetchJson<{
-    access_token: string;
-    refresh_token?: string;
-    token_type: string;
-    expires_in: number;
-    scope?: string | string[];
-  }>(
-    "https://discord.com/api/v10/oauth2/token",
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Basic ${basicAuth}`,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body,
-    },
-    "Discord token exchange failed"
-  );
-
-  const tokenSet: OAuthTokenSet = {
-    accessToken: tokenResponse.access_token,
-    tokenType: tokenResponse.token_type,
-    scope: normalizeScopes(tokenResponse.scope),
-    expiresAt: new Date(Date.now() + tokenResponse.expires_in * 1000).toISOString(),
-    raw: tokenResponse as unknown as Record<string, unknown>,
+  const body = new URLSearchParams(grant);
+  const headers: Record<string, string> = {
+    "Content-Type": "application/x-www-form-urlencoded",
+    Accept: "application/json",
   };
-
-  if (tokenResponse.refresh_token) {
-    tokenSet.refreshToken = tokenResponse.refresh_token;
+  if (descriptor.tokenEndpointAuthMethod === "client_secret_basic") {
+    headers.Authorization = `Basic ${Buffer.from(`${providerConfig.clientId}:${providerConfig.clientSecret}`).toString("base64")}`;
+  } else {
+    body.set("client_id", providerConfig.clientId);
+    body.set("client_secret", providerConfig.clientSecret);
   }
 
-  return tokenSet;
-}
-
-async function refreshDiscordAccessToken(options: {
-  config: HeimdallConfig;
-  refreshToken: string;
-}): Promise<OAuthTokenSet> {
-  const providerConfig = options.config.providers.discord;
-  if (!providerConfig.clientId || !providerConfig.clientSecret) {
-    throw new Error("Discord OAuth is not fully configured.");
+  const init: RequestInit = { method: "POST", headers, body };
+  if (signal) {
+    init.signal = signal;
   }
-
-  const basicAuth = Buffer.from(`${providerConfig.clientId}:${providerConfig.clientSecret}`).toString("base64");
+  const label = grant.grant_type === "refresh_token" ? "refresh" : "exchange";
   const tokenResponse = await fetchJson<{
     access_token: string;
     refresh_token?: string;
-    token_type: string;
-    expires_in: number;
-    scope?: string | string[];
-  }>(
-    "https://discord.com/api/v10/oauth2/token",
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Basic ${basicAuth}`,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: new URLSearchParams({
-        grant_type: "refresh_token",
-        refresh_token: options.refreshToken,
-      }),
-    },
-    "Discord token refresh failed"
-  );
-
-  const tokenSet: OAuthTokenSet = {
-    accessToken: tokenResponse.access_token,
-    tokenType: tokenResponse.token_type,
-    scope: normalizeScopes(tokenResponse.scope),
-    expiresAt: new Date(Date.now() + tokenResponse.expires_in * 1000).toISOString(),
-    raw: tokenResponse as unknown as Record<string, unknown>,
-  };
-
-  if (tokenResponse.refresh_token) {
-    tokenSet.refreshToken = tokenResponse.refresh_token;
-  }
-
-  return tokenSet;
-}
-
-async function exchangePatreonAuthorizationCode(options: {
-  config: HeimdallConfig;
-  code: string;
-  redirectUri: string;
-}): Promise<OAuthTokenSet> {
-  const providerConfig = options.config.providers.patreon;
-  if (!providerConfig.clientId || !providerConfig.clientSecret) {
-    throw new Error("Patreon OAuth is not fully configured.");
-  }
-
-  const body = new URLSearchParams({
-    grant_type: "authorization_code",
-    code: options.code,
-    client_id: providerConfig.clientId,
-    client_secret: providerConfig.clientSecret,
-    redirect_uri: options.redirectUri,
-  });
-  const tokenResponse = await fetchJson<{
-    access_token: string;
-    refresh_token?: string;
-    token_type: string;
+    token_type?: string;
     expires_in?: number;
     scope?: string | string[];
-  }>(
-    "https://www.patreon.com/api/oauth2/token",
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body,
-    },
-    "Patreon token exchange failed"
-  );
+  }>(descriptor.tokenEndpoint, init, `${descriptor.displayName} token ${label} failed`);
 
   const tokenSet: OAuthTokenSet = {
     accessToken: tokenResponse.access_token,
-    tokenType: tokenResponse.token_type,
+    tokenType: tokenResponse.token_type ?? "Bearer",
     scope: normalizeScopes(tokenResponse.scope),
     raw: tokenResponse as unknown as Record<string, unknown>,
   };
-
   if (tokenResponse.refresh_token) {
     tokenSet.refreshToken = tokenResponse.refresh_token;
   }
-
-  if (tokenResponse.expires_in) {
+  if (typeof tokenResponse.expires_in === "number" && tokenResponse.expires_in > 0) {
     tokenSet.expiresAt = new Date(Date.now() + tokenResponse.expires_in * 1000).toISOString();
   }
-
   return tokenSet;
 }
 
-async function refreshPatreonAccessToken(options: {
-  config: HeimdallConfig;
-  refreshToken: string;
-}): Promise<OAuthTokenSet> {
-  const providerConfig = options.config.providers.patreon;
-  if (!providerConfig.clientId || !providerConfig.clientSecret) {
-    throw new Error("Patreon OAuth is not fully configured.");
-  }
-
-  const tokenResponse = await fetchJson<{
-    access_token: string;
-    refresh_token?: string;
-    token_type: string;
-    expires_in?: number;
-    scope?: string | string[];
-  }>(
-    "https://www.patreon.com/api/oauth2/token",
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: new URLSearchParams({
-        grant_type: "refresh_token",
-        refresh_token: options.refreshToken,
-        client_id: providerConfig.clientId,
-        client_secret: providerConfig.clientSecret,
-      }),
-    },
-    "Patreon token refresh failed"
-  );
-
-  const tokenSet: OAuthTokenSet = {
-    accessToken: tokenResponse.access_token,
-    tokenType: tokenResponse.token_type,
-    scope: normalizeScopes(tokenResponse.scope),
-    raw: tokenResponse as unknown as Record<string, unknown>,
-  };
-
-  if (tokenResponse.refresh_token) {
-    tokenSet.refreshToken = tokenResponse.refresh_token;
-  }
-
-  if (tokenResponse.expires_in) {
-    tokenSet.expiresAt = new Date(Date.now() + tokenResponse.expires_in * 1000).toISOString();
-  }
-
-  return tokenSet;
+function sharedRuntimeExchange(provider: Provider): OAuthProviderRuntime["exchangeAuthorizationCode"] {
+  return (options) =>
+    requestProviderTokens(provider, options.config, {
+      grant_type: "authorization_code",
+      code: options.code,
+      redirect_uri: options.redirectUri,
+    });
 }
 
-async function exchangeTwitchAuthorizationCode(options: {
-  config: HeimdallConfig;
-  code: string;
-  redirectUri: string;
-}): Promise<OAuthTokenSet> {
-  const providerConfig = options.config.providers.twitch;
-  if (!providerConfig.clientId || !providerConfig.clientSecret) {
-    throw new Error("Twitch OAuth is not fully configured.");
-  }
-
-  const tokenResponse = await fetchJson<{
-    access_token: string;
-    refresh_token?: string;
-    token_type: string;
-    expires_in?: number;
-    scope?: string | string[];
-  }>(
-    "https://id.twitch.tv/oauth2/token",
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: new URLSearchParams({
-        client_id: providerConfig.clientId,
-        client_secret: providerConfig.clientSecret,
-        code: options.code,
-        grant_type: "authorization_code",
-        redirect_uri: options.redirectUri,
-      }),
-    },
-    "Twitch token exchange failed"
-  );
-
-  const tokenSet: OAuthTokenSet = {
-    accessToken: tokenResponse.access_token,
-    tokenType: tokenResponse.token_type,
-    scope: normalizeScopes(tokenResponse.scope),
-    raw: tokenResponse as unknown as Record<string, unknown>,
-  };
-
-  if (tokenResponse.refresh_token) {
-    tokenSet.refreshToken = tokenResponse.refresh_token;
-  }
-
-  if (tokenResponse.expires_in) {
-    tokenSet.expiresAt = new Date(Date.now() + tokenResponse.expires_in * 1000).toISOString();
-  }
-
-  return tokenSet;
+function sharedRuntimeRefresh(provider: Provider): NonNullable<OAuthProviderRuntime["refreshAccessToken"]> {
+  return (options) =>
+    requestProviderTokens(
+      provider,
+      options.config,
+      { grant_type: "refresh_token", refresh_token: options.refreshToken },
+      options.signal
+    );
 }
 
-async function refreshTwitchAccessToken(options: {
-  config: HeimdallConfig;
-  refreshToken: string;
-}): Promise<OAuthTokenSet> {
-  const providerConfig = options.config.providers.twitch;
-  if (!providerConfig.clientId || !providerConfig.clientSecret) {
-    throw new Error("Twitch OAuth is not fully configured.");
-  }
-
-  const tokenResponse = await fetchJson<{
-    access_token: string;
-    refresh_token?: string;
-    token_type: string;
-    expires_in?: number;
-    scope?: string | string[];
-  }>(
-    "https://id.twitch.tv/oauth2/token",
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: new URLSearchParams({
-        client_id: providerConfig.clientId,
-        client_secret: providerConfig.clientSecret,
-        grant_type: "refresh_token",
-        refresh_token: options.refreshToken,
-      }),
-    },
-    "Twitch token refresh failed"
-  );
-
-  const tokenSet: OAuthTokenSet = {
-    accessToken: tokenResponse.access_token,
-    tokenType: tokenResponse.token_type,
-    scope: normalizeScopes(tokenResponse.scope),
-    raw: tokenResponse as unknown as Record<string, unknown>,
-  };
-
-  if (tokenResponse.refresh_token) {
-    tokenSet.refreshToken = tokenResponse.refresh_token;
-  }
-
-  if (tokenResponse.expires_in) {
-    tokenSet.expiresAt = new Date(Date.now() + tokenResponse.expires_in * 1000).toISOString();
-  }
-
-  return tokenSet;
-}
-
-async function exchangeYouTubeAuthorizationCode(options: {
-  config: HeimdallConfig;
-  code: string;
-  redirectUri: string;
-}): Promise<OAuthTokenSet> {
-  const providerConfig = options.config.providers.youtube;
-  if (!providerConfig.clientId || !providerConfig.clientSecret) {
-    throw new Error("YouTube OAuth is not fully configured.");
-  }
-
-  const tokenResponse = await fetchJson<{
-    access_token: string;
-    refresh_token?: string;
-    token_type: string;
-    expires_in?: number;
-    scope?: string | string[];
-    id_token?: string;
-  }>(
-    "https://oauth2.googleapis.com/token",
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: new URLSearchParams({
-        client_id: providerConfig.clientId,
-        client_secret: providerConfig.clientSecret,
-        code: options.code,
-        grant_type: "authorization_code",
-        redirect_uri: options.redirectUri,
-      }),
-    },
-    "YouTube token exchange failed"
-  );
-
-  const tokenSet: OAuthTokenSet = {
-    accessToken: tokenResponse.access_token,
-    tokenType: tokenResponse.token_type,
-    scope: normalizeScopes(tokenResponse.scope),
-    raw: tokenResponse as unknown as Record<string, unknown>,
-  };
-
-  if (tokenResponse.refresh_token) {
-    tokenSet.refreshToken = tokenResponse.refresh_token;
-  }
-
-  if (tokenResponse.expires_in) {
-    tokenSet.expiresAt = new Date(Date.now() + tokenResponse.expires_in * 1000).toISOString();
-  }
-
-  return tokenSet;
-}
-
-async function refreshYouTubeAccessToken(options: {
-  config: HeimdallConfig;
-  refreshToken: string;
-}): Promise<OAuthTokenSet> {
-  const providerConfig = options.config.providers.youtube;
-  if (!providerConfig.clientId || !providerConfig.clientSecret) {
-    throw new Error("YouTube OAuth is not fully configured.");
-  }
-
-  const tokenResponse = await fetchJson<{
-    access_token: string;
-    refresh_token?: string;
-    token_type: string;
-    expires_in?: number;
-    scope?: string | string[];
-  }>(
-    "https://oauth2.googleapis.com/token",
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: new URLSearchParams({
-        client_id: providerConfig.clientId,
-        client_secret: providerConfig.clientSecret,
-        grant_type: "refresh_token",
-        refresh_token: options.refreshToken,
-      }),
-    },
-    "YouTube token refresh failed"
-  );
-
-  const tokenSet: OAuthTokenSet = {
-    accessToken: tokenResponse.access_token,
-    tokenType: tokenResponse.token_type,
-    scope: normalizeScopes(tokenResponse.scope),
-    raw: tokenResponse as unknown as Record<string, unknown>,
-  };
-
-  if (tokenResponse.refresh_token) {
-    tokenSet.refreshToken = tokenResponse.refresh_token;
-  }
-
-  if (tokenResponse.expires_in) {
-    tokenSet.expiresAt = new Date(Date.now() + tokenResponse.expires_in * 1000).toISOString();
-  }
-
-  return tokenSet;
-}
-
-async function exchangeSpotifyAuthorizationCode(options: {
-  config: HeimdallConfig;
-  code: string;
-  redirectUri: string;
-}): Promise<OAuthTokenSet> {
-  const providerConfig = options.config.providers.spotify;
-  if (!providerConfig.clientId || !providerConfig.clientSecret) {
-    throw new Error("Spotify OAuth is not fully configured.");
-  }
-
-  const basicAuth = Buffer.from(`${providerConfig.clientId}:${providerConfig.clientSecret}`).toString("base64");
-  const tokenResponse = await fetchJson<{
-    access_token: string;
-    refresh_token?: string;
-    token_type: string;
-    expires_in?: number;
-    scope?: string | string[];
-  }>(
-    "https://accounts.spotify.com/api/token",
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Basic ${basicAuth}`,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: new URLSearchParams({
-        grant_type: "authorization_code",
-        code: options.code,
-        redirect_uri: options.redirectUri,
-      }),
-    },
-    "Spotify token exchange failed"
-  );
-
-  const tokenSet: OAuthTokenSet = {
-    accessToken: tokenResponse.access_token,
-    tokenType: tokenResponse.token_type,
-    scope: normalizeScopes(tokenResponse.scope),
-    raw: tokenResponse as unknown as Record<string, unknown>,
-  };
-
-  if (tokenResponse.refresh_token) {
-    tokenSet.refreshToken = tokenResponse.refresh_token;
-  }
-
-  if (tokenResponse.expires_in) {
-    tokenSet.expiresAt = new Date(Date.now() + tokenResponse.expires_in * 1000).toISOString();
-  }
-
-  return tokenSet;
-}
-
-async function refreshSpotifyAccessToken(options: {
-  config: HeimdallConfig;
-  refreshToken: string;
-}): Promise<OAuthTokenSet> {
-  const providerConfig = options.config.providers.spotify;
-  if (!providerConfig.clientId || !providerConfig.clientSecret) {
-    throw new Error("Spotify OAuth is not fully configured.");
-  }
-
-  const basicAuth = Buffer.from(`${providerConfig.clientId}:${providerConfig.clientSecret}`).toString("base64");
-  const tokenResponse = await fetchJson<{
-    access_token: string;
-    refresh_token?: string;
-    token_type: string;
-    expires_in?: number;
-    scope?: string | string[];
-  }>(
-    "https://accounts.spotify.com/api/token",
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Basic ${basicAuth}`,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: new URLSearchParams({
-        grant_type: "refresh_token",
-        refresh_token: options.refreshToken,
-      }),
-    },
-    "Spotify token refresh failed"
-  );
-
-  const tokenSet: OAuthTokenSet = {
-    accessToken: tokenResponse.access_token,
-    tokenType: tokenResponse.token_type,
-    scope: normalizeScopes(tokenResponse.scope),
-    raw: tokenResponse as unknown as Record<string, unknown>,
-  };
-
-  if (tokenResponse.refresh_token) {
-    tokenSet.refreshToken = tokenResponse.refresh_token;
-  }
-
-  if (tokenResponse.expires_in) {
-    tokenSet.expiresAt = new Date(Date.now() + tokenResponse.expires_in * 1000).toISOString();
-  }
-
-  return tokenSet;
-}
 
 async function resolveDiscordIdentity(options: { accessToken: string }): Promise<ResolvedIdentity> {
   const user = await fetchJson<{
@@ -1217,22 +795,22 @@ async function evaluatePatreonEntitlements(options: {
 }
 
 const discordRuntime: OAuthProviderRuntime = {
-  exchangeAuthorizationCode: exchangeDiscordAuthorizationCode,
-  refreshAccessToken: refreshDiscordAccessToken,
+  exchangeAuthorizationCode: sharedRuntimeExchange("discord"),
+  refreshAccessToken: sharedRuntimeRefresh("discord"),
   resolveIdentity: resolveDiscordIdentity,
   evaluateEntitlements: evaluateDiscordEntitlements,
 };
 
 const patreonRuntime: OAuthProviderRuntime = {
-  exchangeAuthorizationCode: exchangePatreonAuthorizationCode,
-  refreshAccessToken: refreshPatreonAccessToken,
+  exchangeAuthorizationCode: sharedRuntimeExchange("patreon"),
+  refreshAccessToken: sharedRuntimeRefresh("patreon"),
   resolveIdentity: resolvePatreonIdentity,
   evaluateEntitlements: evaluatePatreonEntitlements,
 };
 
 const twitchRuntime: OAuthProviderRuntime = {
-  exchangeAuthorizationCode: exchangeTwitchAuthorizationCode,
-  refreshAccessToken: refreshTwitchAccessToken,
+  exchangeAuthorizationCode: sharedRuntimeExchange("twitch"),
+  refreshAccessToken: sharedRuntimeRefresh("twitch"),
   resolveIdentity: resolveTwitchIdentity,
   async evaluateEntitlements() {
     return { facts: [], snapshots: [] };
@@ -1240,8 +818,8 @@ const twitchRuntime: OAuthProviderRuntime = {
 };
 
 const youtubeRuntime: OAuthProviderRuntime = {
-  exchangeAuthorizationCode: exchangeYouTubeAuthorizationCode,
-  refreshAccessToken: refreshYouTubeAccessToken,
+  exchangeAuthorizationCode: sharedRuntimeExchange("youtube"),
+  refreshAccessToken: sharedRuntimeRefresh("youtube"),
   resolveIdentity: resolveYouTubeIdentity,
   async evaluateEntitlements() {
     return { facts: [], snapshots: [] };
@@ -1249,8 +827,8 @@ const youtubeRuntime: OAuthProviderRuntime = {
 };
 
 const spotifyRuntime: OAuthProviderRuntime = {
-  exchangeAuthorizationCode: exchangeSpotifyAuthorizationCode,
-  refreshAccessToken: refreshSpotifyAccessToken,
+  exchangeAuthorizationCode: sharedRuntimeExchange("spotify"),
+  refreshAccessToken: sharedRuntimeRefresh("spotify"),
   resolveIdentity: resolveSpotifyIdentity,
   async evaluateEntitlements() {
     return { facts: [], snapshots: [] };
