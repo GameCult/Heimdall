@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { inspect } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { type FastifyInstance } from "fastify";
@@ -7,7 +10,7 @@ import { deliverBackendHandoff, type BackendHandoffPayload } from "../src/backen
 import { type HeimdallConfig, loadConfig } from "../src/config.js";
 import { entitlementFacts, identityFacts } from "../src/facts.js";
 import { createOAuthRuntimeRegistry, ProviderResponseError, type OAuthProviderRuntime } from "../src/oauth.js";
-import { verifyJwt } from "../src/signing.js";
+import { createRuntimeKeyMaterial, signJwt, verifyJwt } from "../src/signing.js";
 import { InMemoryStore } from "../src/store/index.js";
 
 function createTestConfig(): HeimdallConfig {
@@ -1419,6 +1422,37 @@ describe("Heimdall service", () => {
       }) as typeof fetch;
       return calls;
     }
+
+    it.each(["sign_in", "link"] as const)(
+      "the callback refuses a signed %s state for joystick on streampixels before the code exchange, and nothing is written",
+      async (mode) => {
+        // The start gate already refuses these words, so the state is re-signed with the app's own key.
+        const dir = mkdtempSync(join(tmpdir(), "heimdall-forge-"));
+        try {
+          const config = { ...createTestConfig(), signingPrivateKeyPath: join(dir, "signing.pem"), bootstrapSigningPrivateKeyOnMissing: true };
+          const store = new InMemoryStore();
+          const app = await buildApp({ config, store });
+          apps.push(app);
+          const keys = createRuntimeKeyMaterial({ ...config, bootstrapSigningPrivateKeyOnMissing: false });
+          const calls = stubJoystick({ channel_id: "chan-forged", username: "deru" });
+          const stateToken = (await connect(app)).json().stateToken as string;
+          const verified = verifyJwt(stateToken, keys.publicKey);
+          expect(verified.valid).toBe(true);
+          const forged = signJwt({ ...(verified as { payload: Record<string, unknown> }).payload, mode }, keys);
+
+          const callback = await app.inject({
+            method: "GET",
+            url: `/v1/oauth/joystick/callback?code=c&state=${encodeURIComponent(forged)}`,
+          });
+          expect(callback.statusCode).toBeGreaterThanOrEqual(400);
+          expect(callback.body).not.toContain("viewer_access");
+          expect(calls).toEqual([]);
+          expect(await store.findStoredLinkedIdentity("joystick", "chan-forged")).toBeNull();
+        } finally {
+          rmSync(dir, { recursive: true, force: true });
+        }
+      }
+    );
 
     it("exchanges the code with Basic client auth and links the identity by channel id", async () => {
       const store = new InMemoryStore();
