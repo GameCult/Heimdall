@@ -65,10 +65,23 @@ type Mode =
   | "no_expires_in"
   | "unusable_expires_in"
   | "string_expires_in"
+  | "huge_expires_in"
+  | "huge_string_expires_in"
   | "hang";
 
 function expiresInFor(mode: Mode): unknown {
-  return mode === "unusable_expires_in" ? "soon" : mode === "string_expires_in" ? "7200" : 3600;
+  switch (mode) {
+    case "unusable_expires_in":
+      return "soon";
+    case "string_expires_in":
+      return "7200";
+    case "huge_expires_in":
+      return 3e11;
+    case "huge_string_expires_in":
+      return "300000000000";
+    default:
+      return 3600;
+  }
 }
 
 /**
@@ -122,7 +135,9 @@ function installTokenEndpoint(provider: Provider, firstRefreshToken: string) {
       case "normal":
       case "no_expires_in":
       case "unusable_expires_in":
-      case "string_expires_in": {
+      case "string_expires_in":
+      case "huge_expires_in":
+      case "huge_string_expires_in": {
         if (state.installationRevoked || presented !== state.live) {
           state.installationRevoked = true;
           return new Response(JSON.stringify({ error: "invalid_grant", error_description: "reused CANARY" }), { status: 400 });
@@ -487,6 +502,8 @@ for (const { kind, live } of rigKinds) describe.skipIf(live && !adminUrl)(`manag
       ["no expires_in", "no_expires_in", 3600],
       ["an unusable expires_in", "unusable_expires_in", 3600],
       ["a numeric-string expires_in", "string_expires_in", 7200],
+      ["a numeric expires_in beyond a year", "huge_expires_in", 3600],
+      ["a numeric-string expires_in beyond a year", "huge_string_expires_in", 3600],
     ] as const)(
       "refresh-once-per-token: an answer with %s stores now plus %s s, not the old due expiry, and resolve refreshes again only once it passes",
       timeout,

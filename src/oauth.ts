@@ -228,10 +228,19 @@ export async function requestProviderTokens(
   return tokenSet;
 }
 
-/** A positive finite number, or a string that is a positive integer. */
+/** The longest access token lifetime taken at its word: a year. Anything above is not a lifetime. */
+const MAX_USABLE_EXPIRES_IN_SECONDS = 365 * 24 * 60 * 60;
+
+/**
+ * A positive finite number of seconds, or a string that is a positive integer,
+ * no longer than a year. A larger value would overflow the Date the expiry is
+ * stored as, so it is unusable and the descriptor's default lifetime applies.
+ */
 function usableExpiresIn(value: unknown): number | undefined {
   const seconds = typeof value === "string" && /^\s*\d+\s*$/.test(value) ? Number(value) : value;
-  return typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0 ? seconds : undefined;
+  return typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0 && seconds <= MAX_USABLE_EXPIRES_IN_SECONDS
+    ? seconds
+    : undefined;
 }
 
 function sharedRuntimeExchange(provider: Provider): OAuthProviderRuntime["exchangeAuthorizationCode"] {
