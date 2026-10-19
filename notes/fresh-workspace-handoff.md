@@ -12,8 +12,7 @@ distilled `state/evidence.jsonl` ledger; the shared architecture belongs in
 From the repo root:
 
 ```powershell
-# This repo has no dedicated venv yet. Use any working Python 3.11+.
-E:\Projects\repixelizer\.venv\Scripts\python.exe .\tools\heimdall_state.py status
+python .\tools\heimdall_state.py status
 Get-Content '.\state\map.yaml'
 Get-Content '.\notes\fresh-workspace-handoff.md'
 Get-Content '.\docs\architecture.md'
