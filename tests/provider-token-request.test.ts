@@ -18,6 +18,7 @@ function configFor(): HeimdallConfig {
 
 interface Captured {
   url: string;
+  method: string | undefined;
   headers: Record<string, string>;
   body: URLSearchParams;
 }
@@ -27,6 +28,7 @@ function capture(answer: () => Response): { calls: Captured[] } {
   globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
     calls.push({
       url: String(input),
+      method: init?.method,
       headers: init?.headers as Record<string, string>,
       body: init?.body as URLSearchParams,
     });
@@ -58,6 +60,7 @@ describe("requestProviderTokens follows the provider descriptor", () => {
       expect(calls).toHaveLength(1);
       const call = calls[0]!;
       expect(call.url).toBe(descriptor.tokenEndpoint);
+      expect(call.method).toBe("POST");
       expect(call.headers["Content-Type"]).toBe("application/x-www-form-urlencoded");
       expect(call.headers.Accept).toBe("application/json");
       expect(call.body.get("grant_type")).toBe(grantType);
@@ -105,6 +108,51 @@ describe("requestProviderTokens follows the provider descriptor", () => {
     capture(() => new Response("nope", { status: 500 }));
     await expect(requestProviderTokens("youtube", configFor(), grant)).rejects.toThrow(
       `YouTube token ${word} failed (status 500, provider_status).`
+    );
+  });
+
+  it("passes the abort signal to the provider call", async () => {
+    let seen: AbortSignal | null | undefined;
+    globalThis.fetch = (async (_input: string | URL, init?: RequestInit) => {
+      seen = init?.signal;
+      return ok();
+    }) as typeof fetch;
+    const controller = new AbortController();
+    await requestProviderTokens("twitch", configFor(), { grant_type: "refresh_token", refresh_token: "r" }, controller.signal);
+    expect(seen).toBe(controller.signal);
+  });
+
+  it("keeps the provider's token type and defaults a missing one to Bearer", async () => {
+    capture(() => new Response(JSON.stringify({ access_token: "a", token_type: "bearer" }), { status: 200 }));
+    expect((await requestProviderTokens("twitch", configFor(), { grant_type: "refresh_token", refresh_token: "r" })).tokenType).toBe("bearer");
+    capture(() => new Response(JSON.stringify({ access_token: "a" }), { status: 200 }));
+    expect((await requestProviderTokens("twitch", configFor(), { grant_type: "refresh_token", refresh_token: "r" })).tokenType).toBe("Bearer");
+  });
+
+  it("trims scope entries and drops empty ones", async () => {
+    capture(() => new Response(JSON.stringify({ access_token: "a", scope: [" a ", "", "b"] }), { status: 200 }));
+    expect((await requestProviderTokens("twitch", configFor(), { grant_type: "refresh_token", refresh_token: "r" })).scope).toEqual(["a", "b"]);
+  });
+
+  it("treats an empty 2xx body as an empty answer, not a malformed one", async () => {
+    capture(() => new Response("", { status: 200 }));
+    const tokens = await requestProviderTokens("twitch", configFor(), { grant_type: "refresh_token", refresh_token: "r" });
+    expect(tokens.accessToken).toBeUndefined();
+  });
+
+  it("sets no refreshToken key when the provider sent none", async () => {
+    capture(() => new Response(JSON.stringify({ access_token: "a" }), { status: 200 }));
+    const tokens = await requestProviderTokens("twitch", configFor(), { grant_type: "refresh_token", refresh_token: "r" });
+    expect("refreshToken" in tokens).toBe(false);
+  });
+
+  it.each([
+    ["only the secret missing", { clientId: "id" }],
+    ["only the id missing", { clientSecret: "secret" }],
+  ])("refuses a provider with %s", async (_n, partial) => {
+    const config = { providers: { twitch: partial } } as unknown as HeimdallConfig;
+    await expect(requestProviderTokens("twitch", config, { grant_type: "refresh_token", refresh_token: "r" })).rejects.toThrow(
+      "Twitch OAuth is not fully configured."
     );
   });
 

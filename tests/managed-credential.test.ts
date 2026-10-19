@@ -125,6 +125,7 @@ interface Rig {
   custody: ReturnType<typeof createTokenCustody>;
   config: HeimdallConfig;
   provider: Provider;
+  databaseUrl: string | undefined;
   row(): Promise<StoredLinkedIdentity>;
   audit(): Promise<Array<{ eventType: string; payload: unknown }>>;
   resolve(appIndex?: number): Promise<{ statusCode: number; json: Record<string, unknown>; body: string }>;
@@ -179,6 +180,7 @@ for (const { kind, live } of rigKinds) describe.skipIf(live && !adminUrl)(`manag
     const custody = createTokenCustody(config);
     const stores: HeimdallStore[] = [];
     let adminForDb: Pool | undefined;
+    let databaseUrl: string | undefined;
     if (!live) {
       stores.push(new InMemoryStore());
     } else {
@@ -190,6 +192,7 @@ for (const { kind, live } of rigKinds) describe.skipIf(live && !adminUrl)(`manag
         pool.on("error", () => undefined);
         stores.push(new PostgresStore(pool));
       }
+      databaseUrl = urlFor(name);
       adminForDb = new Pool({ connectionString: urlFor(name), max: 1 });
       adminForDb.on("error", () => undefined);
       cleanup.push(async () => {
@@ -235,6 +238,7 @@ for (const { kind, live } of rigKinds) describe.skipIf(live && !adminUrl)(`manag
       custody,
       config,
       provider,
+      databaseUrl,
       async row() {
         const row = await stores[0]!.findStoredLinkedIdentityForAccount(account.id, provider);
         return row!;
@@ -504,6 +508,37 @@ for (const { kind, live } of rigKinds) describe.skipIf(live && !adminUrl)(`manag
       expect(await rig.row()).toEqual(revoked);
     });
 
+    it.runIf(live)("leaves no transaction open after a missing row or a throwing decide", timeout, async () => {
+      const rig = await makeRig("twitch");
+      const pool = new Pool({ connectionString: rig.databaseUrl, max: 1 });
+      pool.on("error", () => undefined);
+      try {
+        const store = new PostgresStore(pool);
+        const idle = async () => {
+          await sleep(10);
+          const result = await pool.query<{ fresh: boolean }>("SELECT now() = statement_timestamp() AS fresh");
+          return result.rows[0]!.fresh;
+        };
+        expect(await store.updateLinkedIdentityCredential(randomUUID(), async () => ({ kind: "keep" }))).toBeNull();
+        expect(await idle()).toBe(true);
+        await expect(
+          store.updateLinkedIdentityCredential(rig.identityId, async () => {
+            throw new Error("boom");
+          })
+        ).rejects.toThrow("boom");
+        expect(await idle()).toBe(true);
+      } finally {
+        await pool.end();
+      }
+    });
+
+    it.runIf(!live)("drops a drained row's chain entry", async () => {
+      const rig = await makeRig("twitch");
+      await Promise.all([1, 2, 3].map(() => rig.stores[0]!.updateLinkedIdentityCredential(rig.identityId, async () => ({ kind: "keep" }))));
+      await sleep(5);
+      expect((rig.stores[0] as unknown as { credentialChains: Map<string, unknown> }).credentialChains.size).toBe(0);
+    });
+
     it("serialises deciders on one row: each sees the previous commit", timeout, async () => {
       const rig = await makeRig("twitch");
       const order: string[] = [];
@@ -528,6 +563,142 @@ for (const { kind, live } of rigKinds) describe.skipIf(live && !adminUrl)(`manag
       const wrote = order.map((entry) => `A${entry.split(":")[0]}`);
       for (let i = 1; i < seenValues.length; i += 1) expect(seenValues[i]).toBe(wrote[i - 1]);
     });
+  });
+});
+
+describe("refreshManagedCredential without the lock", () => {
+  const config = testConfig();
+  const custody = createTokenCustody(config);
+  const now = Date.parse("2026-10-19T12:00:00.000Z");
+
+  function identity(overrides: Partial<StoredLinkedIdentity> = {}, provider: Provider = "twitch"): StoredLinkedIdentity {
+    return {
+      id: "id-1",
+      accountId: "acct-1",
+      provider,
+      providerUserId: "u1",
+      scopes: ["s"],
+      profileJson: {},
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      accessTokenEncrypted: custody.encrypt("access-0"),
+      refreshTokenEncrypted: custody.encrypt("refresh-0"),
+      tokenExpiresAt: new Date(now + 60 * 60 * 1000).toISOString(),
+      ...overrides,
+    };
+  }
+
+  function countingStore(locked: StoredLinkedIdentity | null) {
+    const log = { locks: 0, decisions: [] as unknown[], audits: [] as unknown[] };
+    const store = {
+      async updateLinkedIdentityCredential(_id: string, decide: (row: StoredLinkedIdentity) => Promise<unknown>) {
+        log.locks += 1;
+        if (locked === null) return null;
+        log.decisions.push(await decide(locked));
+        return locked;
+      },
+      async createAuditEvent(event: unknown) {
+        log.audits.push(event);
+      },
+    };
+    return { store: store as unknown as HeimdallStore, log };
+  }
+
+  const ctxFor = (store: HeimdallStore) => ({ config, store, tokenCustody: custody, oauthRuntimes: createOAuthRuntimeRegistry(), clock: () => now });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("a snapshot with no access token is revoked without a lock or a provider call", async () => {
+    const { store, log } = countingStore(null);
+    const endpoint = installTokenEndpoint("twitch", "refresh-0");
+    const outcome = await refreshManagedCredential(ctxFor(store), identity({ accessTokenEncrypted: undefined as never }));
+    expect(outcome.kind).toBe("revoked");
+    expect(log.locks).toBe(0);
+    expect(endpoint.calls).toBe(0);
+  });
+
+  it.each([
+    ["outside the skew", {}, "twitch"],
+    ["without an expiry", { tokenExpiresAt: undefined as never }, "twitch"],
+    ["without a refresh token", { refreshTokenEncrypted: undefined as never, tokenExpiresAt: new Date(now).toISOString() }, "twitch"],
+    ["for a provider whose runtime cannot refresh", { tokenExpiresAt: new Date(now).toISOString() }, "github"],
+  ] as const)("a credential %s is current with no lock and no provider call", async (_name, overrides, provider) => {
+    const { store, log } = countingStore(null);
+    const endpoint = installTokenEndpoint("twitch", "refresh-0");
+    const snapshot = identity(overrides as Partial<StoredLinkedIdentity>, provider);
+    const outcome = await refreshManagedCredential(ctxFor(store), snapshot);
+    expect(outcome).toEqual({ kind: "current", identity: snapshot });
+    expect(log.locks).toBe(0);
+    expect(endpoint.calls).toBe(0);
+  });
+
+  it("an expiry exactly one skew away is due; one millisecond further is not", async () => {
+    const due = identity({ tokenExpiresAt: new Date(now + MANAGED_CREDENTIAL_REFRESH_SKEW_MS).toISOString() });
+    const notDue = identity({ tokenExpiresAt: new Date(now + MANAGED_CREDENTIAL_REFRESH_SKEW_MS + 1).toISOString() });
+    const a = countingStore(due);
+    installTokenEndpoint("twitch", "refresh-0");
+    await refreshManagedCredential(ctxFor(a.store), due);
+    expect(a.log.locks).toBe(1);
+    const b = countingStore(notDue);
+    await refreshManagedCredential(ctxFor(b.store), notDue);
+    expect(b.log.locks).toBe(0);
+  });
+
+  it("decides revoke for a grant verdict and for a missing rotated token, rotate otherwise", async () => {
+    const due = identity({ tokenExpiresAt: new Date(now).toISOString() });
+    const grant = countingStore(due);
+    installTokenEndpoint("twitch", "refresh-0").mode = "invalid_grant";
+    await refreshManagedCredential(ctxFor(grant.store), due);
+    expect(grant.log.decisions).toEqual([{ kind: "revoke", updatedAt: new Date(now).toISOString() }]);
+    expect(grant.log.audits).toEqual([
+      expect.objectContaining({ eventType: "managed_credential_revoked", eventPayloadJson: { provider: "twitch", reason: "provider_revoked" } }),
+    ]);
+
+    const rotating = identity({ tokenExpiresAt: new Date(now).toISOString() }, "joystick");
+    const missing = countingStore(rotating);
+    installTokenEndpoint("joystick", "refresh-0").mode = "no_refresh_token";
+    await refreshManagedCredential(ctxFor(missing.store), rotating);
+    expect(missing.log.decisions).toEqual([{ kind: "revoke", updatedAt: new Date(now).toISOString() }]);
+
+    const fine = countingStore(due);
+    installTokenEndpoint("twitch", "refresh-0");
+    await refreshManagedCredential(ctxFor(fine.store), due);
+    expect(fine.log.decisions).toEqual([expect.objectContaining({ kind: "rotate", refreshTokenEncrypted: expect.any(String), scopes: ["s"] })]);
+    expect(fine.log.audits).toEqual([]);
+  });
+
+  it("a row that vanished is revoked with its tokens cleared", async () => {
+    const due = identity({ tokenExpiresAt: new Date(now).toISOString() });
+    const { store } = countingStore(null);
+    installTokenEndpoint("twitch", "refresh-0");
+    const outcome = await refreshManagedCredential(ctxFor(store), due);
+    expect(outcome.kind).toBe("revoked");
+    expect(outcome.identity.accessTokenEncrypted).toBeUndefined();
+    expect(outcome.identity.refreshTokenEncrypted).toBeUndefined();
+    expect(outcome.identity.tokenExpiresAt).toBeUndefined();
+    expect(outcome.identity.providerUserId).toBe("u1");
+  });
+
+  it("a row revoked by someone else between the snapshot and the lock is revoked, with no provider call", async () => {
+    const due = identity({ tokenExpiresAt: new Date(now).toISOString() });
+    const gone = identity({ accessTokenEncrypted: undefined as never, refreshTokenEncrypted: undefined as never, tokenExpiresAt: undefined as never });
+    const { store } = countingStore(gone);
+    const endpoint = installTokenEndpoint("twitch", "refresh-0");
+    const outcome = await refreshManagedCredential(ctxFor(store), due);
+    expect(outcome.kind).toBe("revoked");
+    expect(endpoint.calls).toBe(0);
+  });
+
+  it("names the provider in the failure and carries nothing the provider said", async () => {
+    const due = identity({ tokenExpiresAt: new Date(now).toISOString() });
+    const { store } = countingStore(due);
+    installTokenEndpoint("twitch", "refresh-0").mode = "server_error";
+    const failure = await refreshManagedCredential(ctxFor(store), due).catch((error: unknown) => error as ManagedCredentialRefreshFailed);
+    expect(failure).toBeInstanceOf(ManagedCredentialRefreshFailed);
+    expect((failure as Error).message).toBe("Twitch managed credential refresh failed.");
+    expect((failure as ManagedCredentialRefreshFailed).code).toBe("managed_credential_refresh_failed");
   });
 });
 
