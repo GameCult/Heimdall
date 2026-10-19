@@ -173,7 +173,7 @@ Failure modes:
 Launch note:
 
 - Discord and Patreon are the implemented provider runtimes for Repixelizer
-- Twitch and YouTube now have generic OAuth exchange and identity runtimes for
+- Twitch, YouTube and Joystick have generic OAuth exchange and identity runtimes for
   StreamPixels viewer auth and managed creator connections
 - GitHub is still catalogued for start URLs, but its callback runtime is not
   implemented yet
