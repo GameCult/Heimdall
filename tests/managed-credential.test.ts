@@ -608,6 +608,7 @@ for (const { kind, live } of rigKinds) describe.skipIf(live && !adminUrl)(`manag
       for (const payload of [callback.json(), redeem.json()] as Array<Record<string, any>>) {
         expect(payload.claimSet.capabilities).toContain("viewer_access");
         expect(payload.refreshToken).toEqual(expect.any(String));
+        expect(payload.hybridCapabilities.map((c: { key: string }) => c.key)).toEqual(["creator_access", "creator_admin"]);
       }
     });
 
