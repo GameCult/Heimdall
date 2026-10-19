@@ -532,6 +532,23 @@ for (const { kind, live } of rigKinds) describe.skipIf(live && !adminUrl)(`manag
       }
     });
 
+    it.runIf(!live)("a decider arriving after the first drains still waits for the one queued behind it", async () => {
+      const rig = await makeRig("twitch");
+      const events: string[] = [];
+      const decider = (name: string, ms: number) => async (locked: StoredLinkedIdentity) => {
+        events.push(`start ${name}`);
+        await sleep(ms);
+        events.push(`end ${name}`);
+        return { kind: "keep" as const, seen: locked };
+      };
+      const a = rig.stores[0]!.updateLinkedIdentityCredential(rig.identityId, decider("A", 20));
+      const b = rig.stores[0]!.updateLinkedIdentityCredential(rig.identityId, decider("B", 120));
+      await a;
+      const c = rig.stores[0]!.updateLinkedIdentityCredential(rig.identityId, decider("C", 1));
+      await Promise.all([b, c]);
+      expect(events).toEqual(["start A", "end A", "start B", "end B", "start C", "end C"]);
+    });
+
     it.runIf(!live)("drops a drained row's chain entry", async () => {
       const rig = await makeRig("twitch");
       await Promise.all([1, 2, 3].map(() => rig.stores[0]!.updateLinkedIdentityCredential(rig.identityId, async () => ({ kind: "keep" }))));
