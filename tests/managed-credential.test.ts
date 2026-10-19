@@ -561,12 +561,12 @@ for (const { kind, live } of rigKinds) describe.skipIf(live && !adminUrl)(`manag
   describe("what the callback mints is decided by mode and provider role", () => {
     const returnTo = "https://streampixels.gamecult.org/auth/connect";
 
-    function stubProviders(identity: Record<string, string>) {
+    function stubProviders(identity: Record<string, string>, tokenAnswer: Record<string, unknown> = { refresh_token: "tok-refresh-CANARY" }) {
       globalThis.fetch = (async (input: string | URL) => {
         const url = String(input);
         const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
         if (url.startsWith("https://api.joystick.tv/api/oauth/token") || Object.values(providerCatalog).some((d) => d.tokenEndpoint === url)) {
-          return json({ access_token: "tok-access", refresh_token: "tok-refresh-CANARY", token_type: "Bearer", expires_in: 3600 });
+          return json({ access_token: "tok-access", token_type: "Bearer", expires_in: 3600, ...tokenAnswer });
         }
         if (url === "https://api.joystick.tv/api/v1/me/identity") return json({ channel_id: identity.joystick, username: "deru" });
         if (url === "https://api.twitch.tv/helix/users") return json({ data: [{ id: identity.twitch, login: "deru", display_name: "Deru" }] });
@@ -616,6 +616,35 @@ for (const { kind, live } of rigKinds) describe.skipIf(live && !adminUrl)(`manag
       const row = await rig.row();
       expect(rig.custody.decrypt(row.accessTokenEncrypted!)).toBe("tok-access");
       expect(rig.custody.decrypt(row.refreshTokenEncrypted!)).toBe("tok-refresh-CANARY");
+    });
+
+    it.each([
+      ["no refresh_token", {}],
+      ["an empty refresh_token", { refresh_token: "" }],
+    ])("a rotating provider's code exchange with %s fails the callback before anything is written", timeout, async (_name, tokenAnswer) => {
+      const rig = await makeRig("joystick");
+      const before = await rig.row();
+      const auditBefore = (await rig.audit()).length;
+      stubProviders({ joystick: "channel-new", twitch: "t-1", youtube: "y-1" }, tokenAnswer);
+      const app = rig.apps[0]!;
+      const start = await app.inject({
+        method: "POST",
+        url: "/v1/oauth/joystick/start",
+        payload: { appSlug: "streampixels", mode: "connect", returnTo, connection: { kind: "creator", targetId: "creator-1" } },
+      });
+      expect(start.statusCode).toBe(201);
+      const callback = await app.inject({
+        method: "GET",
+        url: `/v1/oauth/joystick/callback?code=c&state=${encodeURIComponent(start.json().stateToken as string)}`,
+      });
+      expect(callback.statusCode).toBeGreaterThanOrEqual(400);
+      expect(callback.body).not.toContain("tok-access");
+      expect(await rig.row()).toEqual(before);
+      expect(await rig.stores[0]!.findStoredLinkedIdentity("joystick", "channel-new")).toBeNull();
+      const failures = (await rig.audit()).slice(auditBefore);
+      expect(failures).toEqual([
+        { eventType: "oauth_callback_failed", payload: expect.objectContaining({ errorClass: "ProviderResponseError", providerStatus: 200 }) },
+      ]);
     });
 
     it.each(["twitch", "youtube"] as const)("a %s sign_in on streampixels still yields viewer_access and a refresh token", timeout, async (provider) => {

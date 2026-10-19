@@ -68,8 +68,10 @@ function withoutTokens(identity: StoredLinkedIdentity): StoredLinkedIdentity {
  * attempt is in flight join it and receive its outcome, success or failure.
  * The entry lives exactly as long as the attempt: a later request retries.
  *
- * Accepted residual risk (docs/service-contract.md): one presentation per
- * process per burst, so N processes may present one token N times.
+ * Known residual risk (docs/service-contract.md): one presentation per
+ * process per burst, so N processes may present one token N times. The
+ * cross-process failed-refresh marker that would close it is
+ * joystick:follow_up:cross-process-failed-refresh-marker.
  */
 const refreshesInFlight = new WeakMap<HeimdallStore, Map<string, Promise<ManagedCredentialOutcome>>>();
 

@@ -244,12 +244,20 @@ function usableExpiresIn(value: unknown): number | undefined {
 }
 
 function sharedRuntimeExchange(provider: Provider): OAuthProviderRuntime["exchangeAuthorizationCode"] {
-  return (options) =>
-    requestProviderTokens(provider, options.config, {
+  return async (options) => {
+    const tokenSet = await requestProviderTokens(provider, options.config, {
       grant_type: "authorization_code",
       code: options.code,
       redirect_uri: options.redirectUri,
     });
+    // A rotating provider's refresh token is the only way back to the
+    // credential: a grant that arrives without one would be stored as a row
+    // the first refresh revokes, so the callback fails before it writes.
+    if (providerCatalog[provider].rotatesRefreshTokens && !tokenSet.refreshToken) {
+      throw new ProviderResponseError(200, "provider_body_not_token_set", `${providerCatalog[provider].displayName} token exchange failed`);
+    }
+    return tokenSet;
+  };
 }
 
 function sharedRuntimeRefresh(provider: Provider): NonNullable<OAuthProviderRuntime["refreshAccessToken"]> {
