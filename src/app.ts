@@ -23,7 +23,7 @@ import {
   type Provider,
 } from "./contracts.js";
 import { issueAccessClaim, type IssueAccessClaimInput } from "./claims.js";
-import { builtInAppProfiles, getAppProfile, isAllowedReturnOrigin, serializeAppProfile, admitsProviderForMode } from "./app-profiles.js";
+import { builtInAppProfiles, getAppProfile, isAllowedReturnOrigin, serializeAppProfile, admitsProviderForMode, callbackMint } from "./app-profiles.js";
 import { renderBrowserHandoffPage } from "./browser-handoff.js";
 import { type HeimdallConfig, loadConfig } from "./config.js";
 import { createTokenCustody, type TokenCustody } from "./custody.js";
@@ -1008,6 +1008,11 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       const runtime = oauthRuntimes[request.params.provider];
 
       try {
+        const callbackProfile = getAppProfile(statePayload.app_slug);
+        const mint = callbackProfile ? callbackMint(callbackProfile, request.params.provider, statePayload.mode) : "refused";
+        if (mint === "refused") {
+          throw new Error("The signed state names a mode the provider has no role for in this app.");
+        }
         const tokenSet = await runtime.exchangeAuthorizationCode({
           config,
           code: request.query.code,
@@ -1093,6 +1098,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           accountId: account.id,
           linkedIdentities: await store.listLinkedIdentitiesForAccount(account.id),
           facts: [...entitlementEvaluation.facts, ...buildGrantFacts(grants)],
+          ...(mint === "custody_only" ? { withoutCapabilities: true } : {}),
         };
         if (account.displayName !== undefined) {
           issueInput.displayName = account.displayName;
@@ -1104,6 +1110,14 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           store,
           input: issueInput,
         });
+        // A custody-only completion carries no refresh token: the refresh
+        // route recomputes capabilities from the account's facts, so one
+        // would turn the capability-free session into a viewer session.
+        const { refreshToken: issuedRefreshToken, refresh: issuedRefresh, ...issuedWithoutRefresh } = issued;
+        const delivered =
+          mint === "custody_only"
+            ? issuedWithoutRefresh
+            : { ...issuedWithoutRefresh, refreshToken: issuedRefreshToken, refresh: issuedRefresh };
 
         await store.createAuditEvent({
           accountId: account.id,
@@ -1143,7 +1157,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           entitlements: entitlementEvaluation,
           returnTo: statePayload.return_to,
           connection: statePayload.connection,
-          ...issued,
+          ...delivered,
         };
         if (handoff.kind === "backend_callback") {
           await maybeDeliverBackendHandoff(handoff, {
@@ -1159,7 +1173,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
             connection: statePayload.connection,
             account: accountSummary,
             entitlements: entitlementEvaluation,
-            ...issued,
+            ...delivered,
           });
 
           await store.createAuditEvent({

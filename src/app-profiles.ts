@@ -250,3 +250,22 @@ export function isAllowedReturnOrigin(profile: AppProfile, returnTo: string): bo
     return false;
   }
 }
+
+/**
+ * What a completed OAuth callback may mint, decided at the callback from the
+ * signed state's mode and the provider's role in the profile (the start gate
+ * is only an early refusal). `viewer_session`: the provider is one of the
+ * profile's `identityProviders`, so the completion signs the account in with
+ * the profile's capabilities. `custody_only`: a `connect` for a provider that
+ * is only a managed connection (Joystick on StreamPixels) stores the creator
+ * credential and mints a claim with no capabilities and no refresh token.
+ * `refused`: any other combination, which the start gate never admits.
+ */
+export type CallbackMint = "viewer_session" | "custody_only" | "refused";
+
+export function callbackMint(profile: AppProfile, provider: Provider, mode: OAuthMode): CallbackMint {
+  if (profile.identityProviders.includes(provider)) {
+    return "viewer_session";
+  }
+  return mode === "connect" && profile.managedConnectionProviders.includes(provider) ? "custody_only" : "refused";
+}

@@ -2,7 +2,7 @@ import { inspect } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { type FastifyInstance } from "fastify";
 import { buildApp, errorIdentity } from "../src/app.js";
-import { builtInAppProfiles } from "../src/app-profiles.js";
+import { builtInAppProfiles, callbackMint } from "../src/app-profiles.js";
 import { deliverBackendHandoff, type BackendHandoffPayload } from "../src/backend-handoff.js";
 import { type HeimdallConfig, loadConfig } from "../src/config.js";
 import { entitlementFacts, identityFacts } from "../src/facts.js";
@@ -2046,5 +2046,26 @@ describe("OAuth start admits a provider by the profile's role for the mode", () 
     } finally {
       await app.close();
     }
+  });
+});
+
+describe("callbackMint", () => {
+  const streampixels = builtInAppProfiles.streampixels!;
+  it.each([
+    ["twitch", "sign_in", "viewer_session"],
+    ["twitch", "link", "viewer_session"],
+    ["youtube", "sign_in", "viewer_session"],
+    ["twitch", "connect", "viewer_session"],
+    ["joystick", "connect", "custody_only"],
+    ["joystick", "sign_in", "refused"],
+    ["joystick", "link", "refused"],
+    ["discord", "connect", "refused"],
+    ["discord", "sign_in", "refused"],
+  ] as const)("%s %s on streampixels is %s", (provider, mode, expected) => {
+    expect(callbackMint(streampixels, provider, mode)).toBe(expected);
+  });
+
+  it("keeps Bifrost's discord connect a viewer session", () => {
+    expect(callbackMint(builtInAppProfiles.bifrost!, "discord", "connect")).toBe("viewer_session");
   });
 });

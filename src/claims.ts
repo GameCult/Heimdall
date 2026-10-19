@@ -39,6 +39,12 @@ export interface IssueAccessClaimInput {
   displayName?: string;
   linkedIdentities: LinkedIdentityInput[];
   facts: string[];
+  /**
+   * The claim names the account and its identities and carries no facts and
+   * no capabilities (a managed-credential connect for a provider that is not
+   * an identity provider). The facts are not even `identity.authenticated`.
+   */
+  withoutCapabilities?: boolean;
   sessionId?: string;
   accessRevision?: number;
   ttlSeconds?: number;
@@ -80,13 +86,17 @@ export async function issueAccessClaim(options: {
     // would name an app no verifier can resolve a profile for.
     throw new Error(`Cannot issue an access claim for unknown app '${options.input.appSlug}'.`);
   }
-  const facts = normalizeFacts(options.input.accountId, options.input.linkedIdentities, options.input.facts);
-  const factSet = new Set(facts);
-  const sharedCapabilities = evaluateSharedCapabilities(profile, {
-    accountId: options.input.accountId,
-    facts: factSet,
-    identities: options.input.linkedIdentities,
-  });
+  const withoutCapabilities = options.input.withoutCapabilities === true;
+  const facts = withoutCapabilities
+    ? []
+    : normalizeFacts(options.input.accountId, options.input.linkedIdentities, options.input.facts);
+  const sharedCapabilities = withoutCapabilities
+    ? []
+    : evaluateSharedCapabilities(profile, {
+        accountId: options.input.accountId,
+        facts: new Set(facts),
+        identities: options.input.linkedIdentities,
+      });
 
   const issuedAt = nowEpochSeconds();
   const ttlSeconds = clampTtlSeconds(
@@ -176,6 +186,8 @@ export async function issueAccessClaim(options: {
       kid: options.keys.kid,
     },
     sharedCapabilities,
-    hybridCapabilities: profile.capabilities.filter((capability) => capability.mode === "hybrid"),
+    hybridCapabilities: withoutCapabilities
+      ? []
+      : profile.capabilities.filter((capability) => capability.mode === "hybrid"),
   };
 }
