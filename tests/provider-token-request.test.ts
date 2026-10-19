@@ -134,10 +134,26 @@ describe("requestProviderTokens follows the provider descriptor", () => {
     expect((await requestProviderTokens("twitch", configFor(), { grant_type: "refresh_token", refresh_token: "r" })).scope).toEqual(["a", "b"]);
   });
 
-  it("treats an empty 2xx body as an empty answer, not a malformed one", async () => {
-    capture(() => new Response("", { status: 200 }));
-    const tokens = await requestProviderTokens("twitch", configFor(), { grant_type: "refresh_token", refresh_token: "r" });
-    expect(tokens.accessToken).toBeUndefined();
+  it.each([
+    ["an empty body", ""],
+    ["an empty object", "{}"],
+    ["JSON null", "null"],
+    ["a JSON array", "[]"],
+    ["an error beside an access token", JSON.stringify({ access_token: "a", error: "invalid_grant" })],
+    ["an empty access token", JSON.stringify({ access_token: "" })],
+    ["a numeric access token", JSON.stringify({ access_token: 5 })],
+  ])("refuses a 2xx with %s as not a token set, carrying nothing of the body", async (_name, body) => {
+    capture(() => new Response(body, { status: 200 }));
+    const error = await requestProviderTokens("twitch", configFor(), { grant_type: "refresh_token", refresh_token: "r" }).then(
+      () => {
+        throw new Error("expected a refusal");
+      },
+      (e: unknown) => e as Error & { code?: string; status?: number; oauthError?: unknown }
+    );
+    expect(error.name).toBe("ProviderResponseError");
+    expect(error.code).toBe("provider_body_not_token_set");
+    expect(error.status).toBe(200);
+    expect(error.oauthError).toBeUndefined();
   });
 
   it("sets no refreshToken key when the provider sent none", async () => {
@@ -181,6 +197,19 @@ describe("oauthError is a closed set", () => {
     expect(error.oauthError).toBe("invalid_grant");
     expect(`${error.message} ${error.stack} ${inspect(error, { depth: 5, showHidden: true })} ${JSON.stringify(error)}`).not.toContain("CANARY");
   });
+
+  it.each([401, 403, 429, 500, 502, 503])("takes no oauthError from a %i, whatever its body says", async (status) => {
+    const error = await failure(JSON.stringify({ error: "invalid_grant" }), status);
+    expect(error.oauthError).toBeUndefined();
+  });
+
+  it.each(["invalid_grant_extra", "not_invalid_grant", "INVALID_GRANT", " invalid_grant", "invalid_grant "])(
+    "takes the code by exact match only: %j is no code",
+    async (code) => {
+      const error = await failure(JSON.stringify({ error: code }));
+      expect(error.oauthError).toBeUndefined();
+    }
+  );
 
   it.each([
     ["an error outside the RFC set", JSON.stringify({ error: "CANARY_unknown" })],

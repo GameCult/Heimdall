@@ -719,6 +719,152 @@ describe("refreshManagedCredential without the lock", () => {
   });
 });
 
+describe("refresh answer classification", () => {
+  const config = testConfig();
+  const custody = createTokenCustody(config);
+  const now = Date.parse("2026-10-19T12:00:00.000Z");
+  const dueAt = new Date(now).toISOString();
+
+  async function seedRow(store: InMemoryStore, provider: Provider) {
+    const created = new Date(now).toISOString();
+    const account = await store.createAccount({ createdAt: created, lastSeenAt: created });
+    return store.upsertLinkedIdentity({
+      accountId: account.id,
+      provider,
+      providerUserId: `u-${randomUUID()}`,
+      scopes: ["s"],
+      profileJson: {},
+      accessTokenEncrypted: custody.encrypt("access-0"),
+      refreshTokenEncrypted: custody.encrypt("refresh-0"),
+      tokenExpiresAt: dueAt,
+      createdAt: created,
+      updatedAt: created,
+    });
+  }
+
+  const ctxFor = (store: HeimdallStore, extra: { timeoutMs?: number } = {}) => ({
+    config,
+    store,
+    tokenCustody: custody,
+    oauthRuntimes: createOAuthRuntimeRegistry(),
+    clock: () => now,
+    ...extra,
+  });
+
+  function answer(body: string, status: number) {
+    const calls: string[] = [];
+    globalThis.fetch = (async (_input: string | URL, init?: RequestInit) => {
+      calls.push(String((init!.body as URLSearchParams).get("refresh_token")));
+      return new Response(body, { status });
+    }) as typeof fetch;
+    return calls;
+  }
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const grantVerdict = JSON.stringify({ error: "invalid_grant" });
+  const keepsTokens: Array<[string, string, number]> = [
+    ["an error code that only contains invalid_grant", JSON.stringify({ error: "invalid_grant_extra" }), 400],
+    ["an error code that is contained in a longer one", JSON.stringify({ error: "not_invalid_grant" }), 400],
+    ["a different error code", JSON.stringify({ error: "invalid_request" }), 400],
+    ["a 401 carrying invalid_grant", grantVerdict, 401],
+    ["a 500 carrying invalid_grant", grantVerdict, 500],
+    ["a 503 carrying invalid_grant", grantVerdict, 503],
+    ["a 2xx carrying invalid_grant", grantVerdict, 200],
+    ["a 2xx carrying an error beside an access token", JSON.stringify({ access_token: "a", error: "server_error" }), 200],
+    ["a 2xx with an empty object", "{}", 200],
+    ["a 2xx with an empty body", "", 200],
+    ["a 2xx with JSON null", "null", 200],
+    ["a 2xx with a JSON array", "[]", 200],
+    ["a 2xx with a non-string access token", JSON.stringify({ access_token: 7, refresh_token: "r" }), 200],
+    ["a 2xx with an empty access token", JSON.stringify({ access_token: "", refresh_token: "r" }), 200],
+    ["a 2xx that is not JSON", "<html>", 200],
+    ["a 5xx page", "upstream exploded", 502],
+  ];
+
+  describe.each(["twitch", "joystick"] as const)("%s", (provider) => {
+    it.each(keepsTokens)("keeps the tokens and fails typed for %s", async (_name, body, status) => {
+      const store = new InMemoryStore();
+      const row = await seedRow(store, provider);
+      const calls = answer(body, status);
+      await expect(refreshManagedCredential(ctxFor(store), row)).rejects.toBeInstanceOf(ManagedCredentialRefreshFailed);
+      expect(calls).toEqual(["refresh-0"]);
+      const after = (await store.findStoredLinkedIdentity(provider, row.providerUserId))!;
+      expect(after.accessTokenEncrypted).toBe(row.accessTokenEncrypted);
+      expect(after.refreshTokenEncrypted).toBe(row.refreshTokenEncrypted);
+      expect(after.tokenExpiresAt).toBe(dueAt);
+    });
+
+    it("keeps the tokens and fails typed when the provider never answers", async () => {
+      const store = new InMemoryStore();
+      const row = await seedRow(store, provider);
+      globalThis.fetch = ((_input: string | URL, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init!.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+        })) as typeof fetch;
+      await expect(refreshManagedCredential(ctxFor(store, { timeoutMs: 30 }), row)).rejects.toBeInstanceOf(ManagedCredentialRefreshFailed);
+      const after = (await store.findStoredLinkedIdentity(provider, row.providerUserId))!;
+      expect(after.refreshTokenEncrypted).toBe(row.refreshTokenEncrypted);
+    });
+
+    it("revokes and clears the tokens on a 400 whose error is exactly invalid_grant", async () => {
+      const store = new InMemoryStore();
+      const row = await seedRow(store, provider);
+      answer(grantVerdict, 400);
+      const outcome = await refreshManagedCredential(ctxFor(store), row);
+      expect(outcome.kind).toBe("revoked");
+      const after = (await store.findStoredLinkedIdentity(provider, row.providerUserId))!;
+      expect(after.accessTokenEncrypted).toBeUndefined();
+      expect(after.refreshTokenEncrypted).toBeUndefined();
+    });
+  });
+
+  it("a rotating provider's well-formed answer without a refresh token still revokes (rotation_missing)", async () => {
+    const store = new InMemoryStore();
+    const row = await seedRow(store, "joystick");
+    answer(JSON.stringify({ access_token: "a", expires_in: 3600 }), 200);
+    expect((await refreshManagedCredential(ctxFor(store), row)).kind).toBe("revoked");
+    expect((await store.findStoredLinkedIdentity("joystick", row.providerUserId))!.refreshTokenEncrypted).toBeUndefined();
+  });
+
+  it("an answer without expires_in stores the expiry as unknown, and the next resolve does not refresh again", async () => {
+    const store = new InMemoryStore();
+    const row = await seedRow(store, "twitch");
+    const calls = answer(JSON.stringify({ access_token: "access-1", refresh_token: "refresh-1" }), 200);
+    const first = await refreshManagedCredential(ctxFor(store), row);
+    expect(first.kind).toBe("current");
+    expect(first.identity.tokenExpiresAt).toBeUndefined();
+    const stored = (await store.findStoredLinkedIdentity("twitch", row.providerUserId))!;
+    expect(stored.tokenExpiresAt).toBeUndefined();
+    expect(custody.decrypt(stored.accessTokenEncrypted!)).toBe("access-1");
+
+    await refreshManagedCredential(ctxFor(store), stored);
+    expect(calls).toEqual(["refresh-0"]);
+  });
+
+  it("a non-rotating provider keeps the locked row's refresh token, not the snapshot's", async () => {
+    const store = new InMemoryStore();
+    const snapshot = await seedRow(store, "twitch");
+    // Another caller rotated the pair after the snapshot; its expiry is still due.
+    await store.updateLinkedIdentityCredential(snapshot.id, async () => ({
+      kind: "rotate",
+      accessTokenEncrypted: custody.encrypt("access-1"),
+      refreshTokenEncrypted: custody.encrypt("refresh-1"),
+      tokenExpiresAt: dueAt,
+      scopes: ["s"],
+      updatedAt: dueAt,
+    }));
+    const calls = answer(JSON.stringify({ access_token: "access-2", expires_in: 3600 }), 200);
+    await refreshManagedCredential(ctxFor(store), snapshot);
+    expect(calls).toEqual(["refresh-1"]);
+    const after = (await store.findStoredLinkedIdentity("twitch", snapshot.providerUserId))!;
+    expect(custody.decrypt(after.refreshTokenEncrypted!)).toBe("refresh-1");
+    expect(custody.decrypt(after.accessTokenEncrypted!)).toBe("access-2");
+  });
+});
+
 describe("live Postgres availability", () => {
   it.skipIf(!!adminUrl)("is present whenever the job requires it", () => {
     // Local workstation runs skip the live suites; the verification job sets

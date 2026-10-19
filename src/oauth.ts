@@ -89,7 +89,7 @@ function readOAuthErrorCode(text: string): OAuthErrorCode | undefined {
  */
 export class ProviderResponseError extends Error {
   readonly status: number;
-  readonly code: "provider_status" | "provider_body_not_json";
+  readonly code: "provider_status" | "provider_body_not_json" | "provider_body_not_token_set";
   /**
    * The RFC 6749 section 5.2 error code of a refusal, when the provider sent
    * one from that closed set. The only value taken from a provider's body.
@@ -109,7 +109,14 @@ export class ProviderResponseError extends Error {
 async function readProviderJson<T>(response: Response, failure: string): Promise<T> {
   const text = await response.text();
   if (!response.ok) {
-    throw new ProviderResponseError(response.status, "provider_status", failure, readOAuthErrorCode(text));
+    // RFC 6749 section 5.2 sends a grant verdict as 400 only. The same JSON
+    // behind a 401, a 5xx or a gateway page is not one.
+    throw new ProviderResponseError(
+      response.status,
+      "provider_status",
+      failure,
+      response.status === 400 ? readOAuthErrorCode(text) : undefined
+    );
   }
   if (!text) {
     return {} as T;
@@ -173,13 +180,28 @@ export async function requestProviderTokens(
     init.signal = signal;
   }
   const label = grant.grant_type === "refresh_token" ? "refresh" : "exchange";
-  const tokenResponse = await fetchJson<{
+  const failure = `${descriptor.displayName} token ${label} failed`;
+  const response = await fetch(descriptor.tokenEndpoint, init);
+  const answer = await readProviderJson<unknown>(response, failure);
+  // A 2xx is a token set only when it is an object holding a string access
+  // token and no error.
+  if (
+    typeof answer !== "object" ||
+    answer === null ||
+    Array.isArray(answer) ||
+    typeof (answer as { access_token?: unknown }).access_token !== "string" ||
+    !(answer as { access_token: string }).access_token ||
+    (answer as { error?: unknown }).error !== undefined
+  ) {
+    throw new ProviderResponseError(response.status, "provider_body_not_token_set", failure);
+  }
+  const tokenResponse = answer as {
     access_token: string;
     refresh_token?: string;
     token_type?: string;
     expires_in?: number;
     scope?: string | string[];
-  }>(descriptor.tokenEndpoint, init, `${descriptor.displayName} token ${label} failed`);
+  };
 
   const tokenSet: OAuthTokenSet = {
     accessToken: tokenResponse.access_token,

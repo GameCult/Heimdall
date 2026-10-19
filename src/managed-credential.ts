@@ -113,7 +113,10 @@ export async function refreshManagedCredential(
       refreshTokenEncrypted = locked.refreshTokenEncrypted!;
     }
 
-    const tokenExpiresAt = refreshed.expiresAt ?? locked.tokenExpiresAt;
+    // An answer without expires_in leaves the expiry unknown. The old expiry is
+    // already due, so keeping it would refresh again on every resolve; an
+    // unknown expiry is never due (dueForRefresh).
+    const tokenExpiresAt = refreshed.expiresAt;
     return {
       kind: "rotate",
       accessTokenEncrypted: ctx.tokenCustody.encrypt(refreshed.accessToken),

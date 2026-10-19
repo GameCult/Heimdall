@@ -495,14 +495,18 @@ Important behavior:
   response without a new refresh token revokes the credential instead of
   keeping the old token
 - `410 {"error":"managed_credential_revoked","provider":...}`: the provider
-  rejected the grant (`invalid_grant`), or the identity holds no access token.
+  rejected the grant (HTTP 400 whose OAuth `error` is exactly `invalid_grant`),
+  or the identity holds no access token.
   The stored tokens are cleared and an audit event `managed_credential_revoked`
   is written; the owner must reconnect. `404 managed_credential_not_found`
   means no linked identity exists
 - `502 {"error":"managed_credential_refresh_failed","provider":...}`: the
   refresh failed for any reason that is not a grant verdict (invalid client,
-  provider 5xx, timeout, malformed body). Stored tokens are untouched and a
-  later request may succeed
+  a 401 or 5xx whatever its body says, timeout, a 2xx without a string
+  `access_token` or carrying an `error`, an empty or non-JSON body). Stored
+  tokens are untouched and a later request may succeed. An answer without
+  `expires_in` stores the expiry as unknown, and an unknown expiry is never
+  due, so it does not trigger another refresh
 - app-local binding, diagnostics, subscription setup, and runtime behavior stay
   app-owned
 
