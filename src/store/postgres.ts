@@ -184,7 +184,8 @@ function mapLinkedIdentityRow(row: LinkedIdentityRow): StoredLinkedIdentity {
   }
 
   if (row.token_expires_at) {
-    identity.tokenExpiresAt = row.token_expires_at;
+    // pg hands back a Date for TIMESTAMPTZ whatever the row type says; the port promises an ISO string.
+    identity.tokenExpiresAt = new Date(row.token_expires_at).toISOString();
   }
 
   return identity;
