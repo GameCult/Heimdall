@@ -20,7 +20,11 @@ Corroborated by `gamecult-ops/nginx/streampixels.gamecult.org.conf:14`
 The current StreamPixels architecture already makes useful splits:
 
 - the web app owns the remembered viewer session
-- the service owns provider OAuth exchange and identity resolution
+- Heimdall owns provider OAuth exchange, identity resolution and refresh-token
+  custody for Twitch, YouTube and Joystick; StreamPixels never calls a provider
+  token endpoint and holds no provider refresh token. It asks Heimdall for a
+  short-lived access token (`managed-credentials/resolve`) and treats `410
+  managed_credential_revoked` as "the creator must reconnect"
 - the overlay remains auth-free
 - creator memberships and operator roles are separate from general viewer state
 
@@ -38,7 +42,7 @@ In the service-first Heimdall version, the most likely reusable slice is:
 
 - provider OAuth authority
 - identity-linking authority
-- managed Twitch/YouTube credential custody for creator connections
+- managed Twitch/YouTube/Joystick credential custody for creator connections (Joystick is a managed connection only, not a viewer sign-in provider)
 - entitlement refresh
 - shared claim semantics
 
