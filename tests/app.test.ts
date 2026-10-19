@@ -1409,6 +1409,44 @@ describe("Heimdall service", () => {
       }
     });
 
+    it("a backend_callback delivery of a joystick connect carries no refresh token and no capabilities", async () => {
+      const callbackUrl = "https://streampixels.gamecult.org/api/heimdall/callback";
+      const app = await buildApp({
+        config: { ...createTestConfig(), appBackendCallbacks: { streampixels: [callbackUrl] } },
+      });
+      apps.push(app);
+      stubJoystick({ channel_id: "chan-hand", username: "deru" });
+      const providerFetch = globalThis.fetch;
+      const deliveries: Array<Record<string, any>> = [];
+      globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
+        if (String(input) === callbackUrl) {
+          deliveries.push(JSON.parse(String(init?.body)) as Record<string, any>);
+          return new Response(null, { status: 204 });
+        }
+        return providerFetch(input, init);
+      }) as typeof fetch;
+
+      const start = await connect(app, {
+        connection: creator,
+        handoff: { kind: "backend_callback", attemptId: "attempt-js-1", callbackUrl },
+      });
+      expect(start.statusCode).toBe(201);
+      const callback = await app.inject({
+        method: "GET",
+        url: `/v1/oauth/joystick/callback?code=c&state=${encodeURIComponent(start.json().stateToken as string)}`,
+      });
+      expect(callback.statusCode).toBeLessThan(300);
+
+      expect(deliveries).toHaveLength(1);
+      const delivered = deliveries[0]!;
+      expect(delivered).toMatchObject({ status: "success", handoffKind: "backend_callback", mode: "connect", attemptId: "attempt-js-1" });
+      expect(typeof delivered.accessToken).toBe("string");
+      expect(delivered.refreshToken).toBeUndefined();
+      expect(delivered.refresh).toBeUndefined();
+      expect(delivered.claimSet.capabilities).toEqual([]);
+      expect(JSON.stringify(delivered)).not.toContain("js-refresh");
+    });
+
     it("starts a streampixels connect at joystick.tv with the five scopes and the callback redirect", async () => {
       const app = await buildApp({ config: createTestConfig() });
       apps.push(app);
