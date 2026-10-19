@@ -326,7 +326,8 @@ async function exerciseStore(store: PostgresStore): Promise<Set<string>> {
     createdAt: now,
     updatedAt: now,
   };
-  await s.upsertLinkedIdentity(identity);
+  const linked = await s.upsertLinkedIdentity(identity);
+  await s.updateLinkedIdentityCredential(linked.id, async () => ({ kind: "keep" }));
   await s.upsertLinkedIdentity({ ...identity, username: "again" });
   await s.findAccountByLinkedIdentity("discord", "u1");
   await s.findStoredLinkedIdentity("discord", "u1");

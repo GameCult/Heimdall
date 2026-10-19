@@ -71,7 +71,7 @@ describe("Heimdall verse runtime publication", () => {
     expect(bySchema.get("idunn.daemon_health")).toEqual([
       "yggdrasil-heimdall",
       "active",
-      "Heimdall auth runtime active; storage=postgres; providers=2/6; apps=4; healthTransport=CultNet/RUDP",
+      "Heimdall auth runtime active; storage=postgres; providers=2/7; apps=4; healthTransport=CultNet/RUDP",
       "2026-06-16T17:10:00.000Z",
       "heimdall.cultnet-rudp-provider-health",
       "daemon-published",

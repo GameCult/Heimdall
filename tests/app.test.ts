@@ -1,12 +1,16 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { inspect } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { type FastifyInstance } from "fastify";
 import { buildApp, errorIdentity } from "../src/app.js";
+import { builtInAppProfiles, callbackMint } from "../src/app-profiles.js";
 import { deliverBackendHandoff, type BackendHandoffPayload } from "../src/backend-handoff.js";
 import { type HeimdallConfig, loadConfig } from "../src/config.js";
 import { entitlementFacts, identityFacts } from "../src/facts.js";
-import { createOAuthRuntimeRegistry, type OAuthProviderRuntime } from "../src/oauth.js";
-import { verifyJwt } from "../src/signing.js";
+import { createOAuthRuntimeRegistry, ProviderResponseError, type OAuthProviderRuntime } from "../src/oauth.js";
+import { createRuntimeKeyMaterial, signJwt, verifyJwt } from "../src/signing.js";
 import { InMemoryStore } from "../src/store/index.js";
 
 function createTestConfig(): HeimdallConfig {
@@ -49,6 +53,7 @@ function createTestConfig(): HeimdallConfig {
       twitch: { clientId: "twitch-client", clientSecret: "twitch-secret" },
       youtube: { clientId: "youtube-client", clientSecret: "youtube-secret" },
       spotify: { clientId: "spotify-client", clientSecret: "spotify-secret" },
+      joystick: { clientId: "joystick-client", clientSecret: "joystick-secret" },
     },
   };
 }
@@ -974,7 +979,8 @@ describe("Heimdall service", () => {
     expect(profileResponse.json()).toEqual(
       expect.objectContaining({
         slug: "streampixels",
-        managedConnectionProviders: ["twitch", "youtube"],
+        identityProviders: ["twitch", "youtube"],
+        managedConnectionProviders: ["twitch", "youtube", "joystick"],
       })
     );
   });
@@ -1236,6 +1242,361 @@ describe("Heimdall service", () => {
       })
     );
     expect(credentialResponse.body).not.toContain("rotated-twitch-refresh-token");
+  });
+
+  it("revocation-is-typed: a revoked identity contributes no entitlement at session refresh", async () => {
+    const store = new InMemoryStore();
+    let evaluations = 0;
+    const base = createMockDiscordRuntime();
+    const app = await buildApp({
+      config: createTestConfig(),
+      store,
+      oauthRuntimes: {
+        discord: {
+          ...base,
+          async exchangeAuthorizationCode() {
+            return {
+              accessToken: "expired-discord-access-token",
+              refreshToken: "discord-refresh-token",
+              tokenType: "Bearer",
+              scope: ["identify"],
+              expiresAt: "2026-04-26T13:00:00.000Z",
+              raw: {},
+            };
+          },
+          async refreshAccessToken() {
+            throw new ProviderResponseError(400, "provider_status", "Discord token refresh failed", "invalid_grant");
+          },
+          async evaluateEntitlements(options) {
+            evaluations += 1;
+            return base.evaluateEntitlements(options);
+          },
+        },
+      },
+    });
+    apps.push(app);
+
+    const stateToken = await startDiscordSignIn(app);
+    const callbackResponse = await app.inject({
+      method: "GET",
+      url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(stateToken)}`,
+    });
+    expect(callbackResponse.statusCode).toBe(201);
+    const evaluationsAtSignIn = evaluations;
+
+    const refreshResponse = await app.inject({
+      method: "POST",
+      url: "/v1/apps/repixelizer/sessions/refresh",
+      headers: { "x-heimdall-app-secret": "repixelizer-secret" },
+      payload: {
+        refreshToken: callbackResponse.json().refreshToken as string,
+        entitlementPolicies: [{ kind: "discord_role_access", guildId: "gamecult-guild", allowedRoleIds: ["role-repixelizer"] }],
+      },
+    });
+
+    expect(refreshResponse.statusCode).toBe(201);
+    expect(evaluations).toBe(evaluationsAtSignIn);
+    const accountId = callbackResponse.json().account.id as string;
+    const row = await store.findStoredLinkedIdentityForAccount(accountId, "discord");
+    expect(row?.accessTokenEncrypted).toBeUndefined();
+    expect(row?.refreshTokenEncrypted).toBeUndefined();
+  });
+
+  it("revocation-is-typed: a revoked Patreon identity is not linked for Bifrost sync and Bifrost is not called", async () => {
+    const baseConfig = createTestConfig();
+    const store = new InMemoryStore();
+    const app = await buildApp({
+      config: {
+        ...baseConfig,
+        bifrostPatronSupportEndpoint: "https://bifrost.gamecult.org/heimdall/patron-support/events",
+        bifrostPatronSupportSecret: "bifrost-support-secret",
+      },
+      store,
+      oauthRuntimes: {
+        patreon: {
+          ...createOAuthRuntimeRegistry().patreon,
+          async refreshAccessToken() {
+            throw new ProviderResponseError(400, "provider_status", "Patreon token refresh failed", "invalid_grant");
+          },
+        },
+      },
+    });
+    apps.push(app);
+    const context = getHeimdallContext(app);
+    const now = "2026-06-09T17:00:00.000Z";
+    await store.createAccount({ id: "acct-p", createdAt: now, lastSeenAt: now });
+    await store.upsertLinkedIdentity({
+      accountId: "acct-p",
+      provider: "patreon",
+      providerUserId: "patreon-user-456",
+      accessTokenEncrypted: context.tokenCustody.encrypt("patreon-access-token"),
+      refreshTokenEncrypted: context.tokenCustody.encrypt("patreon-refresh-token"),
+      tokenExpiresAt: "2026-06-09T17:01:00.000Z",
+      scopes: [],
+      profileJson: {},
+      createdAt: now,
+      updatedAt: now,
+    });
+    const urls: string[] = [];
+    globalThis.fetch = async (input) => {
+      urls.push(String(input));
+      return new Response("unexpected", { status: 500 });
+    };
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/apps/bifrost/patron-support/sync",
+      headers: { "x-heimdall-app-secret": "bifrost-secret" },
+      payload: { accountId: "acct-p", requiredTierTitle: "Inner Sanctum", supportedAtUtc: now },
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({ error: "patreon_identity_not_linked" });
+    expect(urls).toEqual([]);
+  });
+
+  describe("joystick connect", () => {
+    const creator = { kind: "creator", targetId: "creator-1" };
+    async function connect(app: FastifyInstance, extra: Record<string, unknown> = { connection: creator }) {
+      const start = await app.inject({
+        method: "POST",
+        url: "/v1/oauth/joystick/start",
+        payload: { appSlug: "streampixels", mode: "connect", returnTo: "https://streampixels.gamecult.org/auth/connect", ...extra },
+      });
+      return start;
+    }
+
+    it.each([
+      ["no connection", {}, "creator_connection_required"],
+      ["an account connection", { connection: { kind: "account", targetId: "victim-1" } }, "creator_connection_required"],
+      ["an empty targetId", { connection: { kind: "creator", targetId: "" } }, "invalid_request"],
+    ])("refuses a joystick connect with %s at start, before any redirect", async (_name, extra, error) => {
+      const app = await buildApp({ config: createTestConfig() });
+      apps.push(app);
+      const start = await connect(app, extra);
+      expect(start.statusCode).toBe(400);
+      expect(start.json().error).toBe(error);
+      expect(start.json().authorizationUrl).toBeUndefined();
+      expect(start.json().stateToken).toBeUndefined();
+    });
+
+    it.each([
+      ["no connection", null],
+      ["an account connection", { kind: "account", targetId: "victim-1" }],
+      ["an empty targetId", { kind: "creator", targetId: "" }],
+    ])("the callback refuses a signed joystick connect with %s before the code exchange, and nothing is written", async (_name, connection) => {
+      const dir = mkdtempSync(join(tmpdir(), "heimdall-forge-"));
+      try {
+        const config = { ...createTestConfig(), signingPrivateKeyPath: join(dir, "signing.pem"), bootstrapSigningPrivateKeyOnMissing: true };
+        const store = new InMemoryStore();
+        const app = await buildApp({ config, store });
+        apps.push(app);
+        const keys = createRuntimeKeyMaterial({ ...config, bootstrapSigningPrivateKeyOnMissing: false });
+        const calls = stubJoystick({ channel_id: "chan-forged", username: "deru" });
+        const stateToken = (await connect(app)).json().stateToken as string;
+        const verified = verifyJwt(stateToken, keys.publicKey);
+        expect(verified.valid).toBe(true);
+        const forged = signJwt({ ...(verified as { payload: Record<string, unknown> }).payload, connection }, keys);
+
+        const callback = await app.inject({
+          method: "GET",
+          url: `/v1/oauth/joystick/callback?code=c&state=${encodeURIComponent(forged)}`,
+        });
+        expect(callback.statusCode).toBeGreaterThanOrEqual(400);
+        expect(calls).toEqual([]);
+        expect(await store.findStoredLinkedIdentity("joystick", "chan-forged")).toBeNull();
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("a backend_callback delivery of a joystick connect carries no refresh token and no capabilities", async () => {
+      const callbackUrl = "https://streampixels.gamecult.org/api/heimdall/callback";
+      const app = await buildApp({
+        config: { ...createTestConfig(), appBackendCallbacks: { streampixels: [callbackUrl] } },
+      });
+      apps.push(app);
+      stubJoystick({ channel_id: "chan-hand", username: "deru" });
+      const providerFetch = globalThis.fetch;
+      const deliveries: Array<Record<string, any>> = [];
+      globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
+        if (String(input) === callbackUrl) {
+          deliveries.push(JSON.parse(String(init?.body)) as Record<string, any>);
+          return new Response(null, { status: 204 });
+        }
+        return providerFetch(input, init);
+      }) as typeof fetch;
+
+      const start = await connect(app, {
+        connection: creator,
+        handoff: { kind: "backend_callback", attemptId: "attempt-js-1", callbackUrl },
+      });
+      expect(start.statusCode).toBe(201);
+      const callback = await app.inject({
+        method: "GET",
+        url: `/v1/oauth/joystick/callback?code=c&state=${encodeURIComponent(start.json().stateToken as string)}`,
+      });
+      expect(callback.statusCode).toBeLessThan(300);
+
+      expect(deliveries).toHaveLength(1);
+      const delivered = deliveries[0]!;
+      expect(delivered).toMatchObject({ status: "success", handoffKind: "backend_callback", mode: "connect", attemptId: "attempt-js-1" });
+      expect(typeof delivered.accessToken).toBe("string");
+      expect(delivered.refreshToken).toBeUndefined();
+      expect(delivered.refresh).toBeUndefined();
+      expect(delivered.claimSet.capabilities).toEqual([]);
+      expect(JSON.stringify(delivered)).not.toContain("js-refresh");
+    });
+
+    it("starts a streampixels connect at joystick.tv with the five scopes and the callback redirect", async () => {
+      const app = await buildApp({ config: createTestConfig() });
+      apps.push(app);
+      const start = await connect(app);
+      expect(start.statusCode).toBe(201);
+      const url = new URL(start.json().authorizationUrl as string);
+      expect(`${url.origin}${url.pathname}`).toBe("https://joystick.tv/api/oauth/authorize");
+      expect(url.searchParams.get("client_id")).toBe("joystick-client");
+      expect(url.searchParams.get("scope")).toBe("identity:read stream:read chat:read followers:read subscribers:read");
+      expect(url.searchParams.get("redirect_uri")).toBe("https://heimdall.gamecult.org/v1/oauth/joystick/callback");
+    });
+
+    it.each(["sign_in", "link"] as const)(
+      "refuses %s for joystick on streampixels before any redirect, and Deru's managed row is untouched",
+      async (mode) => {
+        const store = new InMemoryStore();
+        const app = await buildApp({ config: createTestConfig(), store });
+        apps.push(app);
+        stubJoystick({ channel_id: "deru-chan", username: "deru" });
+        const stateToken = (await connect(app)).json().stateToken as string;
+        const connected = await app.inject({
+          method: "GET",
+          url: `/v1/oauth/joystick/callback?code=a&state=${encodeURIComponent(stateToken)}`,
+        });
+        const accountId = connected.json().account.id as string;
+        const before = await store.findStoredLinkedIdentityForAccount(accountId, "joystick");
+
+        const start = await app.inject({
+          method: "POST",
+          url: "/v1/oauth/joystick/start",
+          payload: { appSlug: "streampixels", mode, returnTo: "https://streampixels.gamecult.org/auth/connect" },
+        });
+        expect(start.statusCode).toBe(400);
+        expect(start.json()).toMatchObject({ error: "provider_not_supported_for_app", provider: "joystick", mode });
+        expect(start.json().authorizationUrl).toBeUndefined();
+        expect(await store.findStoredLinkedIdentityForAccount(accountId, "joystick")).toEqual(before);
+      }
+    );
+
+    function stubJoystick(identity: Record<string, unknown>) {
+      const calls: Array<{ url: string; headers: Record<string, string>; body?: URLSearchParams | undefined }> = [];
+      globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
+        const url = String(input);
+        calls.push({ url, headers: (init?.headers ?? {}) as Record<string, string>, body: init?.body as URLSearchParams | undefined });
+        if (url === "https://api.joystick.tv/api/oauth/token") {
+          return new Response(
+            JSON.stringify({ access_token: "js-access", refresh_token: "js-refresh", token_type: "Bearer", expires_in: 864000 }),
+            { status: 200 }
+          );
+        }
+        if (url === "https://api.joystick.tv/api/v1/me/identity") {
+          return new Response(JSON.stringify(identity), { status: 200 });
+        }
+        return new Response("unexpected", { status: 500 });
+      }) as typeof fetch;
+      return calls;
+    }
+
+    it.each(["sign_in", "link"] as const)(
+      "the callback refuses a signed %s state for joystick on streampixels before the code exchange, and nothing is written",
+      async (mode) => {
+        // The start gate already refuses these words, so the state is re-signed with the app's own key.
+        const dir = mkdtempSync(join(tmpdir(), "heimdall-forge-"));
+        try {
+          const config = { ...createTestConfig(), signingPrivateKeyPath: join(dir, "signing.pem"), bootstrapSigningPrivateKeyOnMissing: true };
+          const store = new InMemoryStore();
+          const app = await buildApp({ config, store });
+          apps.push(app);
+          const keys = createRuntimeKeyMaterial({ ...config, bootstrapSigningPrivateKeyOnMissing: false });
+          const calls = stubJoystick({ channel_id: "chan-forged", username: "deru" });
+          const stateToken = (await connect(app)).json().stateToken as string;
+          const verified = verifyJwt(stateToken, keys.publicKey);
+          expect(verified.valid).toBe(true);
+          const forged = signJwt({ ...(verified as { payload: Record<string, unknown> }).payload, mode }, keys);
+
+          const callback = await app.inject({
+            method: "GET",
+            url: `/v1/oauth/joystick/callback?code=c&state=${encodeURIComponent(forged)}`,
+          });
+          expect(callback.statusCode).toBeGreaterThanOrEqual(400);
+          expect(callback.body).not.toContain("viewer_access");
+          expect(calls).toEqual([]);
+          expect(await store.findStoredLinkedIdentity("joystick", "chan-forged")).toBeNull();
+        } finally {
+          rmSync(dir, { recursive: true, force: true });
+        }
+      }
+    );
+
+    it("exchanges the code with Basic client auth and links the identity by channel id", async () => {
+      const store = new InMemoryStore();
+      const app = await buildApp({ config: createTestConfig(), store });
+      apps.push(app);
+      const calls = stubJoystick({ channel_id: "chan-9", username: "deru", nickname: "Deru!", photo_url: "https://img/x.png" });
+      const stateToken = (await connect(app)).json().stateToken as string;
+
+      const callback = await app.inject({
+        method: "GET",
+        url: `/v1/oauth/joystick/callback?code=the-code&state=${encodeURIComponent(stateToken)}`,
+      });
+      expect(callback.statusCode).toBeLessThan(300);
+
+      const exchange = calls.find((c) => c.url === "https://api.joystick.tv/api/oauth/token")!;
+      expect(exchange.headers.Authorization).toBe(`Basic ${Buffer.from("joystick-client:joystick-secret").toString("base64")}`);
+      expect(exchange.body!.get("grant_type")).toBe("authorization_code");
+      expect(exchange.body!.get("code")).toBe("the-code");
+      expect(exchange.body!.get("redirect_uri")).toBe("https://heimdall.gamecult.org/v1/oauth/joystick/callback");
+      expect(exchange.body!.has("client_secret")).toBe(false);
+      const identityCall = calls.find((c) => c.url === "https://api.joystick.tv/api/v1/me/identity")!;
+      expect(identityCall.headers.Authorization).toBe("Bearer js-access");
+
+      const accountId = callback.json().account.id as string;
+      const row = await store.findStoredLinkedIdentityForAccount(accountId, "joystick");
+      expect(row).toMatchObject({ providerUserId: "chan-9", username: "deru", displayName: "Deru!" });
+      expect(row?.accessTokenEncrypted).toEqual(expect.any(String));
+      expect(row?.accessTokenEncrypted).not.toContain("js-access");
+      expect(row?.refreshTokenEncrypted).toEqual(expect.any(String));
+      const left = Date.parse(row!.tokenExpiresAt!) - Date.now();
+      expect(left).toBeGreaterThan(863_000 * 1000);
+      expect(left).toBeLessThanOrEqual(864_000 * 1000);
+    });
+
+    it("falls back to the username for the display name", async () => {
+      const store = new InMemoryStore();
+      const app = await buildApp({ config: createTestConfig(), store });
+      apps.push(app);
+      stubJoystick({ channel_id: "chan-9", username: "deru" });
+      const stateToken = (await connect(app)).json().stateToken as string;
+      const callback = await app.inject({
+        method: "GET",
+        url: `/v1/oauth/joystick/callback?code=c&state=${encodeURIComponent(stateToken)}`,
+      });
+      const row = await store.findStoredLinkedIdentityForAccount(callback.json().account.id as string, "joystick");
+      expect(row?.displayName).toBe("deru");
+    });
+
+    it("fails the callback when the identity has no channel id", async () => {
+      const store = new InMemoryStore();
+      const app = await buildApp({ config: createTestConfig(), store });
+      apps.push(app);
+      stubJoystick({ username: "deru" });
+      const stateToken = (await connect(app)).json().stateToken as string;
+      const callback = await app.inject({
+        method: "GET",
+        url: `/v1/oauth/joystick/callback?code=c&state=${encodeURIComponent(stateToken)}`,
+      });
+      expect(callback.statusCode).toBeGreaterThanOrEqual(400);
+      expect(await store.findStoredLinkedIdentity("joystick", "undefined")).toBeNull();
+    });
   });
 
   it("no longer honors a global shared secret across apps", async () => {
@@ -1772,5 +2133,65 @@ describe("what may be recorded about a caught error", () => {
     ["a thrown null", null, { errorClass: "Error", errorCode: null }],
   ])("filters %s", (_case, error, expected) => {
     expect(errorIdentity(error)).toEqual(expected);
+  });
+});
+
+describe("OAuth start admits a provider by the profile's role for the mode", () => {
+  const allProviders = ["discord", "patreon", "github", "twitch", "youtube", "spotify", "joystick"] as const;
+  const modes = ["sign_in", "link", "connect"] as const;
+
+  it("sign_in and link take identityProviders only; connect takes managedConnectionProviders or identityProviders, for every profile", async () => {
+    const app = await buildApp({ config: createTestConfig() });
+    try {
+      for (const profile of Object.values(builtInAppProfiles)) {
+        for (const provider of allProviders) {
+          for (const mode of modes) {
+            const start = await app.inject({
+              method: "POST",
+              url: `/v1/oauth/${provider}/start`,
+              payload: { appSlug: profile.slug, mode, returnTo: `${profile.allowedReturnOrigins[0]}/x` },
+            });
+            const roleList =
+              mode === "connect"
+                ? [...profile.managedConnectionProviders, ...profile.identityProviders]
+                : profile.identityProviders;
+            const refused = start.json().error === "provider_not_supported_for_app";
+            expect([profile.slug, provider, mode, refused]).toEqual([profile.slug, provider, mode, !roleList.includes(provider)]);
+          }
+        }
+      }
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe("callbackMint", () => {
+  const streampixels = builtInAppProfiles.streampixels!;
+  it.each([
+    ["twitch", "sign_in", "viewer_session"],
+    ["twitch", "link", "viewer_session"],
+    ["youtube", "sign_in", "viewer_session"],
+    ["twitch", "connect", "viewer_session"],
+    ["joystick", "connect", "custody_only"],
+    ["joystick", "sign_in", "refused"],
+    ["joystick", "link", "refused"],
+    ["discord", "connect", "refused"],
+    ["discord", "sign_in", "refused"],
+  ] as const)("%s %s on streampixels is %s", (provider, mode, expected) => {
+    expect(callbackMint(streampixels, provider, mode, { kind: "creator", targetId: "creator-1" })).toBe(expected);
+  });
+
+  it.each([
+    ["null", null],
+    ["undefined", undefined],
+    ["an account binding", { kind: "account", targetId: "a-1" }],
+    ["an empty creator targetId", { kind: "creator", targetId: "" }],
+  ] as const)("a joystick connect with %s is refused", (_name, connection) => {
+    expect(callbackMint(streampixels, "joystick", "connect", connection)).toBe("refused");
+  });
+
+  it("keeps Bifrost's discord connect a viewer session", () => {
+    expect(callbackMint(builtInAppProfiles.bifrost!, "discord", "connect", null)).toBe("viewer_session");
   });
 });

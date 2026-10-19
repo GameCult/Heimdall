@@ -6,6 +6,17 @@ export interface ProviderDescriptor {
   key: Provider;
   displayName: string;
   authorizationEndpoint: string;
+  tokenEndpoint: string;
+  /** RFC 7591 names: how the client authenticates at the token endpoint. */
+  tokenEndpointAuthMethod: "client_secret_basic" | "client_secret_post";
+  /** True when a refresh response replaces the refresh token and the old one dies. */
+  rotatesRefreshTokens: boolean;
+  /**
+   * Seconds an access token lives when a token answer carries no usable
+   * `expires_in` (RFC 6749 5.1 makes it RECOMMENDED, not required). An unknown
+   * expiry is never stored: the credential would never come due for refresh.
+   */
+  defaultAccessTokenLifetimeSeconds: number;
   defaultScopes: string[];
   roles: ProviderRole[];
   clientIdEnv: string;
@@ -18,6 +29,10 @@ export const providerCatalog: Record<Provider, ProviderDescriptor> = {
     key: "discord",
     displayName: "Discord",
     authorizationEndpoint: "https://discord.com/oauth2/authorize",
+    tokenEndpoint: "https://discord.com/api/v10/oauth2/token",
+    tokenEndpointAuthMethod: "client_secret_basic",
+    rotatesRefreshTokens: false,
+    defaultAccessTokenLifetimeSeconds: 3600,
     defaultScopes: ["identify", "guilds.members.read"],
     roles: ["identity", "entitlement"],
     clientIdEnv: "GC_ACCESS_PROVIDER_DISCORD_CLIENT_ID",
@@ -27,6 +42,10 @@ export const providerCatalog: Record<Provider, ProviderDescriptor> = {
     key: "patreon",
     displayName: "Patreon",
     authorizationEndpoint: "https://www.patreon.com/oauth2/authorize",
+    tokenEndpoint: "https://www.patreon.com/api/oauth2/token",
+    tokenEndpointAuthMethod: "client_secret_post",
+    rotatesRefreshTokens: false,
+    defaultAccessTokenLifetimeSeconds: 3600,
     defaultScopes: ["identity", "identity[email]"],
     roles: ["identity", "entitlement"],
     clientIdEnv: "GC_ACCESS_PROVIDER_PATREON_CLIENT_ID",
@@ -36,6 +55,10 @@ export const providerCatalog: Record<Provider, ProviderDescriptor> = {
     key: "github",
     displayName: "GitHub",
     authorizationEndpoint: "https://github.com/login/oauth/authorize",
+    tokenEndpoint: "https://github.com/login/oauth/access_token",
+    tokenEndpointAuthMethod: "client_secret_post",
+    rotatesRefreshTokens: false,
+    defaultAccessTokenLifetimeSeconds: 3600,
     defaultScopes: ["read:user", "user:email"],
     roles: ["identity", "managed_credential"],
     clientIdEnv: "GC_ACCESS_PROVIDER_GITHUB_CLIENT_ID",
@@ -45,6 +68,10 @@ export const providerCatalog: Record<Provider, ProviderDescriptor> = {
     key: "twitch",
     displayName: "Twitch",
     authorizationEndpoint: "https://id.twitch.tv/oauth2/authorize",
+    tokenEndpoint: "https://id.twitch.tv/oauth2/token",
+    tokenEndpointAuthMethod: "client_secret_post",
+    rotatesRefreshTokens: false,
+    defaultAccessTokenLifetimeSeconds: 3600,
     defaultScopes: ["user:read:email"],
     roles: ["identity", "managed_credential"],
     clientIdEnv: "GC_ACCESS_PROVIDER_TWITCH_CLIENT_ID",
@@ -54,6 +81,10 @@ export const providerCatalog: Record<Provider, ProviderDescriptor> = {
     key: "youtube",
     displayName: "YouTube",
     authorizationEndpoint: "https://accounts.google.com/o/oauth2/v2/auth",
+    tokenEndpoint: "https://oauth2.googleapis.com/token",
+    tokenEndpointAuthMethod: "client_secret_post",
+    rotatesRefreshTokens: false,
+    defaultAccessTokenLifetimeSeconds: 3600,
     defaultScopes: [
       "openid",
       "email",
@@ -73,6 +104,10 @@ export const providerCatalog: Record<Provider, ProviderDescriptor> = {
     key: "spotify",
     displayName: "Spotify",
     authorizationEndpoint: "https://accounts.spotify.com/authorize",
+    tokenEndpoint: "https://accounts.spotify.com/api/token",
+    tokenEndpointAuthMethod: "client_secret_basic",
+    rotatesRefreshTokens: false,
+    defaultAccessTokenLifetimeSeconds: 3600,
     defaultScopes: [
       "user-read-currently-playing",
       "user-read-playback-state",
@@ -81,6 +116,19 @@ export const providerCatalog: Record<Provider, ProviderDescriptor> = {
     roles: ["identity", "managed_credential"],
     clientIdEnv: "GC_ACCESS_PROVIDER_SPOTIFY_CLIENT_ID",
     clientSecretEnv: "GC_ACCESS_PROVIDER_SPOTIFY_CLIENT_SECRET_FILE",
+  },
+  joystick: {
+    key: "joystick",
+    displayName: "Joystick",
+    authorizationEndpoint: "https://joystick.tv/api/oauth/authorize",
+    tokenEndpoint: "https://api.joystick.tv/api/oauth/token",
+    tokenEndpointAuthMethod: "client_secret_basic",
+    rotatesRefreshTokens: true,
+    defaultAccessTokenLifetimeSeconds: 3600,
+    defaultScopes: ["identity:read", "stream:read", "chat:read", "followers:read", "subscribers:read"],
+    roles: ["identity", "managed_credential"],
+    clientIdEnv: "GC_ACCESS_PROVIDER_JOYSTICK_CLIENT_ID",
+    clientSecretEnv: "GC_ACCESS_PROVIDER_JOYSTICK_CLIENT_SECRET_FILE",
   },
 };
 

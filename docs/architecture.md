@@ -305,6 +305,159 @@ Important rule:
   connection is tied to a user or account rather than a purely app-local secret
 - app-specific binding semantics and runtime behavior still stay app-owned
 
+## Managed credential custody
+
+Source-grounded as of branch `eureka/joystick-h1` at 6db84bf (PR
+GameCult/Heimdall#1, unmerged). Nothing here is deployed.
+
+### One owner: `refreshManagedCredential`
+
+`src/managed-credential.ts` owns every decision to present a stored refresh
+token to a provider. The entitlement path (`refreshAppSession`), the Bifrost
+Patreon sync and `managed-credentials/resolve` all call it; none of them reads
+`tokenExpiresAt` or a provider token endpoint itself. The earlier
+`refreshLinkedIdentityCredentialIfNeeded` is deleted, and callers no longer
+write refreshed tokens through `upsertLinkedIdentity`: a refresh reaches the row
+only through the store port below. The only other writer of credential columns
+is the OAuth callback's grant write (`app.ts`, once).
+
+| | |
+|---|---|
+| Input | a `StoredLinkedIdentity` snapshot, the config, the token custody (AES-256-GCM seal), the provider runtimes, an injectable clock and timeout |
+| Output | `{kind: "current" or "revoked", identity}`, or a thrown `ManagedCredentialRefreshFailed` (carries the provider and nothing the provider said) |
+| Forbidden writers | any caller writing token columns or `token_expires_at` outside `updateLinkedIdentityCredential` and the callback's grant write; any caller computing "is a refresh due" |
+
+The snapshot is a hint. It may answer without a lock when the identity holds no
+access token (`revoked`) or no refresh is due (`current`; due means a known
+expiry within 5 minutes, a stored refresh token, and a runtime that refreshes).
+It never decides that a refresh happens.
+
+### Three nested guards
+
+1. **Single flight, per process.** `refreshesInFlight` is keyed by store, then
+   linked identity id. A caller arriving while an attempt is in flight joins it
+   and receives its outcome, success or failure, so nobody queues behind a
+   failed holder and re-presents the same token. The entry ends with the
+   attempt; a later request retries.
+2. **Store-port lock, across processes.**
+   `HeimdallStore.updateLinkedIdentityCredential(id, decide)` runs `decide`
+   against the row as read under the lock. `PostgresStore` takes
+   `SELECT ... FOR UPDATE` inside a transaction; `InMemoryStore` serialises per
+   id on a promise chain that deletes its entry only when it is still the tail.
+   `decide` re-checks `dueForRefresh` on the locked row, so a process that
+   waited finds the token already rotated and returns `keep`. The provider call
+   is aborted at 10 seconds (`MANAGED_CREDENTIAL_REFRESH_TIMEOUT_MS`), which
+   bounds how long any waiter holds a pooled connection.
+3. **Decision, not mutation.** `decide` returns a `CredentialDecision`: `keep`,
+   `revoke`, or `rotate` with the access token, refresh token and
+   `tokenExpiresAt` all required. The store applies it and returns the row. The
+   new pair is persisted before the access token is returned. A store that
+   keeps the old expiry on rotate is a type error, not a test.
+
+### Typed answers
+
+- **Revoked** (`410 managed_credential_revoked`, audit
+  `managed_credential_revoked {provider, reason}`, all three token columns
+  cleared). Two reasons only: `provider_revoked`, an HTTP 400 whose OAuth
+  `error` is exactly `invalid_grant`; and `rotation_missing`, a well-formed
+  refresh answer without a refresh token from a provider whose descriptor says
+  `rotatesRefreshTokens`. An identity with no access token is also `revoked`.
+  `404` means no linked identity exists. On the entitlement path a revoked
+  identity is skipped; on the Bifrost sync it is `404
+  patreon_identity_not_linked` with Bifrost uncalled.
+- **Refresh failed** (`502 managed_credential_refresh_failed`, tokens
+  untouched, retry allowed): invalid client, a 401 or 5xx whatever its body,
+  timeout, a 2xx without a string `access_token` or carrying `error`, a
+  `refresh_token` present but not a string, an empty or non-JSON body.
+  `ProviderResponseError.oauthError` is drawn only from the closed RFC 6749 code
+  set and is read only from a 400; no provider body reaches a message, stack or
+  audit payload.
+- An empty-string `refresh_token` counts as missing.
+
+### Provider descriptor and the one token request
+
+`providerCatalog` (`src/providers.ts`) is the only place a provider's token
+behaviour is written down. Fields beyond the authorize side:
+
+- `tokenEndpoint`: where both grants go.
+- `tokenEndpointAuthMethod`: `client_secret_basic` or `client_secret_post`
+  (RFC 7591 names); exactly one client-auth method per request.
+- `rotatesRefreshTokens`: true only for Joystick. Drives fail-closed on
+  refresh (`rotation_missing`) and a failed callback on exchange when the grant
+  carries no refresh token.
+- `defaultAccessTokenLifetimeSeconds`: 3600 for all seven providers. Applied
+  when an answer has no usable `expires_in`; unusable means absent, non-numeric,
+  not a positive number or positive-integer string, or above 365 days. An
+  unknown expiry is therefore never stored, so every credential comes due.
+
+`requestProviderTokens(provider, config, grant)` in `src/oauth.ts` replaces the
+ten per-provider exchange and refresh functions. Authorization-code and refresh
+grants share it, it returns an `ExpiringTokenSet` (`expiresAt` required), and it
+rejects a malformed 2xx typed as `provider_body_not_token_set` on both grants.
+The per-provider runtimes keep only identity resolution.
+
+### Mode x role at the gates
+
+`src/app-profiles.ts` holds both questions, and the profile's role lists are
+their only input:
+
+- `admitsProviderForMode(profile, provider, mode)`, the start gate: `sign_in`
+  and `link` take `identityProviders` only; `connect` takes
+  `managedConnectionProviders` or `identityProviders` (Bifrost connects its
+  identity providers). `supportsProvider` is deleted.
+- `callbackMint(profile, provider, mode, connection)`, decided at the callback
+  from the signed state and asked again at start, so an unbound connect never
+  reaches a redirect:
+  - `viewer_session`: the provider is in `identityProviders`; a normal session
+    with the profile's capabilities.
+  - `custody_only`: a `connect` for a provider that is only a managed
+    connection (Joystick on StreamPixels) with `connection.kind = "creator"` and
+    a non-empty `targetId`.
+  - `refused`: everything else, before the code exchange.
+
+A custody-only completion stores the credential and issues a claim with no
+facts, no capabilities and no hybrid capabilities (`withoutCapabilities` in
+`src/claims.ts`, the one owner of a capability-free claim). The completion
+payload and the `backend_callback` handoff carry no `refreshToken` or
+`refresh`, because the refresh route recomputes facts from the account and would
+turn that session into a viewer session. A session row still exists, and
+`BackendHandoffSuccessPayload` types both fields optional for this reason. The
+consumer's redeem reads only account id, provider, mode, connection and claim
+identities, so the claim form is unchanged for it.
+
+### Verification layer
+
+The rules above are pinned by `tests/managed-credential.test.ts` on three rigs
+(memory, Postgres with one app, Postgres with two pools),
+`tests/provider-token-request.test.ts`, `tests/app.test.ts` (a matrix over all
+profiles x providers x modes, callback mint, handoff strip) and
+`tests/recipe-secrets.test.ts`. Evidence is the Yggdrasil `ygg-verify` run on
+Linux (node:24, postgres:16, `HEIMDALL_REQUIRE_LIVE_PG=1`; 600 passed, 8
+skipped, none a live-Postgres suite), hand and StrykerJS mutants over the diff,
+and Soul's pass 4 verdict `joystick:verdict:cut-h1.s4`. The deploy path's own
+builder was not used.
+
+### Open follow-ups
+
+- `joystick:follow_up:cross-process-failed-refresh-marker`: single flight is per
+  process, so N Heimdall processes can present one token N times after a
+  transient failure. Needs a failed-attempt marker on the row, read under the
+  lock. Must land before or with Idunn onboarding.
+- `joystick:follow_up:connect-start-needs-app-auth`: connect starts are
+  unauthenticated, so anyone can name `{creator, targetId}`; the callback
+  re-check proves a binding exists, not that the caller owns it. It also owns
+  the whitespace-only `targetId` that passes both gates and the callback's
+  fail-open `''` fallback for a vanished profile (finding
+  `joystick:finding:cut-h1.s4.whitespace-targetid-passes-custody-gate`). Must
+  land before the public Joystick bot or a second creator.
+- `joystick:follow_up:heimdall-idunn-onboarding` (gamecult-ops): live Heimdall
+  is a hand-copied release under `heimdall.service`, not an Idunn-admitted
+  generation; the recipe's Joystick lines are declared but unproven by a
+  deploy.
+- `joystick:follow_up:joystick-viewer-signin-public-bot`: Joystick stays out of
+  StreamPixels `identityProviders` until the public bot is registered; viewer
+  sign-in must not rewrite a creator's credential row.
+
 ## Policy model
 
 The shared authority should not hard-code one app's access rules. It should
@@ -514,24 +667,17 @@ each provider**. That URL cannot move on deploy.
 
 ### Finding: the `spotify` provider outlived its consumer
 
-`spotiverse` is the only profile naming `spotify`, and Spotiverse was lost with
-the `E:` drive — it was a small daemon exposing the Spotify API to agents, and
-it no longer exists in the swarm.
+`spotiverse` was the only profile naming `spotify`, and Spotiverse was lost with
+the `E:` drive. The profile has since been removed from the registry
+(`docs/app-profiles/spotiverse.md` is the restore spec), and
+`admitsProviderForMode` refuses a provider no profile lists, so
+`/v1/oauth/spotify/start` no longer reaches a handshake.
 
-What survives it: `GC_ACCESS_PROVIDER_SPOTIFY_CLIENT_ID` and
-`GC_ACCESS_PROVIDER_SPOTIFY_CLIENT_SECRET` are configured in
-`/srv/heimdall/env/service.env`, the profile is advertised in the public
-discovery document, and `/v1/oauth/spotify/start` is reachable from the open
-web. That path would run a real OAuth handshake against a real client secret and
-take custody of a user's Spotify refresh token on behalf of a consumer that
-cannot use it.
-
-This is not an active compromise. It is a live credential and a token-custody
-code path kept alive for nothing, which is exactly the shape that becomes an
-incident later. Retire the profile and the provider config together, or record
-why Spotiverse is expected back. Retiring is a change to `src/app-profiles.ts`
-and the provider catalog and should be decided on its own, not folded into the
-boundary change.
+What survives: the `spotify` catalog entry and runtime, and, wherever an
+operator env still holds them, `GC_ACCESS_PROVIDER_SPOTIFY_CLIENT_ID` and
+`GC_ACCESS_PROVIDER_SPOTIFY_CLIENT_SECRET_FILE`. A live credential kept for a
+consumer that does not exist is the shape that becomes an incident later.
+Retire the provider config, or record why Spotiverse is expected back.
 
 ## Deployment modes
 
@@ -588,14 +734,14 @@ Plain settings:
 - `GC_ACCESS_SIGNING_KEY_ID=...`
 - `GC_ACCESS_SESSION_TTL_SECONDS=3600`
 - `GC_ACCESS_STATE_TTL_SECONDS=600`
-- `GC_ACCESS_PROVIDER_{DISCORD,PATREON,GITHUB,TWITCH,YOUTUBE,SPOTIFY}_CLIENT_ID=...`
+- `GC_ACCESS_PROVIDER_{DISCORD,PATREON,GITHUB,TWITCH,YOUTUBE,SPOTIFY,JOYSTICK}_CLIENT_ID=...`
 - `GC_ACCESS_APP_{APP_SLUG}_BACKEND_CALLBACK_URLS=...`
 
 Secret files:
 
 - `GC_ACCESS_DATABASE_URL_FILE=/etc/gamecult/heimdall/credentials/GC_ACCESS_DATABASE_URL`
 - `GC_ACCESS_TOKEN_ENCRYPTION_KEY_BASE64_FILE=...`
-- `GC_ACCESS_PROVIDER_{DISCORD,PATREON,GITHUB,TWITCH,YOUTUBE,SPOTIFY}_CLIENT_SECRET_FILE=...`
+- `GC_ACCESS_PROVIDER_{DISCORD,PATREON,GITHUB,TWITCH,YOUTUBE,SPOTIFY,JOYSTICK}_CLIENT_SECRET_FILE=...`
 - `GC_ACCESS_APP_{APP_SLUG}_SHARED_SECRET_FILE=...`
 - `GC_ACCESS_BIFROST_PATRON_SUPPORT_SECRET_FILE=...`
 

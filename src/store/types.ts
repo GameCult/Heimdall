@@ -56,6 +56,23 @@ export interface UpsertLinkedIdentityInput {
   updatedAt: string;
 }
 
+/**
+ * What the owner of a refresh decides after reading the row under its lock.
+ * `rotate` and `revoke` write token columns, scopes and updated_at only; they
+ * never touch account, profile or identity fields.
+ */
+export type CredentialDecision =
+  | { kind: "keep" }
+  | {
+      kind: "rotate";
+      accessTokenEncrypted: string;
+      refreshTokenEncrypted: string;
+      tokenExpiresAt: string;
+      scopes: string[];
+      updatedAt: string;
+    }
+  | { kind: "revoke"; updatedAt: string };
+
 export interface StoredSession {
   id: string;
   accountId: string;
@@ -213,6 +230,17 @@ export interface HeimdallStore {
   findStoredLinkedIdentityForAccount(accountId: string, provider: Provider): Promise<StoredLinkedIdentity | null>;
   listStoredLinkedIdentitiesForAccount(accountId: string): Promise<StoredLinkedIdentity[]>;
   upsertLinkedIdentity(input: UpsertLinkedIdentityInput): Promise<StoredLinkedIdentity>;
+  /**
+   * Serialise decisions about one row's credential. `decide` receives the row
+   * as read under the lock (never a caller's snapshot) and the decision is
+   * committed before this resolves, so a rotated pair is persisted before any
+   * caller sees the new access token. Returns the committed row, or null when
+   * no row has that id. A throw from `decide` writes nothing.
+   */
+  updateLinkedIdentityCredential(
+    id: string,
+    decide: (locked: StoredLinkedIdentity) => Promise<CredentialDecision>,
+  ): Promise<StoredLinkedIdentity | null>;
   listLinkedIdentitiesForAccount(accountId: string): Promise<LinkedIdentityInput[]>;
   createCapabilityGrant(input: CreateCapabilityGrantInput): Promise<StoredCapabilityGrant>;
   listActiveGrants(accountId: string, appSlug: AppSlug, at: string): Promise<StoredCapabilityGrant[]>;

@@ -118,6 +118,7 @@ Supported providers in the skeleton:
 - `twitch`
 - `youtube`
 - `spotify`
+- `joystick`
 
 Request body:
 
@@ -172,7 +173,7 @@ Failure modes:
 Launch note:
 
 - Discord and Patreon are the implemented provider runtimes for Repixelizer
-- Twitch and YouTube now have generic OAuth exchange and identity runtimes for
+- Twitch, YouTube and Joystick have generic OAuth exchange and identity runtimes for
   StreamPixels viewer auth and managed creator connections
 - GitHub is still catalogued for start URLs, but its callback runtime is not
   implemented yet
@@ -430,9 +431,11 @@ Important behavior:
 
 - the refresh token is signed by Heimdall and scoped to one app session
 - the access token remains short-lived; app backends still verify it locally
-- if a stored provider access token is expired or near expiry, Heimdall uses
-  the stored provider refresh token and persists any rotation before
-  evaluating entitlements
+- if a stored provider access token is expired or near expiry, Heimdall takes
+  a row lock on the linked identity, re-reads it, uses the stored provider
+  refresh token and persists any rotation before evaluating entitlements; an
+  identity whose grant the provider has revoked (no stored access token)
+  contributes no entitlement
 - any app authenticated via `x-heimdall-app-secret` (`resolveAppCaller`) may
   send `entitlementPolicies`; Heimdall matches each stored identity to the
   policy for that provider. Sending policy without authenticating is
@@ -484,7 +487,36 @@ Important behavior:
 - it returns access tokens only; refresh tokens remain in Heimdall custody
 - when a stored managed credential is expired or within the refresh window,
   Heimdall refreshes it before returning the access token and persists rotated
-  access/refresh tokens
+  access/refresh tokens. The refresh runs under a row lock on the linked
+  identity (`SELECT ... FOR UPDATE`), so a given refresh token is presented to
+  the provider once across concurrent requests and across two Heimdall
+  processes sharing one database. Within one process, concurrent refreshes of
+  one identity share a single attempt and its outcome (success or failure), so
+  nobody re-presents a token behind a failed holder in that burst. Residual
+  risk, tracked as follow-up `joystick:follow_up:cross-process-failed-refresh-marker`:
+  the guard is one presentation per process per burst, so N
+  Heimdall processes can present one token N times after a transient failure.
+  The provider call is bounded at 10 seconds
+- a provider whose refresh tokens rotate (Joystick) fails closed: a refresh
+  response without a new refresh token revokes the credential instead of
+  keeping the old token
+- `410 {"error":"managed_credential_revoked","provider":...}`: the provider
+  rejected the grant (HTTP 400 whose OAuth `error` is exactly `invalid_grant`),
+  or the identity holds no access token.
+  The stored tokens are cleared and an audit event `managed_credential_revoked`
+  is written; the owner must reconnect. `404 managed_credential_not_found`
+  means no linked identity exists
+- `502 {"error":"managed_credential_refresh_failed","provider":...}`: the
+  refresh failed for any reason that is not a grant verdict (invalid client,
+  a 401 or 5xx whatever its body says, timeout, a 2xx without a string
+  `access_token` or carrying an `error`, a `refresh_token` that is present but
+  not a string, an empty or non-JSON body). Stored tokens are untouched and a
+  later request may succeed. An empty-string `refresh_token` counts as missing,
+  so a rotating provider revokes (`rotation_missing`). A token answer without a
+  usable `expires_in` (absent, non-numeric, or not a positive number or
+  positive-integer string) stores the expiry as now plus the provider's default
+  access-token lifetime (3600 seconds), so an expiry is never unknown and the
+  credential always comes due for refresh
 - app-local binding, diagnostics, subscription setup, and runtime behavior stay
   app-owned
 

@@ -44,7 +44,7 @@ What exists right now is:
   and managed creator connections
 - an app-authenticated managed-credential resolve endpoint so StreamPixels can
   call provider APIs without storing refresh tokens locally
-- managed Twitch/YouTube credentials refresh inside Heimdall before resolution
+- managed Twitch/YouTube/Joystick credentials refresh inside Heimdall before resolution
   when they are expired or near expiry
 - StreamPixels now starts viewer and creator Twitch/YouTube OAuth through
   Heimdall, redeems one-time completion codes server-side, and keeps local
@@ -215,7 +215,7 @@ Landed in the first pass:
 Still to do in this phase:
 
 - key rotation policy instead of just stable key loading
-- token custody retrieval/refresh surfaces beyond initial storage
+- token custody retrieval and refresh have landed (see `docs/architecture.md`, Managed credential custody); the open pieces are the follow-ups listed there
 
 ### Phase 2: Heimdall service skeleton
 

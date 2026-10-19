@@ -20,7 +20,11 @@ Corroborated by `gamecult-ops/nginx/streampixels.gamecult.org.conf:14`
 The current StreamPixels architecture already makes useful splits:
 
 - the web app owns the remembered viewer session
-- the service owns provider OAuth exchange and identity resolution
+- Heimdall owns provider OAuth exchange, identity resolution and refresh-token
+  custody for Twitch, YouTube and Joystick; StreamPixels never calls a provider
+  token endpoint and holds no provider refresh token. It asks Heimdall for a
+  short-lived access token (`managed-credentials/resolve`) and treats `410
+  managed_credential_revoked` as "the creator must reconnect"
 - the overlay remains auth-free
 - creator memberships and operator roles are separate from general viewer state
 
@@ -38,7 +42,7 @@ In the service-first Heimdall version, the most likely reusable slice is:
 
 - provider OAuth authority
 - identity-linking authority
-- managed Twitch/YouTube credential custody for creator connections
+- managed Twitch/YouTube/Joystick credential custody for creator connections (Joystick is a managed connection only, not a viewer sign-in provider: `startOAuthFlow` admits `sign_in` and `link` only for `identityProviders` and `connect` only for `managedConnectionProviders` or `identityProviders`, and refuses anything else before any redirect. The callback decides again from the signed state's mode: a `connect` for a managed-connection-only provider is admitted only with `connection.kind` `creator` and a `targetId`, refused otherwise at start and again at the callback before the code exchange; an admitted one stores the credential and mints a claim with no facts, no capabilities and no refresh token. Heimdall's claim is therefore never a viewer session. Heimdall cannot stop an app from minting its own viewer from a completion, so StreamPixels' redeem must treat a non-creator Joystick completion as an error, never as a sign-in. This is an S1 rule, recorded for SP)
 - entitlement refresh
 - shared claim semantics
 

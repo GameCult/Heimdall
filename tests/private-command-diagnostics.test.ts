@@ -30,7 +30,7 @@ function config(): HeimdallConfig {
     bootstrapSigningPrivateKeyOnMissing: false, tokenEncryptionKeyBase64: Buffer.alloc(32, 7).toString("base64"),
     appSharedSecrets: { ghostlight: secret }, appRuntimeIds: { ghostlight: ["yggdrasil-ghostlight"] }, appBackendCallbacks: {},
     storage: { backend: "memory", applySchemaOnStartup: true },
-    providers: { discord: { clientId: "discord-client", clientSecret: "discord-secret" }, patreon: {}, github: {}, twitch: {}, youtube: {}, spotify: {} },
+    providers: { discord: { clientId: "discord-client", clientSecret: "discord-secret" }, patreon: {}, github: {}, twitch: {}, youtube: {}, spotify: {}, joystick: {} },
   } as HeimdallConfig;
 }
 
@@ -98,7 +98,7 @@ it("keeps a provider's malformed 2xx refresh body out of every plaintext part of
   );
 
   expect(reply.status).toBe("denied");
-  expect(reply.diagnostics).toEqual(["Heimdall denied the private command (ProviderResponseError, provider_body_not_json)."]);
+  expect(reply.diagnostics).toEqual(["Heimdall denied the private command (ManagedCredentialRefreshFailed, managed_credential_refresh_failed)."]);
   expect(plaintext(reply)).not.toContain("CANARY");
 });
 
@@ -106,7 +106,7 @@ it("keeps a provider's refusal body out of every plaintext part of the reply", a
   const reply = await refreshAgainst(() => new Response('CANARYrefused {"error":"invalid_grant"}', { status: 400 }));
 
   expect(reply.status).toBe("denied");
-  expect(reply.diagnostics).toEqual(["Heimdall denied the private command (ProviderResponseError, provider_status)."]);
+  expect(reply.diagnostics).toEqual(["Heimdall denied the private command (ManagedCredentialRefreshFailed, managed_credential_refresh_failed)."]);
   expect(plaintext(reply)).not.toContain("CANARY");
 });
 

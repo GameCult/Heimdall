@@ -51,6 +51,7 @@ function testConfig(): HeimdallConfig {
       twitch: {},
       youtube: {},
       spotify: {},
+      joystick: {},
     },
   };
 }

@@ -19,7 +19,13 @@ interface BackendHandoffBase {
   connection: OAuthConnectionBinding | null;
 }
 
-export interface BackendHandoffSuccessPayload extends BackendHandoffBase, IssuedAccessClaimResult {
+/** A custody-only completion (callbackMint) carries no refresh token. */
+type RefreshFields = "refreshToken" | "refresh";
+
+export interface BackendHandoffSuccessPayload
+  extends BackendHandoffBase,
+    Omit<IssuedAccessClaimResult, RefreshFields>,
+    Partial<Pick<IssuedAccessClaimResult, RefreshFields>> {
   status: "success";
   mode: OAuthMode;
   account: AccountSummary;
