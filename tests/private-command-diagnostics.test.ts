@@ -30,7 +30,7 @@ function config(): HeimdallConfig {
     bootstrapSigningPrivateKeyOnMissing: false, tokenEncryptionKeyBase64: Buffer.alloc(32, 7).toString("base64"),
     appSharedSecrets: { ghostlight: secret }, appRuntimeIds: { ghostlight: ["yggdrasil-ghostlight"] }, appBackendCallbacks: {},
     storage: { backend: "memory", applySchemaOnStartup: true },
-    providers: { discord: { clientId: "discord-client", clientSecret: "discord-secret" }, patreon: {}, github: {}, twitch: {}, youtube: {}, spotify: {} },
+    providers: { discord: { clientId: "discord-client", clientSecret: "discord-secret" }, patreon: {}, github: {}, twitch: {}, youtube: {}, spotify: {}, joystick: {} },
   } as HeimdallConfig;
 }
 

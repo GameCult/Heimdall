@@ -99,10 +99,10 @@ const repixelizerProfile: AppProfile = {
 const streampixelsProfile: AppProfile = {
   slug: "streampixels",
   displayName: "StreamPixels",
-  profileVersion: "2026-04-26",
+  profileVersion: "2026-10-19",
   identityProviders: ["twitch", "youtube"],
   entitlementSources: [],
-  managedConnectionProviders: ["twitch", "youtube"],
+  managedConnectionProviders: ["twitch", "youtube", "joystick"],
   allowedReturnOrigins: ["https://streampixels.gamecult.org"],
   capabilities: [
     {

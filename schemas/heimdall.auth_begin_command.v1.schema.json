@@ -4,7 +4,7 @@
   "type": "object",
   "required": ["provider", "mode", "returnTo", "entitlementPolicy"],
   "properties": {
-    "provider": { "enum": ["discord", "patreon", "github", "twitch", "youtube", "spotify"] },
+    "provider": { "enum": ["discord", "patreon", "github", "twitch", "youtube", "spotify", "joystick"] },
     "mode": { "enum": ["sign_in", "link", "connect"] },
     "returnTo": { "type": "string", "format": "uri" },
     "entitlementPolicy": {

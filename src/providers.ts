@@ -105,6 +105,18 @@ export const providerCatalog: Record<Provider, ProviderDescriptor> = {
     clientIdEnv: "GC_ACCESS_PROVIDER_SPOTIFY_CLIENT_ID",
     clientSecretEnv: "GC_ACCESS_PROVIDER_SPOTIFY_CLIENT_SECRET_FILE",
   },
+  joystick: {
+    key: "joystick",
+    displayName: "Joystick",
+    authorizationEndpoint: "https://joystick.tv/api/oauth/authorize",
+    tokenEndpoint: "https://api.joystick.tv/api/oauth/token",
+    tokenEndpointAuthMethod: "client_secret_basic",
+    rotatesRefreshTokens: true,
+    defaultScopes: ["identity:read", "stream:read", "chat:read", "followers:read", "subscribers:read"],
+    roles: ["identity", "managed_credential"],
+    clientIdEnv: "GC_ACCESS_PROVIDER_JOYSTICK_CLIENT_ID",
+    clientSecretEnv: "GC_ACCESS_PROVIDER_JOYSTICK_CLIENT_SECRET_FILE",
+  },
 };
 
 export function buildAuthorizationUrl(options: {

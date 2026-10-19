@@ -138,7 +138,7 @@ const rigKinds = [
   { kind: "postgres two apps", live: true },
 ] as const;
 // Providers whose refresh goes through the real shared runtime; rotation differs by descriptor.
-const refreshProviders: Provider[] = ["twitch"];
+const refreshProviders: Provider[] = ["twitch", "joystick"];
 
 for (const { kind, live } of rigKinds) describe.skipIf(live && !adminUrl)(`managed credential refresh, ${kind}`, () => {
   const admin = live && adminUrl ? new Pool({ connectionString: adminUrl, max: 2 }) : undefined;
@@ -392,16 +392,39 @@ for (const { kind, live } of rigKinds) describe.skipIf(live && !adminUrl)(`manag
       expect(rig.custody.decrypt(outcome.identity.accessTokenEncrypted!)).toBe("access-1");
     });
 
-    it("a response without a refresh token keeps the old one for a non-rotating provider", timeout, async () => {
-      expect(providerCatalog[provider].rotatesRefreshTokens).toBe(false);
-      const rig = await makeRig(provider);
-      const endpoint = installTokenEndpoint(provider, "refresh-0");
-      endpoint.mode = "no_refresh_token";
-      const answer = await rig.resolve();
-      expect(answer.statusCode).toBe(200);
-      expect(answer.json.accessToken).toBe("access-norefresh");
-      expect(rig.custody.decrypt((await rig.row()).refreshTokenEncrypted!)).toBe("refresh-0");
-    });
+    if (providerCatalog[provider].rotatesRefreshTokens) {
+      it("rotation-fails-closed: a response without a refresh token revokes, 410, and the old token is never presented again", timeout, async () => {
+        const rig = await makeRig(provider);
+        const endpoint = installTokenEndpoint(provider, "refresh-0");
+        endpoint.mode = "no_refresh_token";
+
+        const first = await rig.resolve();
+        expect(first.statusCode).toBe(410);
+        expect(first.json).toEqual({ error: "managed_credential_revoked", provider });
+        expect(first.body).not.toContain("access-norefresh");
+        const row = await rig.row();
+        expect(row.accessTokenEncrypted).toBeUndefined();
+        expect(row.refreshTokenEncrypted).toBeUndefined();
+        expect(row.tokenExpiresAt).toBeUndefined();
+
+        const second = await rig.resolve();
+        expect(second.statusCode).toBe(410);
+        expect(endpoint.calls).toBe(1);
+        expect((await rig.audit()).filter((e) => e.eventType === "managed_credential_revoked")).toEqual([
+          { eventType: "managed_credential_revoked", payload: { provider, reason: "rotation_missing" } },
+        ]);
+      });
+    } else {
+      it("a response without a refresh token keeps the old one for a non-rotating provider", timeout, async () => {
+        const rig = await makeRig(provider);
+        const endpoint = installTokenEndpoint(provider, "refresh-0");
+        endpoint.mode = "no_refresh_token";
+        const answer = await rig.resolve();
+        expect(answer.statusCode).toBe(200);
+        expect(answer.json.accessToken).toBe("access-norefresh");
+        expect(rig.custody.decrypt((await rig.row()).refreshTokenEncrypted!)).toBe("refresh-0");
+      });
+    }
 
     it("a row with no access token resolves as revoked (410), a missing row as not found (404)", timeout, async () => {
       const rig = await makeRig(provider, { accessToken: null, refreshToken: null });

@@ -49,6 +49,7 @@ function createTestConfig(): HeimdallConfig {
       twitch: { clientId: "twitch-client", clientSecret: "twitch-secret" },
       youtube: { clientId: "youtube-client", clientSecret: "youtube-secret" },
       spotify: { clientId: "spotify-client", clientSecret: "spotify-secret" },
+      joystick: { clientId: "joystick-client", clientSecret: "joystick-secret" },
     },
   };
 }
@@ -974,7 +975,8 @@ describe("Heimdall service", () => {
     expect(profileResponse.json()).toEqual(
       expect.objectContaining({
         slug: "streampixels",
-        managedConnectionProviders: ["twitch", "youtube"],
+        identityProviders: ["twitch", "youtube"],
+        managedConnectionProviders: ["twitch", "youtube", "joystick"],
       })
     );
   });
@@ -1347,6 +1349,109 @@ describe("Heimdall service", () => {
     expect(response.statusCode).toBe(404);
     expect(response.json()).toEqual({ error: "patreon_identity_not_linked" });
     expect(urls).toEqual([]);
+  });
+
+  describe("joystick connect", () => {
+    async function connect(app: FastifyInstance) {
+      const start = await app.inject({
+        method: "POST",
+        url: "/v1/oauth/joystick/start",
+        payload: { appSlug: "streampixels", mode: "connect", returnTo: "https://streampixels.gamecult.org/auth/connect" },
+      });
+      return start;
+    }
+
+    it("starts a streampixels connect at joystick.tv with the five scopes and the callback redirect", async () => {
+      const app = await buildApp({ config: createTestConfig() });
+      apps.push(app);
+      const start = await connect(app);
+      expect(start.statusCode).toBe(201);
+      const url = new URL(start.json().authorizationUrl as string);
+      expect(`${url.origin}${url.pathname}`).toBe("https://joystick.tv/api/oauth/authorize");
+      expect(url.searchParams.get("client_id")).toBe("joystick-client");
+      expect(url.searchParams.get("scope")).toBe("identity:read stream:read chat:read followers:read subscribers:read");
+      expect(url.searchParams.get("redirect_uri")).toBe("https://heimdall.gamecult.org/v1/oauth/joystick/callback");
+    });
+
+    function stubJoystick(identity: Record<string, unknown>) {
+      const calls: Array<{ url: string; headers: Record<string, string>; body?: URLSearchParams }> = [];
+      globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
+        const url = String(input);
+        calls.push({ url, headers: (init?.headers ?? {}) as Record<string, string>, body: init?.body as URLSearchParams | undefined });
+        if (url === "https://api.joystick.tv/api/oauth/token") {
+          return new Response(
+            JSON.stringify({ access_token: "js-access", refresh_token: "js-refresh", token_type: "Bearer", expires_in: 864000 }),
+            { status: 200 }
+          );
+        }
+        if (url === "https://api.joystick.tv/api/v1/me/identity") {
+          return new Response(JSON.stringify(identity), { status: 200 });
+        }
+        return new Response("unexpected", { status: 500 });
+      }) as typeof fetch;
+      return calls;
+    }
+
+    it("exchanges the code with Basic client auth and links the identity by channel id", async () => {
+      const store = new InMemoryStore();
+      const app = await buildApp({ config: createTestConfig(), store });
+      apps.push(app);
+      const calls = stubJoystick({ channel_id: "chan-9", username: "deru", nickname: "Deru!", photo_url: "https://img/x.png" });
+      const stateToken = (await connect(app)).json().stateToken as string;
+
+      const callback = await app.inject({
+        method: "GET",
+        url: `/v1/oauth/joystick/callback?code=the-code&state=${encodeURIComponent(stateToken)}`,
+      });
+      expect(callback.statusCode).toBeLessThan(300);
+
+      const exchange = calls.find((c) => c.url === "https://api.joystick.tv/api/oauth/token")!;
+      expect(exchange.headers.Authorization).toBe(`Basic ${Buffer.from("joystick-client:joystick-secret").toString("base64")}`);
+      expect(exchange.body!.get("grant_type")).toBe("authorization_code");
+      expect(exchange.body!.get("code")).toBe("the-code");
+      expect(exchange.body!.get("redirect_uri")).toBe("https://heimdall.gamecult.org/v1/oauth/joystick/callback");
+      expect(exchange.body!.has("client_secret")).toBe(false);
+      const identityCall = calls.find((c) => c.url === "https://api.joystick.tv/api/v1/me/identity")!;
+      expect(identityCall.headers.Authorization).toBe("Bearer js-access");
+
+      const accountId = callback.json().account.id as string;
+      const row = await store.findStoredLinkedIdentityForAccount(accountId, "joystick");
+      expect(row).toMatchObject({ providerUserId: "chan-9", username: "deru", displayName: "Deru!" });
+      expect(row?.accessTokenEncrypted).toEqual(expect.any(String));
+      expect(row?.accessTokenEncrypted).not.toContain("js-access");
+      expect(row?.refreshTokenEncrypted).toEqual(expect.any(String));
+      const left = Date.parse(row!.tokenExpiresAt!) - Date.now();
+      expect(left).toBeGreaterThan(863_000 * 1000);
+      expect(left).toBeLessThanOrEqual(864_000 * 1000);
+    });
+
+    it("falls back to the username for the display name", async () => {
+      const store = new InMemoryStore();
+      const app = await buildApp({ config: createTestConfig(), store });
+      apps.push(app);
+      stubJoystick({ channel_id: "chan-9", username: "deru" });
+      const stateToken = (await connect(app)).json().stateToken as string;
+      const callback = await app.inject({
+        method: "GET",
+        url: `/v1/oauth/joystick/callback?code=c&state=${encodeURIComponent(stateToken)}`,
+      });
+      const row = await store.findStoredLinkedIdentityForAccount(callback.json().account.id as string, "joystick");
+      expect(row?.displayName).toBe("deru");
+    });
+
+    it("fails the callback when the identity has no channel id", async () => {
+      const store = new InMemoryStore();
+      const app = await buildApp({ config: createTestConfig(), store });
+      apps.push(app);
+      stubJoystick({ username: "deru" });
+      const stateToken = (await connect(app)).json().stateToken as string;
+      const callback = await app.inject({
+        method: "GET",
+        url: `/v1/oauth/joystick/callback?code=c&state=${encodeURIComponent(stateToken)}`,
+      });
+      expect(callback.statusCode).toBeGreaterThanOrEqual(400);
+      expect(await store.findStoredLinkedIdentity("joystick", "undefined")).toBeNull();
+    });
   });
 
   it("no longer honors a global shared secret across apps", async () => {

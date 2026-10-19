@@ -513,6 +513,45 @@ async function resolveSpotifyIdentity(options: { accessToken: string }): Promise
   return identity;
 }
 
+async function resolveJoystickIdentity(options: { accessToken: string }): Promise<ResolvedIdentity> {
+  const profile = await fetchJson<{
+    channel_id?: string;
+    username?: string;
+    nickname?: string;
+    photo_url?: string;
+  }>(
+    "https://api.joystick.tv/api/v1/me/identity",
+    {
+      headers: {
+        Authorization: `Bearer ${options.accessToken}`,
+      },
+    },
+    "Joystick identity lookup failed"
+  );
+
+  if (!profile.channel_id) {
+    throw new Error("Joystick identity response did not include a channel id.");
+  }
+
+  const identity: ResolvedIdentity = {
+    provider: "joystick",
+    providerUserId: profile.channel_id,
+    profile: profile as unknown as Record<string, unknown>,
+  };
+  const displayName = profile.nickname ?? profile.username;
+  if (profile.username) {
+    identity.username = profile.username;
+  }
+  if (displayName) {
+    identity.displayName = displayName;
+  }
+  if (profile.photo_url) {
+    identity.avatarUrl = profile.photo_url;
+  }
+
+  return identity;
+}
+
 async function evaluateDiscordEntitlements(options: {
   config: HeimdallConfig;
   callback: OAuthCallbackContext;
@@ -860,6 +899,15 @@ const spotifyRuntime: OAuthProviderRuntime = {
   },
 };
 
+const joystickRuntime: OAuthProviderRuntime = {
+  exchangeAuthorizationCode: sharedRuntimeExchange("joystick"),
+  refreshAccessToken: sharedRuntimeRefresh("joystick"),
+  resolveIdentity: resolveJoystickIdentity,
+  async evaluateEntitlements() {
+    return { facts: [], snapshots: [] };
+  },
+};
+
 const notImplementedRuntime: OAuthProviderRuntime = {
   async exchangeAuthorizationCode() {
     throw new Error("Provider callback exchange is not implemented yet.");
@@ -882,5 +930,6 @@ export function createOAuthRuntimeRegistry(): OAuthRuntimeRegistry {
     twitch: twitchRuntime,
     youtube: youtubeRuntime,
     spotify: spotifyRuntime,
+    joystick: joystickRuntime,
   };
 }
