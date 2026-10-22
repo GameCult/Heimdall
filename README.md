@@ -12,6 +12,19 @@ The point is painfully simple:
   become "everything phones home for every request"
 - keep app-domain data separate so "shared auth" does not become "shared swamp"
 
+## Front Door
+
+- **Value:** one shared auth authority: provider OAuth (Discord, Patreon, GitHub, Twitch, YouTube, Spotify), linked identities, grants, entitlements and session issuance, with Ed25519-signed claims that app backends verify locally.
+- **Problem:** every GameCult app was rebuilding Discord/Patreon login glue. Heimdall centralizes identity authority and keeps app-domain data in the apps.
+- **Entry points:**
+  - `src/index.ts` and `src/app.ts`: the Fastify service. `src/signing.ts` and `src/claims.ts` issue JWTs and serve `/.well-known/jwks.json`; `src/oauth.ts` and `src/providers.ts` own provider flows.
+  - `src/verifier.ts`: the local verifier helper an app backend imports to validate Heimdall JWTs without phoning home.
+  - `src/odin-publication.ts` and `plugins/gamecult.heimdall.access`: the redacted Odin/Eve provider advertisement and the `gamecult.heimdall.access` plugin (`docs/eve-access-plugin.md`).
+  - `docs/architecture.md`, `docs/service-contract.md`, `docs/verse-service-contract.md`, `docs/app-profiles/`: the contracts.
+  - `pnpm install`, `pnpm dev`, `pnpm test` (see Dev Commands).
+- **Live:** a stateful first slice: signing and JWKS, OAuth state for six providers, in-memory and Postgres stores, a real Discord callback path for the Repixelizer flow, sealed provider tokens, the loopback CultNet operation boundary, Idunn health publication, and the deployed Ghostlight Eve host consuming the discovered boundary.
+- **Planned:** the two-account and eight-account Ghostlight human canaries, refresh and revocation flows, admin surfaces, and broader inspection projections beyond the redacted access boundary.
+
 ## Current Shape
 
 This repo now has a stateful first slice instead of a decorative skeleton.
