@@ -22,7 +22,7 @@
     "@gamecult/cultcache-ts": "file:vendor/CultLib/packages/cultcache-ts",
     "cultmesh-ts": "file:vendor/CultLib/packages/cultmesh-ts",
     "cultnet-ts": "file:vendor/CultLib/packages/cultnet-ts",
-    "fastify": "^5.8.5",
+    "fastify": "^5.12.6",
     "pg": "^8.20.0",
     "zod": "^3.25.76"
   },
