@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { inspect } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { type FastifyInstance } from "fastify";
-import { buildApp, errorIdentity } from "../src/app.js";
+import { buildApp, errorIdentity, getHeimdallRuntimeContext, startOAuthFlow } from "../src/app.js";
+import { resolveAppCaller } from "../src/app-caller.js";
 import { builtInAppProfiles, callbackMint } from "../src/app-profiles.js";
 import { deliverBackendHandoff, type BackendHandoffPayload } from "../src/backend-handoff.js";
 import { type HeimdallConfig, loadConfig } from "../src/config.js";
@@ -256,9 +257,9 @@ describe("Heimdall service", () => {
     // (finding known-nonce-login-csrf).
     const victimAttempt = "VICTIM-ATTEMPT-NONCE";
     const bifrostReturn = `https://bifrost.gamecult.org/auth/heimdall/complete?attempt=${victimAttempt}`;
-    const bifrostStart = (handoff?: object) => ({
-      appSlug: "bifrost",
-      mode: "sign_in",
+    const bifrostStart = (handoff?: { kind: "browser_completion" }) => ({
+      appSlug: "bifrost" as const,
+      mode: "sign_in" as const,
       returnTo: bifrostReturn,
       ...(handoff ? { handoff } : {}),
     });
@@ -321,6 +322,23 @@ describe("Heimdall service", () => {
         expect(response.statusCode, secret).toBe(401);
         expect(response.json()).toEqual({ error: "app_auth_required" });
       }
+    });
+
+    it("refuses another app's authenticated caller on a direct Bifrost start, with no policy attached", async () => {
+      // Over HTTP the caller is resolved against the body's slug, so a foreign
+      // secret never becomes a caller at all. The command plane and direct
+      // callers hand startOAuthFlow a caller of their own, so the slug match is
+      // decided here too.
+      const config = createTestConfig();
+      const app = await buildApp({ config });
+      apps.push(app);
+      const foreign = resolveAppCaller(config, "repixelizer", { "x-heimdall-app-secret": "repixelizer-secret" });
+      const own = resolveAppCaller(config, "bifrost", { "x-heimdall-app-secret": "bifrost-secret" });
+
+      const refused = await startOAuthFlow(getHeimdallRuntimeContext(app), "discord", foreign, bifrostStart({ kind: "browser_completion" }));
+      expect(refused.statusCode).toBe(401);
+      const allowed = await startOAuthFlow(getHeimdallRuntimeContext(app), "discord", own, bifrostStart({ kind: "browser_completion" }));
+      expect(allowed.statusCode).toBe(201);
     });
 
     it("leaves public-by-design apps unchanged: unauthenticated browser_completion starts still succeed", async () => {
