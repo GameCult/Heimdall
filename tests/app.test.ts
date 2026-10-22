@@ -249,6 +249,104 @@ describe("Heimdall service", () => {
     expect(response.json()).toEqual(expect.objectContaining({ error: "app_auth_required" }));
   });
 
+  describe("apps that bind browser completion to their own attempt", () => {
+    // Bifrost's browser binding is the secrecy of its attempt nonce, which
+    // travels readable in the signed state. Only Bifrost may mint a Bifrost
+    // state, so a known nonce cannot carry a stranger's completion
+    // (finding known-nonce-login-csrf).
+    const victimAttempt = "VICTIM-ATTEMPT-NONCE";
+    const bifrostReturn = `https://bifrost.gamecult.org/auth/heimdall/complete?attempt=${victimAttempt}`;
+    const bifrostStart = (handoff?: object) => ({
+      appSlug: "bifrost",
+      mode: "sign_in",
+      returnTo: bifrostReturn,
+      ...(handoff ? { handoff } : {}),
+    });
+
+    it("refuses an unauthenticated Bifrost start for browser_completion and for an omitted handoff", async () => {
+      const app = await buildApp({ config: createTestConfig() });
+      apps.push(app);
+
+      for (const payload of [bifrostStart({ kind: "browser_completion" }), bifrostStart()]) {
+        const response = await app.inject({ method: "POST", url: "/v1/oauth/discord/start", payload });
+        expect(response.statusCode).toBe(401);
+        expect(response.json()).toEqual({ error: "app_auth_required" });
+      }
+    });
+
+    it("the attack fails: a stranger cannot obtain a Bifrost state carrying a chosen return_to nonce", async () => {
+      const app = await buildApp({ config: createTestConfig() });
+      apps.push(app);
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/oauth/discord/start",
+        payload: bifrostStart({ kind: "browser_completion" }),
+      });
+      expect(response.statusCode).toBe(401);
+      expect(response.body).not.toContain(victimAttempt);
+      expect(response.body).not.toContain("stateToken");
+      expect(response.body).not.toContain("authorizationUrl");
+    });
+
+    it("still starts for Bifrost's own app secret, with the requested return_to in the state", async () => {
+      const app = await buildApp({ config: createTestConfig() });
+      apps.push(app);
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/oauth/discord/start",
+        headers: { "x-heimdall-app-secret": "bifrost-secret" },
+        payload: bifrostStart({ kind: "browser_completion" }),
+      });
+      expect(response.statusCode).toBe(201);
+      const verified = verifyJwt(response.json().stateToken as string, getPublicKey(app));
+      expect(verified.valid).toBe(true);
+      if (verified.valid) {
+        expect(verified.payload).toEqual(expect.objectContaining({ app_slug: "bifrost", return_to: bifrostReturn }));
+      }
+    });
+
+    it("refuses another app's credentials on a Bifrost start", async () => {
+      const app = await buildApp({ config: createTestConfig() });
+      apps.push(app);
+
+      for (const secret of ["streampixels-secret", "repixelizer-secret"]) {
+        const response = await app.inject({
+          method: "POST",
+          url: "/v1/oauth/discord/start",
+          headers: { "x-heimdall-app-secret": secret },
+          payload: bifrostStart({ kind: "browser_completion" }),
+        });
+        expect(response.statusCode, secret).toBe(401);
+        expect(response.json()).toEqual({ error: "app_auth_required" });
+      }
+    });
+
+    it("leaves public-by-design apps unchanged: unauthenticated browser_completion starts still succeed", async () => {
+      const app = await buildApp({ config: createTestConfig() });
+      apps.push(app);
+
+      for (const [appSlug, provider, returnTo] of [
+        ["repixelizer", "discord", "https://repixelizer.gamecult.org/app/"],
+        ["streampixels", "twitch", "https://streampixels.gamecult.org/app/"],
+      ] as const) {
+        const response = await app.inject({
+          method: "POST",
+          url: `/v1/oauth/${provider}/start`,
+          payload: { appSlug, mode: "sign_in", returnTo, handoff: { kind: "browser_completion" } },
+        });
+        expect(response.statusCode, appSlug).toBe(201);
+      }
+    });
+
+    it("flags only Bifrost's profile", () => {
+      expect(
+        Object.values(builtInAppProfiles).filter((profile) => profile.startRequiresAppCaller).map((profile) => profile.slug)
+      ).toEqual(["bifrost"]);
+    });
+  });
+
   it("accepts caller-owned entitlement policy for a browser completion handoff when the caller is trusted", async () => {
     // The other half of the same pin: a caller holding the secret may attach
     // policy even without a backend_callback handoff, because identity no
