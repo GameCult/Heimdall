@@ -14,6 +14,7 @@ import { createOAuthRuntimeRegistry } from "../src/oauth.js";
 import { providerCatalog } from "../src/providers.js";
 import { InMemoryStore, PostgresStore, type HeimdallStore } from "../src/store/index.js";
 import { type StoredLinkedIdentity } from "../src/store/types.js";
+import { launchFlow } from "./oauth-flow.js";
 
 const originalFetch = globalThis.fetch;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -581,9 +582,11 @@ for (const { kind, live } of rigKinds) describe.skipIf(live && !adminUrl)(`manag
       const app = rig.apps[0]!;
       const start = await app.inject({ method: "POST", url: `/v1/oauth/${provider}/start`, payload: { appSlug: "streampixels", mode, returnTo, ...(mode === "connect" ? { connection: { kind: "creator", targetId: "creator-1" } } : {}) } });
       expect(start.statusCode).toBe(201);
+      const flow = await launchFlow(app, start.json());
       const callback = await app.inject({
         method: "GET",
-        url: `/v1/oauth/${provider}/callback?code=c&state=${encodeURIComponent(start.json().stateToken as string)}`,
+        url: `/v1/oauth/${provider}/callback?code=c&state=${encodeURIComponent(flow.state)}`,
+        headers: { cookie: flow.cookie },
       });
       expect(callback.statusCode).toBe(201);
       const redeem = await app.inject({
@@ -633,9 +636,11 @@ for (const { kind, live } of rigKinds) describe.skipIf(live && !adminUrl)(`manag
         payload: { appSlug: "streampixels", mode: "connect", returnTo, connection: { kind: "creator", targetId: "creator-1" } },
       });
       expect(start.statusCode).toBe(201);
+      const flow = await launchFlow(app, start.json());
       const callback = await app.inject({
         method: "GET",
-        url: `/v1/oauth/joystick/callback?code=c&state=${encodeURIComponent(start.json().stateToken as string)}`,
+        url: `/v1/oauth/joystick/callback?code=c&state=${encodeURIComponent(flow.state)}`,
+        headers: { cookie: flow.cookie },
       });
       expect(callback.statusCode).toBeGreaterThanOrEqual(400);
       expect(callback.body).not.toContain("tok-access");

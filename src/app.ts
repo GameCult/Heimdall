@@ -1,6 +1,7 @@
 import { createHmac, randomUUID } from "node:crypto";
+import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
-import Fastify, { type FastifyError, type FastifyInstance } from "fastify";
+import Fastify, { type FastifyError, type FastifyInstance, type FastifyReply } from "fastify";
 import { type AppCaller, isAppCaller, resolveAppCaller } from "./app-caller.js";
 import { deliverBackendHandoff, type BackendHandoffPayload } from "./backend-handoff.js";
 import {
@@ -93,6 +94,7 @@ function buildOAuthStateToken(options: {
   connection: OAuthConnectionBinding | undefined;
   handoff: OAuthHandoff;
   entitlementPolicy: OAuthEntitlementPolicy | undefined;
+  requestedScopes: string[] | undefined;
   keys: ReturnType<typeof createRuntimeKeyMaterial>;
 }): { token: string; expiresAt: string } {
   const issuedAt = nowEpochSeconds();
@@ -113,6 +115,7 @@ function buildOAuthStateToken(options: {
     connection: options.connection ?? null,
     handoff: options.handoff,
     entitlement_policy: options.entitlementPolicy ?? null,
+    requested_scopes: options.requestedScopes ?? null,
   };
   const token = signJwt(payload as unknown as Record<string, unknown>, options.keys);
 
@@ -151,6 +154,11 @@ function parseOAuthStatePayload(payload: Record<string, unknown>): OAuthStatePay
         entitlementPolicy !== null &&
         (entitlementPolicy as Record<string, unknown>).kind === "patreon_membership_access" &&
         typeof (entitlementPolicy as Record<string, unknown>).requiredTierTitle === "string"));
+  const requestedScopes = payload.requested_scopes;
+  const requestedScopesAreValid =
+    requestedScopes === null ||
+    requestedScopes === undefined ||
+    (Array.isArray(requestedScopes) && requestedScopes.every((scope) => typeof scope === "string"));
   if (
     payload.typ !== "heimdall_oauth_state" ||
     typeof payload.provider !== "string" ||
@@ -168,7 +176,8 @@ function parseOAuthStatePayload(payload: Record<string, unknown>): OAuthStatePay
     typeof payload.nbf !== "number" ||
     typeof payload.exp !== "number" ||
     !handoffIsValid ||
-    !entitlementPolicyIsValid
+    !entitlementPolicyIsValid ||
+    !requestedScopesAreValid
   ) {
     return null;
   }
@@ -180,8 +189,97 @@ function parseOAuthStatePayload(payload: Record<string, unknown>): OAuthStatePay
   if (!normalizedPayload.entitlement_policy) {
     normalizedPayload.entitlement_policy = null;
   }
+  if (!normalizedPayload.requested_scopes) {
+    normalizedPayload.requested_scopes = null;
+  }
 
   return normalizedPayload;
+}
+
+type OAuthStateVerdict =
+  | { ok: true; payload: OAuthStatePayload }
+  | { ok: false; error: "invalid_state" | "state_provider_mismatch" | "state_expired" };
+
+/**
+ * The one place a signed OAuth state becomes trusted: signature, shape, issuer,
+ * audience and provider, and the time window with the same 30 s skew refresh
+ * tokens use. Every route that turns a state into navigation or a completion
+ * runs this first; the refusals are fixed codes and never echo the token.
+ */
+function verifyOAuthState(
+  config: HeimdallConfig,
+  keys: ReturnType<typeof createRuntimeKeyMaterial>,
+  token: string,
+  provider: Provider
+): OAuthStateVerdict {
+  const verification = verifyJwt(token, keys.publicKey);
+  if (!verification.valid) {
+    return { ok: false, error: "invalid_state" };
+  }
+
+  const payload = parseOAuthStatePayload(verification.payload);
+  if (!payload || payload.iss !== config.issuer) {
+    return { ok: false, error: "invalid_state" };
+  }
+  if (payload.aud !== payload.provider || payload.provider !== provider) {
+    return { ok: false, error: "state_provider_mismatch" };
+  }
+
+  const now = nowEpochSeconds();
+  if (payload.nbf > now + 30 || payload.exp <= now - 30) {
+    return { ok: false, error: "state_expired" };
+  }
+
+  return { ok: true, payload };
+}
+
+const oauthBindingType = "heimdall_oauth_binding";
+
+function oauthBindingCookieName(jti: string): string {
+  return `__Host-heimdall-oauth-${jti}`;
+}
+
+/** The signed claim that this browser launched this state: it is the cookie's value, and needs no store read to check. */
+function signOAuthBinding(
+  config: HeimdallConfig,
+  keys: ReturnType<typeof createRuntimeKeyMaterial>,
+  state: OAuthStatePayload
+): string {
+  return signJwt(
+    { typ: oauthBindingType, iss: config.issuer, jti: state.jti, iat: nowEpochSeconds(), exp: state.exp },
+    keys
+  );
+}
+
+function oauthBindingHolds(
+  config: HeimdallConfig,
+  keys: ReturnType<typeof createRuntimeKeyMaterial>,
+  token: string | undefined,
+  state: OAuthStatePayload
+): boolean {
+  if (!token) {
+    return false;
+  }
+  const verification = verifyJwt(token, keys.publicKey);
+  if (!verification.valid) {
+    return false;
+  }
+  const { typ, iss, jti, exp } = verification.payload;
+  return typ === oauthBindingType && iss === config.issuer && jti === state.jti && typeof exp === "number" && exp > nowEpochSeconds();
+}
+
+function setOAuthBindingCookie(reply: FastifyReply, state: OAuthStatePayload, value: string, maxAgeSeconds: number): void {
+  reply.setCookie(oauthBindingCookieName(state.jti), value, {
+    path: "/",
+    secure: true,
+    httpOnly: true,
+    sameSite: "lax",
+    maxAge: Math.max(0, maxAgeSeconds),
+  });
+}
+
+function oauthCallbackUrl(config: HeimdallConfig, provider: Provider): string {
+  return `${config.publicBaseUrl}/v1/oauth/${provider}/callback`;
 }
 
 function buildGrantFacts(grants: StoredCapabilityGrant[]): string[] {
@@ -566,7 +664,6 @@ export async function startOAuthFlow(
     };
   }
 
-  const callbackUrl = `${config.publicBaseUrl}/v1/oauth/${provider}/callback`;
   const state = buildOAuthStateToken({
     config,
     provider,
@@ -576,6 +673,7 @@ export async function startOAuthFlow(
     connection: input.connection,
     handoff,
     entitlementPolicy,
+    requestedScopes: input.requestedScopes,
     keys,
   });
 
@@ -585,16 +683,9 @@ export async function startOAuthFlow(
       provider,
       appSlug: profile.slug,
       mode: input.mode,
-      callbackUrl,
-      authorizationUrl: buildAuthorizationUrl({
-        provider,
-        clientId: providerConfig.clientId,
-        redirectUri: callbackUrl,
-        state: state.token,
-        requestedScopes: input.requestedScopes,
-      }),
+      callbackUrl: oauthCallbackUrl(config, provider),
+      authorizationUrl: `${config.publicBaseUrl}/v1/oauth/${provider}/launch?state=${encodeURIComponent(state.token)}`,
       handoff,
-      stateToken: state.token,
       stateExpiresAt: state.expiresAt,
     },
   };
@@ -738,6 +829,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     origin: true,
     credentials: true,
   });
+  await app.register(cookie);
 
   app.get("/healthz", async () => ({
     ok: true,
@@ -874,6 +966,72 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
   app.get<{
     Params: { provider: Provider };
+    Querystring: { state: string };
+  }>(
+    "/v1/oauth/:provider/launch",
+    {
+      schema: {
+        params: {
+          type: "object",
+          required: ["provider"],
+          additionalProperties: false,
+          properties: {
+            provider: { type: "string", enum: [...providers] },
+          },
+        },
+        querystring: {
+          type: "object",
+          required: ["state"],
+          additionalProperties: false,
+          properties: {
+            state: { type: "string", minLength: 1 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const verified = verifyOAuthState(config, keys, request.query.state, request.params.provider);
+      if (!verified.ok) {
+        reply.code(400);
+        return { error: verified.error };
+      }
+      const state = verified.payload;
+      const clientId = config.providers[state.provider].clientId;
+      if (!clientId) {
+        reply.code(503);
+        return { error: "provider_not_configured", provider: state.provider, expectedEnv: providerExpectedEnv(state.provider) };
+      }
+
+      const first = await store.claimOAuthStateUse({
+        jti: state.jti,
+        phase: "launch",
+        appSlug: state.app_slug,
+        usedAt: new Date().toISOString(),
+        expiresAt: new Date(state.exp * 1000).toISOString(),
+      });
+      if (!first) {
+        reply.code(400);
+        return { error: "state_already_launched" };
+      }
+
+      setOAuthBindingCookie(reply, state, signOAuthBinding(config, keys, state), state.exp - nowEpochSeconds());
+      reply.header("Cache-Control", "no-store");
+      reply.header("Referrer-Policy", "no-referrer");
+      return reply.redirect(
+        buildAuthorizationUrl({
+          provider: state.provider,
+          clientId,
+          redirectUri: oauthCallbackUrl(config, state.provider),
+          state: request.query.state,
+          requestedScopes: state.requested_scopes ?? undefined,
+        }),
+        302
+      );
+    }
+  );
+
+  app.get<{
+    Params: { provider: Provider };
     Querystring: { code?: string; state?: string; error?: string; error_description?: string };
   }>(
     "/v1/oauth/:provider/callback",
@@ -905,16 +1063,29 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         return { error: "missing_state" };
       }
 
-      const verification = verifyJwt(request.query.state, keys.publicKey);
-      if (!verification.valid) {
+      const verified = verifyOAuthState(config, keys, request.query.state, request.params.provider);
+      if (!verified.ok) {
         reply.code(400);
-        return { error: "invalid_state", detail: verification.error };
+        return { error: verified.error };
       }
-
-      const statePayload = parseOAuthStatePayload(verification.payload);
-      if (!statePayload || statePayload.provider !== request.params.provider) {
+      const statePayload = verified.payload;
+      // The cookie is checked before the claim: a stranger without it must not be
+      // able to burn the state that the browser that launched it still needs.
+      if (!oauthBindingHolds(config, keys, request.cookies[oauthBindingCookieName(statePayload.jti)], statePayload)) {
         reply.code(400);
-        return { error: "state_provider_mismatch" };
+        return { error: "state_not_bound" };
+      }
+      setOAuthBindingCookie(reply, statePayload, "", 0);
+      const firstCallback = await store.claimOAuthStateUse({
+        jti: statePayload.jti,
+        phase: "callback",
+        appSlug: statePayload.app_slug,
+        usedAt: new Date().toISOString(),
+        expiresAt: new Date(statePayload.exp * 1000).toISOString(),
+      });
+      if (!firstCallback) {
+        reply.code(400);
+        return { error: "state_already_used" };
       }
       const handoff = statePayload.handoff ?? { kind: "browser_completion" };
       const denyBrowserAttempt = async (denialCode: string): Promise<void> => {

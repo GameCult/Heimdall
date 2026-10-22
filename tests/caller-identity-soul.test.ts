@@ -18,6 +18,7 @@ import { type OAuthProviderRuntime } from "../src/oauth.js";
 import { startHeimdallPrivateCommandPlane } from "../src/private-command-plane.js";
 import { sealPrivateEnvelope, type HeimdallPrivateEnvelope } from "../src/private-command-security.js";
 import { InMemoryStore } from "../src/store/index.js";
+import { launchFlow } from "./oauth-flow.js";
 
 const ghostlightSecret = "ghostlight-private-command-secret";
 const resources: Array<{ close(): Promise<unknown> }> = [];
@@ -104,10 +105,11 @@ describe("caller identity: unauthenticated mint paths", () => {
     });
     expect(start.statusCode).toBe(201);
 
+    const flow = await launchFlow(app, start.json());
     const callback = await app.inject({
       method: "GET",
-      url: `/v1/oauth/discord/callback?code=victim-code&state=${encodeURIComponent(start.json().stateToken as string)}`,
-      headers: { accept: "text/html" },
+      url: `/v1/oauth/discord/callback?code=victim-code&state=${encodeURIComponent(flow.state)}`,
+      headers: { accept: "text/html", cookie: flow.cookie },
     });
     expect(callback.statusCode).toBe(200);
 

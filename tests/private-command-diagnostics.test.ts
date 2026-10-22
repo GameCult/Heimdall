@@ -12,6 +12,7 @@ import { type HeimdallConfig } from "../src/config.js";
 import { startHeimdallPrivateCommandPlane } from "../src/private-command-plane.js";
 import { openPrivateEnvelope, sealPrivateEnvelope, type HeimdallPrivateEnvelope } from "../src/private-command-security.js";
 import { InMemoryStore } from "../src/store/index.js";
+import { launchState } from "./oauth-flow.js";
 
 const secret = "ghostlight-private-command-secret";
 const resources: Array<{ close(): Promise<unknown> }> = [];
@@ -73,10 +74,11 @@ async function refreshAgainst(refreshAnswer: () => Response) {
   const begin = open(await command(plane.endpoint, "heimdall.auth.begin", "heimdall.auth_begin_command.v1", "k1",
     { provider: "discord", mode: "sign_in", returnTo: "https://yggdrasil.gamecult.org/ghostlight/", entitlementPolicy: policy }));
   const state = new URL(String((begin.navigation as { url: string }).url)).searchParams.get("state")!;
+  const { cookie } = await launchState(app, state);
   const callback = await app.inject({
     method: "GET",
     url: `/v1/oauth/discord/callback?code=c1&state=${encodeURIComponent(state)}`,
-    headers: { accept: "application/json" },
+    headers: { accept: "application/json", cookie },
   });
   expect(callback.statusCode, callback.body).toBe(201);
   const done = open(await command(plane.endpoint, "heimdall.auth.complete", "heimdall.auth_complete_command.v1", "k2", { handle: begin.handle }));
@@ -133,10 +135,11 @@ it("keeps the completion code out of the audit trail when the plane redeems by a
   const begin = open(await command(plane.endpoint, "heimdall.auth.begin", "heimdall.auth_begin_command.v1", "k1",
     { provider: "discord", mode: "sign_in", returnTo: "https://yggdrasil.gamecult.org/ghostlight/", entitlementPolicy: policy }));
   const state = new URL(String((begin.navigation as { url: string }).url)).searchParams.get("state")!;
+  const { cookie } = await launchState(app, state);
   const callback = await app.inject({
     method: "GET",
     url: `/v1/oauth/discord/callback?code=c1&state=${encodeURIComponent(state)}`,
-    headers: { accept: "application/json" },
+    headers: { accept: "application/json", cookie },
   });
   const code = (callback.json().completion as { code: string }).code;
   const done = open(await command(plane.endpoint, "heimdall.auth.complete", "heimdall.auth_complete_command.v1", "k2", { handle: begin.handle }));

@@ -11,6 +11,7 @@ import { type HeimdallConfig } from "../src/config.js";
 import { entitlementFacts } from "../src/facts.js";
 import { type OAuthProviderRuntime } from "../src/oauth.js";
 import { InMemoryStore } from "../src/store/index.js";
+import { launchState, stateOf } from "./oauth-flow.js";
 
 const resources: Array<{ close(): Promise<unknown> }> = [];
 
@@ -86,10 +87,11 @@ async function start(app: App, payload: Record<string, unknown>, headers: Record
 }
 
 async function completeAs(app: App, stateToken: string, who: string) {
+  const { cookie } = await launchState(app, stateToken);
   return app.inject({
     method: "GET",
     url: `/v1/oauth/discord/callback?code=${who}&state=${encodeURIComponent(stateToken)}`,
-    headers: { accept: "application/json" },
+    headers: { accept: "application/json", cookie },
   });
 }
 
@@ -110,7 +112,7 @@ describe("takeover chain: caller-chosen attemptId is never the redemption code",
     });
     expect(started.statusCode).toBe(201);
 
-    const callback = await completeAs(app, started.json().stateToken as string, "victim");
+    const callback = await completeAs(app, stateOf(started.json()), "victim");
     expect(callback.statusCode).toBe(201);
     const minted = callback.json().completion.code as string;
     expect(minted).not.toBe("attacker-fixed");
@@ -125,7 +127,7 @@ describe("takeover chain: caller-chosen attemptId is never the redemption code",
     const { app, store } = await harness();
     const started = await start(app, { appSlug: "repixelizer", mode: "sign_in", returnTo: "https://repixelizer.gamecult.org/app/" });
     expect(started.statusCode).toBe(201);
-    const callback = await completeAs(app, started.json().stateToken as string, "victim");
+    const callback = await completeAs(app, stateOf(started.json()), "victim");
     expect(callback.statusCode).toBe(201);
     const code = callback.json().completion.code as string;
     expect(code).toMatch(uuidV4);
@@ -159,7 +161,7 @@ describe("takeover chain: caller-chosen attemptId is never the redemption code",
   it("attemptId set to a real victim completion code does not let the attacker's flow touch the victim's completion", async () => {
     const { app } = await harness();
     const victimStart = await start(app, { appSlug: "repixelizer", mode: "sign_in", returnTo: "https://repixelizer.gamecult.org/app/" });
-    const victimCallback = await completeAs(app, victimStart.json().stateToken as string, "victim");
+    const victimCallback = await completeAs(app, stateOf(victimStart.json()), "victim");
     const victimCode = victimCallback.json().completion.code as string;
 
     const attackerStart = await start(app, {
@@ -168,7 +170,7 @@ describe("takeover chain: caller-chosen attemptId is never the redemption code",
       returnTo: "https://repixelizer.gamecult.org/app/",
       handoff: { kind: "browser_completion", attemptId: victimCode },
     });
-    const attackerCallback = await completeAs(app, attackerStart.json().stateToken as string, "attacker");
+    const attackerCallback = await completeAs(app, stateOf(attackerStart.json()), "attacker");
     expect(attackerCallback.statusCode).toBe(201);
     expect(attackerCallback.json().completion.code).not.toBe(victimCode);
 
@@ -204,7 +206,7 @@ describe("consumeAuthCompletion: single-use, scoped, expiring", () => {
   it("a code redeems exactly once under concurrent redemption, and never for another app", async () => {
     const { app } = await harness();
     const started = await start(app, { appSlug: "repixelizer", mode: "sign_in", returnTo: "https://repixelizer.gamecult.org/app/" });
-    const callback = await completeAs(app, started.json().stateToken as string, "victim");
+    const callback = await completeAs(app, stateOf(started.json()), "victim");
     const code = callback.json().completion.code as string;
 
     const crossApp = await redeem(app, "bifrost", code);
@@ -265,7 +267,7 @@ describe("attempt-handle binding: the public start route may attach a completion
       handoff: { kind: "browser_completion", attemptId: attempt.handle },
     });
     expect(attackerStart.statusCode).toBe(201);
-    await completeAs(app, attackerStart.json().stateToken as string, "attacker");
+    await completeAs(app, stateOf(attackerStart.json()), "attacker");
 
     const after = await store.findAuthAttempt("ghostlight", attempt.handle);
     expect(after?.status).toBe("pending");

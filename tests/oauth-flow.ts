@@ -3,6 +3,7 @@ import { type FastifyInstance } from "fastify";
 import { type HeimdallConfig } from "../src/config.js";
 import { entitlementFacts } from "../src/facts.js";
 import { type OAuthProviderRuntime } from "../src/oauth.js";
+import { decodeJwt } from "../src/signing.js";
 
 export function createTestConfig(): HeimdallConfig {
   return {
@@ -113,12 +114,25 @@ export function setCookieOf(response: { headers: Record<string, unknown> }): str
   return [response.headers["set-cookie"]].flat().filter((value): value is string => typeof value === "string");
 }
 
-/** Drives what a user's browser does after a start: follow authorizationUrl to the launch hop and keep its cookie. */
-export async function launchFlow(app: FastifyInstance, start: StartBody): Promise<LaunchedFlow> {
-  const url = new URL(start.authorizationUrl);
-  const response = await app.inject({ method: "GET", url: `${url.pathname}${url.search}` });
+/** What a browser does with a state it was handed: open the launch hop for the state's provider and keep the cookie it sets. */
+export async function launchState(app: FastifyInstance, state: string): Promise<LaunchedFlow> {
+  const provider = decodeJwt(state).payload.provider as string;
+  const response = await app.inject({ method: "GET", url: `/v1/oauth/${provider}/launch?state=${encodeURIComponent(state)}` });
   expect(response.statusCode, "launch").toBe(302);
   const set = setCookieOf(response).find((value) => value.startsWith("__Host-heimdall-oauth-"));
   expect(set, "launch sets the binding cookie").toBeDefined();
-  return { state: stateOf(start), cookie: (set as string).split(";")[0] as string };
+  return { state, cookie: (set as string).split(";")[0] as string };
+}
+
+/** Drives what a user's browser does after a start: follow authorizationUrl to the launch hop and keep its cookie. */
+export function launchFlow(app: FastifyInstance, start: StartBody): Promise<LaunchedFlow> {
+  return launchState(app, stateOf(start));
+}
+
+/** The provider URL a browser is redirected to once it has followed authorizationUrl through the launch hop. */
+export async function providerRedirect(app: FastifyInstance, start: StartBody): Promise<URL> {
+  const url = new URL(start.authorizationUrl);
+  const response = await app.inject({ method: "GET", url: `${url.pathname}${url.search}` });
+  expect(response.statusCode, "launch").toBe(302);
+  return new URL(response.headers.location as string);
 }

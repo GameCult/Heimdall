@@ -8,6 +8,7 @@ import { entitlementFacts } from "../src/facts.js";
 import { startHeimdallPrivateCommandPlane } from "../src/private-command-plane.js";
 import { openPrivateEnvelope, sealPrivateEnvelope, type HeimdallPrivateEnvelope } from "../src/private-command-security.js";
 import { type OAuthProviderRuntime } from "../src/oauth.js";
+import { launchState } from "./oauth-flow.js";
 
 const secret = "ghostlight-private-command-secret";
 const resources: Array<{ close(): Promise<unknown> }> = [];
@@ -107,9 +108,12 @@ describe("Heimdall Eve access plugin", () => {
     const begin = openPrivateEnvelope(beginWire, secret);
     expect(begin.schema).toBe("heimdall.auth_begin_receipt.v1");
     const handle = String(begin.handle);
-    const navigation = begin.navigation as { url: string };
+    const navigation = begin.navigation as { url: string; allowedOrigins: string[] };
     const state = new URL(navigation.url).searchParams.get("state");
     expect(state).toBeTruthy();
+    // The browser goes to Heimdall's launch hop first, and only Heimdall's origin is allowed.
+    expect(navigation.url.startsWith("https://heimdall.gamecult.org/v1/oauth/discord/launch?state=")).toBe(true);
+    expect(navigation.allowedOrigins).toEqual(["https://heimdall.gamecult.org"]);
 
     const pendingEnvelope = sealPrivateEnvelope({
       appSlug: "ghostlight",
@@ -124,9 +128,11 @@ describe("Heimdall Eve access plugin", () => {
     const pending = openPrivateEnvelope(decodeEnvelope(pendingResponse.payload), secret);
     expect(pending).toMatchObject({ status: "pending", handle });
 
+    const { cookie } = await launchState(app, state ?? "");
     const callback = await app.inject({
       method: "GET",
       url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(state ?? "")}`,
+      headers: { cookie },
     });
     expect(callback.statusCode, callback.body).toBe(201);
     // The completion code is always minted by the store now, never the

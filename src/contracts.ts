@@ -94,6 +94,8 @@ export interface OAuthStatePayload {
   connection: OAuthConnectionBinding | null;
   handoff: OAuthHandoff | null;
   entitlement_policy: OAuthEntitlementPolicy | null;
+  /** The start's requestedScopes, carried so the launch hop can build the provider URL from the signed state alone. */
+  requested_scopes: string[] | null;
 }
 
 export interface LinkedIdentityInput {

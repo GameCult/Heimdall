@@ -24,6 +24,7 @@ import { InMemoryStore } from "../src/store/index.js";
 import { PostgresStore } from "../src/store/postgres.js";
 import { CREATE_SCHEMA_SQL } from "../src/store/schema.js";
 import { type CreateAuthCompletionInput, type HeimdallStore } from "../src/store/types.js";
+import { launchState, stateOf } from "./oauth-flow.js";
 
 const ghostlightSecret = "ghostlight-private-command-secret";
 const resources: Array<{ close(): Promise<unknown> }> = [];
@@ -102,10 +103,11 @@ async function start(app: App, payload: unknown, headers: Record<string, string>
 }
 
 async function completeAs(app: App, stateToken: string, who: string) {
+  const { cookie } = await launchState(app, stateToken);
   return app.inject({
     method: "GET",
     url: `/v1/oauth/discord/callback?code=${who}&state=${encodeURIComponent(stateToken)}`,
-    headers: { accept: "application/json" },
+    headers: { accept: "application/json", cookie },
   });
 }
 
@@ -213,7 +215,7 @@ describe("R21.1: the attempt handle is unreachable from the public start route",
     });
     expect(response.statusCode, response.body).toBe(201);
     expect(response.json().handoff).toEqual({ kind: "browser_completion" });
-    const state = jwtPayload(response.json().stateToken as string);
+    const state = jwtPayload(stateOf(response.json()));
     expect(state.handoff).toEqual({ kind: "browser_completion" });
     expect(JSON.stringify(state)).not.toContain(attempt.handle);
   });
@@ -237,7 +239,7 @@ describe("R21.1: the attempt handle is unreachable from the public start route",
     expect(response.body).not.toContain(planted);
     if (response.statusCode === 201) {
       expect(response.json().handoff).toEqual({ kind: "browser_completion" });
-      expect(jwtPayload(response.json().stateToken as string).handoff).toEqual({ kind: "browser_completion" });
+      expect(jwtPayload(stateOf(response.json())).handoff).toEqual({ kind: "browser_completion" });
     } else {
       expect(response.statusCode, response.body).toBe(400);
     }
@@ -249,7 +251,7 @@ describe("R21.1: the attempt handle is unreachable from the public start route",
       const response = await start(app, { appSlug: "ghostlight", mode: "sign_in", returnTo: legitReturn, ...extra });
       expect(response.statusCode, response.body).toBe(201);
       expect(response.body).not.toContain(planted);
-      expect(jwtPayload(response.json().stateToken as string).handoff).toEqual({ kind: "browser_completion" });
+      expect(jwtPayload(stateOf(response.json())).handoff).toEqual({ kind: "browser_completion" });
     }
   });
 
@@ -306,7 +308,7 @@ describe("R21.1: the attempt handle is unreachable from the public start route",
       handoff: { kind: "browser_completion", attemptId: handle },
     });
     expect(attackerStart.statusCode).toBe(201);
-    const attackerCallback = await completeAs(app, attackerStart.json().stateToken as string, "attacker");
+    const attackerCallback = await completeAs(app, stateOf(attackerStart.json()), "attacker");
     expect(attackerCallback.statusCode, attackerCallback.body).toBe(201);
     expect((await store.findAuthAttempt("ghostlight", handle))?.status).toBe("pending");
 
@@ -340,7 +342,7 @@ describe("R21.1: the attempt handle is unreachable from the public start route",
     expect(response.statusCode, response.body).toBe(201);
     // Delivery to port 1 fails; whatever the callback returns, the attempt
     // must be untouched and no completion may be bound to it.
-    await completeAs(app, response.json().stateToken as string, "attacker");
+    await completeAs(app, stateOf(response.json()), "attacker");
     expect((await store.findAuthAttempt("ghostlight", attempt.handle))?.status).toBe("pending");
     expect(await store.consumeAuthCompletionByAttempt("ghostlight", attempt.handle, new Date().toISOString())).toBeNull();
   });
@@ -493,26 +495,27 @@ partialUniqueIndexContract("PostgresStore over pg-mem", async () => {
 });
 
 describe("duplicate-handle error surfacing through the callback route", () => {
-  it("state tokens are replayable, and a replay while the handle's completion is unconsumed echoes the store error in a 502", async () => {
+  it("a replayed state is refused as already used before any exchange, and leaves the real completion intact", async () => {
     const { app, store, begin } = await planeHarness();
     const receipt = await begin("begin-replay");
     const handle = String(receipt.handle);
     const state = new URL((receipt.navigation as { url: string }).url).searchParams.get("state") ?? "";
-    const first = await completeAs(app, state, "victim");
+    const { cookie } = await launchState(app, state);
+    const callbackWith = () =>
+      app.inject({
+        method: "GET",
+        url: `/v1/oauth/discord/callback?code=victim&state=${encodeURIComponent(state)}`,
+        headers: { accept: "application/json", cookie },
+      });
+    const first = await callbackWith();
     expect(first.statusCode).toBe(201);
-    const replay = await completeAs(app, state, "victim");
-    // Nothing consumed the state's jti, so the second exchange still runs and
-    // reaches createAuthCompletion, where the unique index refuses it. The
-    // route's catch (app.ts ~1290) now answers with a fixed detail rather than
-    // the store's own text, so a Postgres 23505 cannot hand the caller a
-    // constraint name. The full text stays in the audit event.
-    expect(replay.statusCode, replay.body).toBe(502);
-    expect(replay.json()).toMatchObject({
-      error: "oauth_callback_failed",
-      detail: "The provider callback could not be completed.",
-    });
-    expect(JSON.stringify(replay.json())).not.toContain("unconsumed completion");
-    // The failed replay must not have damaged the real completion.
+    // The state's jti was consumed by the first callback, so the second never
+    // reaches createAuthCompletion, whose unique index used to be the only
+    // thing refusing a replay (and whose Postgres 23505 text the route had to
+    // keep out of the answer).
+    const replay = await callbackWith();
+    expect(replay.statusCode, replay.body).toBe(400);
+    expect(replay.json()).toEqual({ error: "state_already_used" });
     expect((await store.findAuthAttempt("ghostlight", handle))?.status).toBe("completed");
     expect(await store.consumeAuthCompletionByAttempt("ghostlight", handle, new Date().toISOString())).toBeTruthy();
   });
