@@ -159,6 +159,18 @@ describe("PostgresStore", () => {
     const consumedAgain = await store.consumeAuthCompletion("repixelizer", completion.code, "2026-04-26T12:02:00.000Z");
     expect(consumedAgain).toBeNull();
 
+    const stateUse = {
+      jti: "state-1",
+      phase: "launch" as const,
+      appSlug: "repixelizer" as const,
+      usedAt: now,
+      expiresAt: "2026-04-26T12:10:00.000Z",
+    };
+    expect(await store.claimOAuthStateUse(stateUse)).toBe(true);
+    expect(await store.claimOAuthStateUse(stateUse)).toBe(false);
+    expect(await store.claimOAuthStateUse({ ...stateUse, phase: "callback" })).toBe(true);
+    expect(await store.claimOAuthStateUse({ ...stateUse, jti: "state-2" })).toBe(true);
+
     const attempt = await store.createAuthAttempt({
       handle: "attempt-123",
       appSlug: "ghostlight",
@@ -365,6 +377,10 @@ async function exerciseStore(store: PostgresStore): Promise<Set<string>> {
   const snapshot = { accountId: account.id, provider: "discord" as const, scope: "ghostlight:probe", evaluatedAt: now, isAllowed: true, reasonCode: "ok", rawSummaryJson: {} };
   await s.upsertEntitlementSnapshot(snapshot);
   await s.upsertEntitlementSnapshot({ ...snapshot, isAllowed: false });
+  const stateUse = { jti: randomUUID(), phase: "launch" as const, appSlug: "ghostlight" as const, usedAt: now, expiresAt: later };
+  expect(await s.claimOAuthStateUse(stateUse)).toBe(true);
+  expect(await s.claimOAuthStateUse(stateUse)).toBe(false);
+  expect(await s.claimOAuthStateUse({ ...stateUse, phase: "callback" })).toBe(true);
   await s.createAuditEvent({ eventType: "probe", eventPayloadJson: {}, createdAt: now });
   return called;
 }

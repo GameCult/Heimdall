@@ -13,96 +13,7 @@ import { entitlementFacts, identityFacts } from "../src/facts.js";
 import { createOAuthRuntimeRegistry, ProviderResponseError, type OAuthProviderRuntime } from "../src/oauth.js";
 import { createRuntimeKeyMaterial, signJwt, verifyJwt } from "../src/signing.js";
 import { InMemoryStore } from "../src/store/index.js";
-
-function createTestConfig(): HeimdallConfig {
-  return {
-    serviceName: "heimdall",
-    host: "127.0.0.1",
-    port: 4100,
-    workspaceRoot: "E:/Projects/Heimdall",
-    dataRoot: "E:/Projects/Heimdall/.heimdall-data",
-    cultCachePath: "E:/Projects/Heimdall/.heimdall-data/cultcache/heimdall.service.cc",
-    publicBaseUrl: "https://heimdall.gamecult.org",
-    issuer: "https://heimdall.gamecult.org",
-    daemonId: "yggdrasil-heimdall",
-    idunnRudpHealth: undefined,
-    idunnHealthContract: "heimdall.cultnet-rudp-provider-health",
-    providerHealthIdentityPath: "E:/Projects/Heimdall/.heimdall-data/provider-health-identity.cc",
-    sessionTtlSeconds: 3600,
-    refreshTtlSeconds: 60 * 60 * 24 * 30,
-    stateTtlSeconds: 600,
-    completionTtlSeconds: 300,
-    bootstrapSigningPrivateKeyOnMissing: false,
-    tokenEncryptionKeyBase64: Buffer.alloc(32, 7).toString("base64"),
-    appSharedSecrets: {
-      streampixels: "streampixels-secret",
-      repixelizer: "repixelizer-secret",
-      bifrost: "bifrost-secret",
-    },
-    appBackendCallbacks: {
-      bifrost: ["https://bifrost.gamecult.org/auth/heimdall/callback"],
-      repixelizer: ["https://repixelizer.gamecult.org/api/auth/heimdall/callback"],
-    },
-    storage: {
-      backend: "memory",
-      applySchemaOnStartup: true,
-    },
-    providers: {
-      discord: { clientId: "discord-client", clientSecret: "discord-secret" },
-      patreon: { clientId: "patreon-client", clientSecret: "patreon-secret" },
-      github: { clientId: "github-client", clientSecret: "github-secret" },
-      twitch: { clientId: "twitch-client", clientSecret: "twitch-secret" },
-      youtube: { clientId: "youtube-client", clientSecret: "youtube-secret" },
-      spotify: { clientId: "spotify-client", clientSecret: "spotify-secret" },
-      joystick: { clientId: "joystick-client", clientSecret: "joystick-secret" },
-    },
-  };
-}
-
-function createMockDiscordRuntime(): OAuthProviderRuntime {
-  return {
-    async exchangeAuthorizationCode() {
-      return {
-        accessToken: "discord-access-token",
-        refreshToken: "discord-refresh-token",
-        tokenType: "Bearer",
-        scope: ["identify", "guilds.members.read"],
-        expiresAt: "2026-04-26T13:00:00.000Z",
-        raw: { source: "test" },
-      };
-    },
-    async resolveIdentity() {
-      return {
-        provider: "discord",
-        providerUserId: "discord-user-123",
-        username: "meta",
-        displayName: "Meta",
-        primaryEmail: "meta@gamecult.org",
-        profile: { id: "discord-user-123", username: "meta" },
-      };
-    },
-    async evaluateEntitlements({ callback }) {
-      return {
-        facts: [entitlementFacts.appAccess],
-        snapshots: [
-          {
-            accountId: callback.accountId,
-            provider: "discord",
-            scope: "repixelizer:discord_role_access:gamecult-guild",
-            evaluatedAt: "2026-04-26T12:00:00.000Z",
-            isAllowed: true,
-            reasonCode: "matched_role",
-            reasonDetail: "Matched Repixelizer access role.",
-            rawSummaryJson: {
-              guildId: "gamecult-guild",
-              matchedRoles: ["role-repixelizer"],
-            },
-          },
-        ],
-      };
-    },
-  };
-}
+import { createMockDiscordRuntime, createTestConfig } from "./oauth-flow.js";
 
 const apps: Awaited<ReturnType<typeof buildApp>>[] = [];
 const originalFetch = globalThis.fetch;
@@ -339,6 +250,46 @@ describe("Heimdall service", () => {
       expect(refused.statusCode).toBe(401);
       const allowed = await startOAuthFlow(getHeimdallRuntimeContext(app), "discord", own, bifrostStart({ kind: "browser_completion" }));
       expect(allowed.statusCode).toBe(201);
+    });
+
+    it("gates every mode, provider and handoff kind Bifrost admits, not one spelling of them", async () => {
+      // Hand mutants narrowing the gate to browser_completion or to sign_in
+      // survived the single-case tests (finding gate-tests-narrow).
+      const app = await buildApp({ config: createTestConfig() });
+      apps.push(app);
+      const handoffs = [
+        undefined,
+        { kind: "browser_completion" },
+        {
+          kind: "backend_callback",
+          attemptId: "bifrost-attempt-1",
+          callbackUrl: "https://bifrost.gamecult.org/auth/heimdall/callback",
+        },
+      ];
+
+      let cases = 0;
+      for (const mode of ["sign_in", "link", "connect"] as const) {
+        for (const provider of ["discord", "patreon"] as const) {
+          for (const handoff of handoffs) {
+            const label = `${mode} ${provider} ${handoff?.kind ?? "omitted"}`;
+            const payload = { appSlug: "bifrost", mode, returnTo: bifrostReturn, ...(handoff ? { handoff } : {}) };
+            const refused = await app.inject({ method: "POST", url: `/v1/oauth/${provider}/start`, payload });
+            expect(refused.statusCode, label).toBe(401);
+            expect(refused.json(), label).toEqual({ error: "app_auth_required" });
+
+            const allowed = await app.inject({
+              method: "POST",
+              url: `/v1/oauth/${provider}/start`,
+              headers: { "x-heimdall-app-secret": "bifrost-secret" },
+              payload,
+            });
+            expect(allowed.statusCode, label).toBe(201);
+            expect(allowed.json().authorizationUrl, label).toContain(`/v1/oauth/${provider}/launch?state=`);
+            cases += 1;
+          }
+        }
+      }
+      expect(cases).toBe(18);
     });
 
     it("leaves public-by-design apps unchanged: unauthenticated browser_completion starts still succeed", async () => {
