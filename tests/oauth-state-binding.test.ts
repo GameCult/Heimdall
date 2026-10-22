@@ -1,5 +1,5 @@
-import { generateKeyPairSync } from "node:crypto";
-import { afterEach, describe, expect, it } from "vitest";
+import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { type FastifyInstance } from "fastify";
 import { buildApp, getHeimdallRuntimeContext, startOAuthFlow } from "../src/app.js";
 import { resolveAppCaller } from "../src/app-caller.js";
@@ -14,6 +14,7 @@ import { createMockDiscordRuntime, createTestConfig, launchFlow, setCookieOf, st
 
 const apps: FastifyInstance[] = [];
 afterEach(async () => {
+  vi.useRealTimers();
   while (apps.length) {
     await apps.pop()?.close();
   }
@@ -131,6 +132,7 @@ describe("OAuth state binding", () => {
       "a binding from another issuer": `${name}=${binding({ iss: "https://elsewhere.example" })}`,
       "an expired binding": `${name}=${binding({ exp: now - 5 })}`,
       "the state token used as the cookie": `${name}=${ownState}`,
+      "a binding whose exp is a string": `${name}=${binding({ exp: String(now + 300) })}`,
       "an empty cookie": `${name}=`,
     };
     for (const [label, cookie] of Object.entries(forged)) {
@@ -278,6 +280,7 @@ describe("OAuth state binding", () => {
     const cleared = setCookieOf(done).find((value) => value.startsWith(`__Host-heimdall-oauth-${jti}=`));
     expect(cleared).toBeDefined();
     expect(cleared).toMatch(/Max-Age=0/);
+    expect(cleared?.startsWith(`__Host-heimdall-oauth-${jti}=;`)).toBe(true);
   });
 
   it("a launch for a provider with no client id is 503 and burns nothing", async () => {
@@ -310,5 +313,88 @@ describe("OAuth state binding", () => {
       );
       expect(body.stateExpiresAt).toEqual(expect.any(String));
     }
+  });
+
+  it("claims the launch and the callback of a state under their own phases, until the state's expiry", async () => {
+    const app = await newApp();
+    const ctx = getHeimdallRuntimeContext(app);
+    const spy = vi.spyOn(ctx.store, "claimOAuthStateUse");
+    const start = await bifrostStart(app);
+    const { jti, exp } = decodeJwt(stateOf(start)).payload as { jti: string; exp: number };
+
+    const victim = await launchFlow(app, start);
+    expect((await callback(app, victim.state, victim.cookie, "code=victim-code")).statusCode).toBe(201);
+
+    const expiresAt = new Date(exp * 1000).toISOString();
+    expect(spy.mock.calls.map(([claim]) => claim)).toEqual([
+      { jti, phase: "launch", appSlug: "bifrost", usedAt: expect.any(String), expiresAt },
+      { jti, phase: "callback", appSlug: "bifrost", usedAt: expect.any(String), expiresAt },
+    ]);
+  });
+
+  it("the launch route validates its provider and its state parameter", async () => {
+    const app = await newApp();
+    for (const url of ["/v1/oauth/discord/launch", "/v1/oauth/discord/launch?state=", "/v1/oauth/bogus/launch?state=abc"]) {
+      const response = await app.inject({ method: "GET", url });
+      expect(response.statusCode, url).toBe(400);
+      expect(response.json().error, url).toBe("invalid_request");
+    }
+  });
+
+  it("a state's requested scopes are null, absent, or a list of strings, and nothing else", async () => {
+    const app = await newApp();
+    const ctx = getHeimdallRuntimeContext(app);
+    const start = await bifrostStart(app);
+    const original = decodeJwt(stateOf(start)).payload;
+    const launchWith = async (change: Record<string, unknown>) => {
+      const rest = { ...original };
+      delete rest.requested_scopes;
+      const token = signJwt({ ...rest, jti: randomUUID(), ...change }, ctx.keys);
+      return app.inject({ method: "GET", url: `/v1/oauth/discord/launch?state=${encodeURIComponent(token)}` });
+    };
+
+    for (const [label, change] of [
+      ["absent", {}],
+      ["null", { requested_scopes: null }],
+      ["a list", { requested_scopes: ["identify"] }],
+    ] as const) {
+      expect((await launchWith(change)).statusCode, label).toBe(302);
+    }
+    for (const [label, change] of [
+      ["a string", { requested_scopes: "identify" }],
+      ["a list with a number", { requested_scopes: ["identify", 7] }],
+      ["a list of numbers", { requested_scopes: [1, 2] }],
+      ["an object", { requested_scopes: { 0: "identify" } }],
+    ] as const) {
+      const response = await launchWith(change);
+      expect(response.statusCode, label).toBe(400);
+      expect(response.json(), label).toEqual({ error: "invalid_state" });
+    }
+  });
+
+  it("the time windows hold to the second: a state from nbf - 30 s to exp + 30 s, a binding until its exp", async () => {
+    const app = await newApp();
+    const ctx = getHeimdallRuntimeContext(app);
+    const start = await bifrostStart(app);
+    const original = decodeJwt(stateOf(start)).payload;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const now = 1_900_000_000;
+    vi.setSystemTime(now * 1000);
+    const stateWith = (change: Record<string, unknown>) =>
+      signJwt({ ...original, jti: randomUUID(), nbf: now - 1, exp: now + 600, ...change }, ctx.keys);
+    const launch = (token: string) =>
+      app.inject({ method: "GET", url: `/v1/oauth/discord/launch?state=${encodeURIComponent(token)}` });
+
+    expect((await launch(stateWith({ exp: now - 30 }))).json()).toEqual({ error: "state_expired" });
+    expect((await launch(stateWith({ exp: now - 29 }))).statusCode).toBe(302);
+    expect((await launch(stateWith({ nbf: now + 31 }))).json()).toEqual({ error: "state_expired" });
+    expect((await launch(stateWith({ nbf: now + 30 }))).statusCode).toBe(302);
+
+    const token = stateWith({});
+    const jti = decodeJwt(token).payload.jti as string;
+    const bindingWith = (exp: number) =>
+      `__Host-heimdall-oauth-${jti}=${signJwt({ typ: "heimdall_oauth_binding", iss: ctx.config.issuer, jti, iat: now - 5, exp }, ctx.keys)}`;
+    expect((await callback(app, token, bindingWith(now))).json()).toEqual({ error: "state_not_bound" });
+    expect((await callback(app, token, bindingWith(now + 1))).statusCode).toBe(201);
   });
 });
