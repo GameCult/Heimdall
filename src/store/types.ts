@@ -165,6 +165,14 @@ export interface StoredAuthCompletion {
   payloadJson: Record<string, unknown>;
 }
 
+export interface ClaimOAuthStateUseInput {
+  jti: string;
+  phase: "launch" | "callback";
+  appSlug: AppSlug;
+  usedAt: string;
+  expiresAt: string;
+}
+
 export interface CreateAuthCompletionInput {
   /**
    * Correlation handle only (see StoredAuthCompletion.attemptId). The store
@@ -272,5 +280,15 @@ export interface HeimdallStore {
    */
   consumeAuthCompletionByAttempt(appSlug: AppSlug, attemptId: string, at: string): Promise<StoredAuthCompletion | null>;
   upsertEntitlementSnapshot(input: CreateEntitlementSnapshotInput): Promise<void>;
+  /**
+   * Claim one use of a signed OAuth state: true only for the first claim of
+   * (jti, phase), false for every later one. Without it a state is a bearer
+   * token any number of browsers can complete, so an attacker who learns a
+   * victim's state completes it as themselves and hands the victim a code
+   * for the attacker's account. `expiresAt` is the state's own expiry; the
+   * state is refused at that time before any claim, so the record is dead
+   * after it and a store may drop it.
+   */
+  claimOAuthStateUse(input: ClaimOAuthStateUseInput): Promise<boolean>;
   createAuditEvent(input: CreateAuditEventInput): Promise<void>;
 }

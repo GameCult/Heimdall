@@ -119,6 +119,20 @@ CREATE UNIQUE INDEX IF NOT EXISTS auth_completions_attempt_unconsumed_unique_idx
   ON auth_completions(app_slug, attempt_id)
   WHERE attempt_id IS NOT NULL AND consumed_at IS NULL;
 
+-- One use per (state jti, phase): a signed OAuth state launches once and
+-- completes once. The first INSERT for a pair wins; ON CONFLICT DO NOTHING
+-- reports every later claim as no row. The store deletes nothing, so rows stay
+-- like consumed auth_completions; after expires_at a state is refused before
+-- any claim, so a row is never consulted again.
+CREATE TABLE IF NOT EXISTS oauth_state_uses (
+  jti TEXT NOT NULL,
+  phase TEXT NOT NULL,
+  app_slug TEXT NOT NULL,
+  used_at TIMESTAMPTZ NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (jti, phase)
+);
+
 CREATE TABLE IF NOT EXISTS capability_grants (
   id TEXT PRIMARY KEY,
   account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,

@@ -3,7 +3,7 @@ import { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { newDb } from "pg-mem";
 import { type HeimdallConfig } from "../src/config.js";
-import { createStore } from "../src/store/index.js";
+import { createStore, InMemoryStore } from "../src/store/index.js";
 import {
   createPostgresStore,
   PostgresStore,
@@ -159,18 +159,6 @@ describe("PostgresStore", () => {
     const consumedAgain = await store.consumeAuthCompletion("repixelizer", completion.code, "2026-04-26T12:02:00.000Z");
     expect(consumedAgain).toBeNull();
 
-    const stateUse = {
-      jti: "state-1",
-      phase: "launch" as const,
-      appSlug: "repixelizer" as const,
-      usedAt: now,
-      expiresAt: "2026-04-26T12:10:00.000Z",
-    };
-    expect(await store.claimOAuthStateUse(stateUse)).toBe(true);
-    expect(await store.claimOAuthStateUse(stateUse)).toBe(false);
-    expect(await store.claimOAuthStateUse({ ...stateUse, phase: "callback" })).toBe(true);
-    expect(await store.claimOAuthStateUse({ ...stateUse, jti: "state-2" })).toBe(true);
-
     const attempt = await store.createAuthAttempt({
       handle: "attempt-123",
       appSlug: "ghostlight",
@@ -210,6 +198,36 @@ describe("PostgresStore", () => {
   });
 });
 
+describe("InMemoryStore.claimOAuthStateUse", () => {
+  const use = {
+    jti: "state-1",
+    phase: "launch" as const,
+    appSlug: "repixelizer" as const,
+    usedAt: "2026-04-26T12:00:00.000Z",
+    expiresAt: "2026-04-26T12:10:00.000Z",
+  };
+
+  it("is true once per (jti, phase)", async () => {
+    const store = new InMemoryStore();
+    expect(await store.claimOAuthStateUse(use)).toBe(true);
+    expect(await store.claimOAuthStateUse(use)).toBe(false);
+    expect(await store.claimOAuthStateUse({ ...use, phase: "callback" })).toBe(true);
+    expect(await store.claimOAuthStateUse({ ...use, phase: "callback" })).toBe(false);
+    expect(await store.claimOAuthStateUse({ ...use, jti: "state-2" })).toBe(true);
+  });
+
+  it("drops a record once its state has expired, and keeps it until then", async () => {
+    const store = new InMemoryStore();
+    await store.claimOAuthStateUse(use);
+    // Before expiry a later claim of another state leaves the record in force.
+    await store.claimOAuthStateUse({ ...use, jti: "state-2", usedAt: "2026-04-26T12:09:59.000Z" });
+    expect(await store.claimOAuthStateUse(use)).toBe(false);
+    // At and after expiry the record is dead weight: the state is refused before any claim.
+    await store.claimOAuthStateUse({ ...use, jti: "state-3", usedAt: "2026-04-26T12:10:00.000Z" });
+    expect(await store.claimOAuthStateUse(use)).toBe(true);
+  });
+});
+
 describe("createPostgresStore", () => {
   // pg emits an idle client's connection loss on the pool. With no listener
   // that event kills the process, and Node prints the pg Client with its
@@ -245,11 +263,12 @@ describe("PostgresStore.checkSchema", () => {
       "auth_attempts",
       "private_command_receipts",
       "auth_completions",
+      "oauth_state_uses",
       "capability_grants",
       "entitlement_snapshots",
       "audit_events",
     ]);
-    expect(REQUIRED_COLUMNS).toHaveLength(85);
+    expect(REQUIRED_COLUMNS).toHaveLength(90);
     expect(REQUIRED_COLUMNS).toEqual(
       expect.arrayContaining([
         { table: "auth_completions", column: "code", type: "TEXT", nullable: false },
@@ -260,11 +279,12 @@ describe("PostgresStore.checkSchema", () => {
         { table: "auth_completions", column: "attempt_id", type: "TEXT", nullable: true },
       ])
     );
-    expect(REQUIRED_KEYS).toHaveLength(12);
+    expect(REQUIRED_KEYS).toHaveLength(13);
     expect(REQUIRED_KEYS).toEqual(
       expect.arrayContaining([
         { table: "linked_identities", columns: "provider,provider_user_id", predicate: "" },
         { table: "private_command_receipts", columns: "app_slug,idempotency_key", predicate: "" },
+        { table: "oauth_state_uses", columns: "jti,phase", predicate: "" },
         { table: "entitlement_snapshots", columns: "account_id,provider,scope", predicate: "" },
         { table: "auth_completions", columns: "app_slug,attempt_id", predicate: "attempt_id IS NOT NULL AND consumed_at IS NULL" },
       ])
