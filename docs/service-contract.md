@@ -149,11 +149,28 @@ Response:
   "appSlug": "repixelizer",
   "mode": "sign_in",
   "callbackUrl": "https://heimdall.gamecult.org/v1/oauth/discord/callback",
-  "authorizationUrl": "https://discord.com/oauth2/authorize?...",
-  "stateToken": "<signed-jwt>",
+  "authorizationUrl": "https://heimdall.gamecult.org/v1/oauth/discord/launch?state=<signed-jwt>",
   "stateExpiresAt": "2026-04-26T12:10:00.000Z"
 }
 ```
+
+Send the user's browser to `authorizationUrl` unchanged. It is Heimdall's launch
+hop, not the provider's URL.
+
+### `GET /v1/oauth/{provider}/launch?state=<signed-jwt>`
+
+The first thing the user's browser does with a state. Heimdall verifies the
+state (signature, issuer, provider, `nbf`/`exp` with 30 s of skew), claims the
+state's single launch, sets the binding cookie
+`__Host-heimdall-oauth-<jti>` (`Path=/`, `Secure`, `HttpOnly`, `SameSite=Lax`,
+`Max-Age` until the state expires; the value is a Heimdall-signed binding for
+that state) and answers `302` to the provider's authorize URL, with
+`Cache-Control: no-store` and `Referrer-Policy: no-referrer`. A second launch of
+the same state is `400 state_already_launched` and sets no cookie. The state is
+refused with `400 invalid_state`, `state_provider_mismatch` or `state_expired`.
+
+The binding cookie needs an `https` public base URL (or `localhost`). A browser
+must finish the flow in the browser that launched it.
 
 Failure modes:
 
@@ -194,7 +211,9 @@ Purpose:
 
 Current status:
 
-- validates signed `state`
+- validates signed `state` (signature, issuer, provider, expiry), requires the
+  binding cookie the launch hop set, and consumes the state: a second callback
+  is `400 state_already_used`, a missing or foreign cookie `400 state_not_bound`
 - returns provider errors cleanly
 - for Discord, exchanges the authorization code, resolves the provider
   identity, persists the local account/link/session/audit records, evaluates

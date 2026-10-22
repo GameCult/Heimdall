@@ -617,8 +617,9 @@ Only the browser-driven OAuth flow:
 
 | Path | Why it must be public |
 |---|---|
-| `/v1/oauth/{provider}/start` | the user's browser goes here |
-| `/v1/oauth/{provider}/callback` | the provider redirects here; one-shot and not retryable |
+| `/v1/oauth/{provider}/start` | the app's server calls it, with its app secret where the profile requires one |
+| `/v1/oauth/{provider}/launch` | the user's browser goes here first; it sets the binding cookie and redirects to the provider, once per state |
+| `/v1/oauth/{provider}/callback` | the provider redirects here; one-shot: it needs the binding cookie and consumes the state |
 | `/.well-known/jwks.json` | *nothing external consumes it today* — see below |
 
 Everything else is internal by the design already written down:
