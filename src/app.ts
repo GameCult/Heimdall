@@ -554,7 +554,7 @@ export async function startOAuthFlow(
   if (options?.trustedBrowserAttemptId && handoff.kind === "browser_completion") {
     handoff = { kind: "browser_completion", attemptId: options.trustedBrowserAttemptId };
   }
-  if (entitlementPolicy && (!isAppCaller(caller) || caller.appSlug !== profile.slug)) {
+  if ((entitlementPolicy || profile.startRequiresAppCaller) && (!isAppCaller(caller) || caller.appSlug !== profile.slug)) {
     return { statusCode: 401, body: { error: "app_auth_required" } };
   }
 

@@ -45,6 +45,17 @@ export interface AppProfile {
    * plane; absent for apps with no such requirement.
    */
   requiredEntitlementPolicyKind?: OAuthEntitlementPolicy["kind"];
+  /**
+   * The app binds browser completion to its own pending attempt, and the
+   * binding is the secrecy of the attempt nonce, which rides readable in the
+   * signed (not encrypted) state's return_to. If anyone could start a flow for
+   * this app, whoever learned a victim's nonce could mint a completion bound
+   * to it and sign the victim's browser in as themselves (login CSRF, finding
+   * known-nonce-login-csrf). So a start for this app is refused unless the
+   * caller is this app's authenticated caller: only the app can mint its own
+   * state. Absent for apps whose browser starts are public by design.
+   */
+  startRequiresAppCaller?: boolean;
 }
 
 /** The membership signal shared by every app that gates on GameCult membership. */
@@ -142,6 +153,7 @@ const bifrostProfile: AppProfile = {
   entitlementSources: ["discord", "patreon"],
   managedConnectionProviders: [],
   allowedReturnOrigins: ["https://bifrost.gamecult.org"],
+  startRequiresAppCaller: true,
   capabilities: [
     {
       key: "member_access",
