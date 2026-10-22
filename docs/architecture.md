@@ -154,7 +154,11 @@ The important split:
 
 - Heimdall owns provider OAuth, identity linking, entitlement refresh, signed
   sessions, claims, grants, audit surfaces, and managed provider credential
-  custody
+  custody. It authenticates; it does not issue GameCult identity. Bifrost is
+  the identity provider, and the account id Heimdall mints is an authenticator
+  handle. Remaining scar: Heimdall still creates that account id on first
+  login (`store.createAccount`, `src/app.ts`), which the chat work does not
+  need moved
 - the host experiment owns its workload, queue, editor, render path, viewer
   profile model, creator model, or other product-specific machinery
 - the host experiment also owns which local entity a connection attaches to,

@@ -168,7 +168,12 @@ Failure modes:
 - `401 app_auth_required` when the request body carries `entitlementPolicy` and
   the caller did not authenticate as that app via `x-heimdall-app-secret`
   (`resolveAppCaller`, `src/app-caller.ts`) -- this applies regardless of
-  `handoff.kind` or app slug; a caller with no policy to attach needs no secret
+  `handoff.kind` or app slug; a caller with no policy to attach needs no secret,
+  unless the app's profile sets `startRequiresAppCaller` (Bifrost only): then
+  every start for that app, with or without a policy, needs that app's secret.
+  Bifrost binds browser completion to a nonce that rides readable in the signed
+  state's `return_to`, so only Bifrost may mint a Bifrost state; apps whose
+  browser starts are public by design leave the flag unset
 
 Launch note:
 
