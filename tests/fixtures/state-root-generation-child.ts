@@ -10,8 +10,8 @@ import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { loadConfig } from "../../src/config.js";
-import { PublisherSequence, buildPresenceStatement } from "../../src/runtime-presence.js";
-import { bundleFacts, openPresenceDescriptors } from "./presence-descriptors.js";
+import { openPresenceAuthority } from "../../src/runtime-presence.js";
+import { fixtureMachineId, openPresenceDescriptors } from "./presence-descriptors.js";
 import { createHeimdallRuntimePulse, publishHeimdallVerseState } from "../../src/verse-state.js";
 
 const [role, stateRoot, fixtureDir] = process.argv.slice(2) as [string, string, string];
@@ -25,18 +25,17 @@ const config = loadConfig({
 async function publishPresence(): Promise<void> {
   const descriptors = openPresenceDescriptors(fixtureDir);
   try {
-    const observedAtUnixMillis = Date.now();
-    await buildPresenceStatement({
-      bundle: bundleFacts,
-      state: "warming",
-      detail: "generation probe",
-      boundEndpoint: null,
-      writeLeaseSha256: null,
-      observedAtUnixMillis,
-      publisherSequence: new PublisherSequence().next(observedAtUnixMillis),
-      providerHealthIdentityPath: path.join(stateRoot, "provider-health-identity.cc"),
-      env: descriptors.env,
-    });
+    const authority = await openPresenceAuthority(
+      {
+        idunnRuntimeBundlePath: fixtureDir,
+        host: config.host,
+        port: config.port,
+        providerHealthIdentityPath: path.join(stateRoot, "provider-health-identity.cc"),
+      },
+      descriptors.env,
+      () => fixtureMachineId(fixtureDir),
+    );
+    authority.sign("warming", "generation probe", Date.now());
   } finally {
     descriptors.close();
   }

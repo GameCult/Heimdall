@@ -19,7 +19,6 @@
 
 import path from "node:path";
 import { createHash, createPrivateKey, type KeyObject } from "node:crypto";
-import { readFileSync } from "node:fs";
 
 import { decode } from "@msgpack/msgpack";
 import {
@@ -33,11 +32,14 @@ import {
   type RuntimePresenceState,
 } from "cultnet-ts";
 
+import type { HeimdallConfig } from "./config.js";
 import { readIdunnStoreRecord } from "./idunn-store.js";
 import {
   openProviderHealthIdentity,
   passedDescriptor,
+  readPassedDescriptor,
   signWithIdentity,
+  type PrivateIdentity,
 } from "./provider-health-identity.js";
 
 const PKCS8_ED25519_SEED_PREFIX = Buffer.from("302e020100300506032b657004220420", "hex");
@@ -177,29 +179,6 @@ export async function readRuntimeBundleFacts(bundlePath: string): Promise<Runtim
 }
 
 /**
- * Open the activation signing key Idunn passed as a descriptor.
- *
- * The credential is exactly 32 bytes: the raw Ed25519 seed. It is passed as a
- * parent-only descriptor and not as a path, so only the process Idunn launched
- * can produce this half of the proof.
- */
-export function openActivationSigner(env: NodeJS.ProcessEnv = process.env): KeyObject | undefined {
-  const descriptor = passedDescriptor(IDUNN_RUNTIME_ACTIVATION_CREDENTIAL_NAME, env);
-  if (descriptor === undefined) {
-    return undefined;
-  }
-  const seed = readFileSync(descriptor);
-  if (seed.length !== 32) {
-    throw new Error("Idunn runtime activation credential is not a 32-byte seed");
-  }
-  return createPrivateKey({
-    key: Buffer.concat([PKCS8_ED25519_SEED_PREFIX, seed]),
-    format: "der",
-    type: "pkcs8",
-  });
-}
-
-/**
  * The publisher sequence a process stamps on its presence statements.
  *
  * Odin compares `publisher_sequence` only against stored presence of the same
@@ -223,14 +202,14 @@ export class PublisherSequence {
 
 export interface PresenceStatementInputs {
   bundle: RuntimeBundleFacts;
+  identity: PrivateIdentity;
+  activationKey: KeyObject;
   state: RuntimePresenceState;
   detail: string;
   boundEndpoint: string | null;
   writeLeaseSha256: string | null;
   observedAtUnixMillis: number;
   publisherSequence: number;
-  providerHealthIdentityPath: string;
-  env?: NodeJS.ProcessEnv;
 }
 
 export interface PresenceStatement {
@@ -239,24 +218,14 @@ export interface PresenceStatement {
 }
 
 /**
- * Build and dual-sign one presence statement.
+ * Build and dual-sign one presence statement from keys and facts already open.
  *
  * Returns the target alongside the bytes because the document key must equal
  * the signed target; Odin refuses the pair when they differ, and that is the
  * one part of the envelope the transport cannot infer.
  */
-export async function buildPresenceStatement(
-  inputs: PresenceStatementInputs,
-): Promise<PresenceStatement> {
-  const env = inputs.env ?? process.env;
-  const activationKey = openActivationSigner(env);
-  if (activationKey === undefined) {
-    throw new Error(
-      "Idunn passed no runtime activation credential, so this process cannot prove it is the " +
-        "incarnation Idunn started",
-    );
-  }
-  const identity = await openProviderHealthIdentity(inputs.providerHealthIdentityPath, env);
+export function buildPresenceStatement(inputs: PresenceStatementInputs): PresenceStatement {
+  const { identity } = inputs;
 
   const presence: RuntimePresenceHealth = {
     target: inputs.bundle.target,
@@ -284,12 +253,81 @@ export async function buildPresenceStatement(
   const proof = runtimePresenceProofPayload(presence);
   const signature = signWithIdentity(identity, runtimePresenceProviderSigningMessage(proof));
   const activationSignature = signWithIdentity(
-    { ...identity, privateKey: activationKey },
+    { ...identity, privateKey: inputs.activationKey },
     runtimePresenceActivationSigningMessage(proof),
   );
 
   return {
     target: presence.target,
     payload: encodeRuntimePresenceHealth(presence, signature, activationSignature),
+  };
+}
+
+export interface PresenceAuthority {
+  sign(
+    state: RuntimePresenceState,
+    detail: string,
+    observedAtUnixMillis: number,
+  ): PresenceStatement;
+}
+
+/**
+ * Open everything this launch's presence statements stand on, once, before the
+ * process listens: Idunn's bundle facts, the activation seed and the presence
+ * identity (each descriptor is read whole and closed), and the one publisher
+ * sequence. It owns them for the life of the process; a pulse supplies only its
+ * state, detail and observation time.
+ *
+ * A launch-contract fault (a missing or malformed bundle, descriptor or
+ * identity) throws here, so the process exits before it accepts a request and
+ * Idunn fails Warming at once, instead of a listener that can never sign.
+ */
+export async function openPresenceAuthority(
+  config: Pick<HeimdallConfig, "idunnRuntimeBundlePath" | "host" | "port" | "providerHealthIdentityPath">,
+  env: NodeJS.ProcessEnv = process.env,
+  machineId?: () => Promise<string>,
+): Promise<PresenceAuthority> {
+  if (!config.idunnRuntimeBundlePath) {
+    throw new Error("no Idunn runtime bundle path: presence has no launch to attest");
+  }
+  const bundle = await readRuntimeBundleFacts(config.idunnRuntimeBundlePath);
+
+  const activationDescriptor = passedDescriptor(IDUNN_RUNTIME_ACTIVATION_CREDENTIAL_NAME, env);
+  if (activationDescriptor === undefined) {
+    throw new Error(
+      "Idunn passed no runtime activation credential, so this process cannot prove it is the " +
+        "incarnation Idunn started",
+    );
+  }
+  const seed = readPassedDescriptor(activationDescriptor);
+  if (seed.length !== 32) {
+    throw new Error("Idunn runtime activation credential is not a 32-byte seed");
+  }
+  const activationKey = createPrivateKey({
+    key: Buffer.concat([PKCS8_ED25519_SEED_PREFIX, seed]),
+    format: "der",
+    type: "pkcs8",
+  });
+
+  const identity = await openProviderHealthIdentity(config.providerHealthIdentityPath, env, machineId);
+  const boundEndpoint = `http://${config.host}:${config.port}`;
+  const sequence = new PublisherSequence();
+
+  return {
+    sign: (state, detail, observedAtUnixMillis) =>
+      buildPresenceStatement({
+        bundle,
+        identity,
+        activationKey,
+        state,
+        detail,
+        boundEndpoint,
+        // A warming candidate holds no lease and must not claim one; the
+        // contract refuses the pair, and Idunn needs the warming statement to
+        // promote it.
+        writeLeaseSha256: null,
+        observedAtUnixMillis,
+        publisherSequence: sequence.next(observedAtUnixMillis),
+      }),
   };
 }

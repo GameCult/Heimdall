@@ -7,7 +7,7 @@ import {
   sign,
   type KeyObject,
 } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { closeSync, fstatSync, readSync } from "node:fs";
 import { chmod, readFile } from "node:fs/promises";
 import { SingleFileMessagePackBackingStore, type CultCacheEnvelope } from "@gamecult/cultcache-ts";
 import { readPrivateStoreRecord } from "./idunn-store.js";
@@ -71,7 +71,7 @@ export async function openOrEnrollProviderHealthIdentity(path: string): Promise<
   if (existing.length !== 1) {
     throw new Error("Provider-health identity store must contain exactly one record.");
   }
-  return decodePrivateIdentity(existing[0]!.payload, await readMachineId());
+  return decodePrivateIdentity(existing[0]!.payload, await readMachineId(), "bin");
 }
 
 const PRESENCE_IDENTITY_FD_NAME = "gamecult-runtime-presence-identity";
@@ -124,7 +124,8 @@ export function passedDescriptor(
  */
 export async function openProviderHealthIdentity(
   path: string,
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  machineId: () => Promise<string> = readMachineId
 ): Promise<PrivateIdentity> {
   const descriptor = passedDescriptor(PRESENCE_IDENTITY_FD_NAME, env);
   if (descriptor === undefined) {
@@ -140,11 +141,33 @@ export async function openProviderHealthIdentity(
   }
 
   const payload = readPrivateStoreRecord(
-    readFileSync(descriptor),
+    readPassedDescriptor(descriptor),
     "Idunn runtime presence identity"
   );
 
-  return decodePrivateIdentity(payload, await readMachineId());
+  // The descriptor's writer is the Rust owner, whose key fields are integer arrays.
+  return decodePrivateIdentity(payload, await machineId(), "int-array");
+}
+
+/**
+ * Read a passed descriptor whole, from offset 0, and close it. A descriptor is
+ * a one-shot input: reading it again starts at the offset the last read left,
+ * which is the end, so the owner reads once at open and keeps what it decoded.
+ */
+export function readPassedDescriptor(descriptor: number): Buffer {
+  try {
+    const size = fstatSync(descriptor).size;
+    const bytes = Buffer.alloc(size);
+    let read = 0;
+    while (read < size) {
+      const count = readSync(descriptor, bytes, read, size - read, read);
+      if (count === 0) break;
+      read += count;
+    }
+    return bytes.subarray(0, read);
+  } finally {
+    closeSync(descriptor);
+  }
 }
 
 export function signProviderHealthPayload(identity: PrivateIdentity, payload: Uint8Array): Uint8Array {
@@ -176,23 +199,58 @@ export function providerHealthPublicIdentity(identity: PrivateIdentity): {
   return { identityId: identity.identityId, publicKeyHex: Buffer.from(identity.publicKey).toString("hex") };
 }
 
-function decodePrivateIdentity(payload: Uint8Array, machineId: string): PrivateIdentity {
+/**
+ * Which writer produced the record. The self-enrolling store this process
+ * writes keeps key fields as MessagePack bin; the Rust owner (cultnet-rs
+ * service_identity.rs) serialises a Vec<u8> without serde_bytes, so its key
+ * fields are arrays of integers. Each source is read in its own shape and the
+ * other is refused.
+ */
+type KeyShape = "bin" | "int-array";
+
+function keyBytes(value: unknown, shape: KeyShape, field: string): Uint8Array {
+  const bytes =
+    shape === "bin"
+      ? value instanceof Uint8Array
+        ? value
+        : undefined
+      : Array.isArray(value) &&
+          value.every((byte) => typeof byte === "number" && Number.isInteger(byte) && byte >= 0 && byte <= 255)
+        ? Uint8Array.from(value as number[])
+        : undefined;
+  if (bytes === undefined || bytes.length !== 32) {
+    throw new Error(
+      `Provider-health identity key shape check failed: ${field} is not a 32-byte ${shape === "bin" ? "binary" : "integer-array"} key field.`
+    );
+  }
+  return bytes;
+}
+
+function decodePrivateIdentity(payload: Uint8Array, machineId: string, shape: KeyShape): PrivateIdentity {
   const value = decode(payload);
   if (!Array.isArray(value) || value.length !== 10) {
-    throw new Error("Provider-health identity payload is malformed.");
+    throw new Error("Provider-health identity schema check failed: payload is not a 10-field record.");
   }
-  const [schema, identityId, publicKey, protectedSeed, protector, binding, version] = value;
-  if (
-    schema !== PRIVATE_SCHEMA ||
-    typeof identityId !== "string" ||
-    !(publicKey instanceof Uint8Array) || publicKey.length !== 32 ||
-    !(protectedSeed instanceof Uint8Array) || protectedSeed.length !== 32 ||
-    protector !== "linux_file_mode_machine_id_binding" ||
-    binding !== protectorBinding(machineId) ||
-    version !== "v1" ||
-    identityId !== deriveIdentityId(publicKey)
-  ) {
-    throw new Error("Provider-health identity does not belong to this host or profile.");
+  const [schema, identityId, publicKeyField, protectedSeedField, protector, binding, version] = value;
+  if (schema !== PRIVATE_SCHEMA) {
+    throw new Error("Provider-health identity schema check failed: unexpected schema id.");
+  }
+  if (typeof identityId !== "string") {
+    throw new Error("Provider-health identity id check failed: id is not a string.");
+  }
+  const publicKey = keyBytes(publicKeyField, shape, "public key");
+  const protectedSeed = keyBytes(protectedSeedField, shape, "protected seed");
+  if (protector !== "linux_file_mode_machine_id_binding") {
+    throw new Error("Provider-health identity protector check failed: unexpected protector.");
+  }
+  if (binding !== protectorBinding(machineId)) {
+    throw new Error("Provider-health identity binding check failed: not bound to this host's machine id.");
+  }
+  if (version !== "v1") {
+    throw new Error("Provider-health identity version check failed: unexpected version.");
+  }
+  if (identityId !== deriveIdentityId(publicKey)) {
+    throw new Error("Provider-health identity id check failed: id does not derive from the public key.");
   }
   const seed = xorSeed(protectedSeed, binding);
   const privateKey = privateKeyFromSeed(seed);

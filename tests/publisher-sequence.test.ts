@@ -1,17 +1,12 @@
-import { mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
 import { loadConfig } from "../src/config.js";
-import { PublisherSequence, buildPresenceStatement } from "../src/runtime-presence.js";
-import { bundleFacts, openPresenceDescriptors, writePresenceFixtures } from "./fixtures/presence-descriptors.js";
-
-const machineIdAvailable = await readFile("/etc/machine-id", "utf8").then(
-  () => true,
-  () => false
-);
+import { PublisherSequence, openPresenceAuthority } from "../src/runtime-presence.js";
+import { fixtureMachineId, openPresenceDescriptors, writePresenceFixtures } from "./fixtures/presence-descriptors.js";
 
 describe("PublisherSequence", () => {
   it("starts at the observed millis", () => {
@@ -51,10 +46,11 @@ describe("PublisherSequence", () => {
   });
 });
 
-describe.skipIf(!machineIdAvailable)("presence publication and the state root", () => {
-  it("touches no path under dataRoot", async () => {
+describe("the presence authority", () => {
+  it("opens once, touches no path under dataRoot, and signs every pulse after its descriptors are gone", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "heimdall-nodataroot-"));
-    await writePresenceFixtures(path.join(dir, "fixtures"));
+    const fixtures = path.join(dir, "fixtures");
+    await writePresenceFixtures(fixtures);
     // A regular file as dataRoot: opening anything beneath it fails with
     // ENOTDIR for every uid, root included.
     const dataRoot = path.join(dir, "not-a-directory");
@@ -64,21 +60,21 @@ describe.skipIf(!machineIdAvailable)("presence publication and the state root", 
       GC_ACCESS_DATA_ROOT: dataRoot,
     });
 
-    const descriptors = openPresenceDescriptors(path.join(dir, "fixtures"));
+    const descriptors = openPresenceDescriptors(fixtures);
     try {
+      const authority = await openPresenceAuthority(
+        { ...config, idunnRuntimeBundlePath: fixtures },
+        descriptors.env,
+        fixtureMachineId,
+      );
+      // The descriptors were read whole and closed: a second read would find
+      // nothing, so signing again proves the authority holds what it decoded.
       const observedAtUnixMillis = Date.parse("2026-10-23T12:00:00.000Z");
-      const statement = await buildPresenceStatement({
-        bundle: bundleFacts,
-        state: "warming",
-        detail: "probe",
-        boundEndpoint: null,
-        writeLeaseSha256: null,
-        observedAtUnixMillis,
-        publisherSequence: new PublisherSequence().next(observedAtUnixMillis),
-        providerHealthIdentityPath: config.providerHealthIdentityPath,
-        env: descriptors.env,
-      });
-      expect(statement.target).toBe("heimdall");
+      const first = authority.sign("warming", "probe", observedAtUnixMillis);
+      const second = authority.sign("warming", "probe", observedAtUnixMillis);
+      expect(first.target).toBe("heimdall");
+      expect(second.target).toBe("heimdall");
+      expect(Buffer.from(second.payload).equals(Buffer.from(first.payload))).toBe(false);
     } finally {
       descriptors.close();
     }

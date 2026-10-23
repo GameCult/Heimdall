@@ -1,18 +1,17 @@
 import { access, mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { openSync, closeSync } from "node:fs";
+import { openSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { encode } from "@msgpack/msgpack";
-import { SingleFileMessagePackBackingStore } from "@gamecult/cultcache-ts";
+import { decode, encode } from "@msgpack/msgpack";
 import { describe, expect, it } from "vitest";
 
 import {
-  openOrEnrollProviderHealthIdentity,
   openProviderHealthIdentity,
   passedDescriptor,
   providerHealthPublicIdentity,
 } from "../src/provider-health-identity.js";
+import { fixtureMachineId, idunnRuntimeFixtures } from "./fixtures/presence-descriptors.js";
 
 const machineIdAvailable = await readFile("/etc/machine-id", "utf8").then(
   () => true,
@@ -23,59 +22,79 @@ const machineIdAvailable = await readFile("/etc/machine-id", "utf8").then(
  * The identity is machine-id bound, so enrolment only works where a machine-id
  * exists. These run on Linux and are skipped elsewhere.
  */
-describe.skipIf(!machineIdAvailable)("presence identity from a passed descriptor", () => {
-  it("reads an Idunn-written store, not a cultcache-ts one", async () => {
+/** Name the presence descriptor so it lands on whatever fd open() returned. */
+function presenceEnv(fd: number): NodeJS.ProcessEnv {
+  // The lookup maps a name index onto 3 + index, so the name list is padded
+  // until the presence entry lands on the descriptor open() actually returned.
+  // Assuming it is 3 is how this passes on one machine and reads the wrong
+  // descriptor on another.
+  const names = [
+    ...Array.from({ length: fd - 3 }, (_, i) => `pad-${i}`),
+    "gamecult-runtime-presence-identity",
+  ].join(":");
+  return { LISTEN_FDNAMES: names, LISTEN_PID: String(process.pid) };
+}
+
+describe("presence identity from a passed descriptor", () => {
+  it("decodes the Rust owner's record, whose key fields are integer arrays", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "heimdall-presence-"));
+    const fd = openSync(path.join(idunnRuntimeFixtures, "provider-identity.credential"), "r");
 
-    // Enrol with the TypeScript client to get a genuine machine-bound payload,
-    // then re-wrap that payload the way cultcache-rs writes a store: a bare
-    // array of positional [key, type, payload, stored_at, schema_id] envelopes.
-    // Idunn writes with the Rust client, and cultcache-ts cannot read that
-    // layout, so wrapping it here is what makes this test resemble reality.
-    const tsStore = path.join(dir, "ts-enrolled.cc");
-    const enrolled = await openOrEnrollProviderHealthIdentity(tsStore);
-    const records = await new SingleFileMessagePackBackingStore(tsStore).pullAll();
-    expect(records).toHaveLength(1);
-
-    const idunnStore = path.join(dir, "runtime-presence-identity.cc");
-    await writeFile(
-      idunnStore,
-      encode([
-        [
-          "gamecult-provider-health-identity",
-          "gamecult.provider_health_identity.private.v1",
-          records[0]!.payload,
-          "2026-09-06T00:00:00.000Z",
-          "gamecult.provider_health_identity.private.v1",
-        ],
-      ])
+    const opened = await openProviderHealthIdentity(
+      path.join(dir, "would-be-self-enrolled.cc"),
+      presenceEnv(fd),
+      fixtureMachineId
     );
 
-    const fd = openSync(idunnStore, "r");
-    try {
-      // The lookup maps a name index onto 3 + index, so the name list is padded
-      // until the presence entry lands on whatever descriptor open() actually
-      // returned. Assuming it is 3 is how this passes on one machine and reads
-      // the wrong descriptor on another.
-      const names = [
-        ...Array.from({ length: fd - 3 }, (_, i) => `pad-${i}`),
-        "gamecult-runtime-presence-identity",
-      ].join(":");
+    // The fixture's own public key means it came from the descriptor. A fresh
+    // self-enrolment would produce a different key, which is exactly the failure
+    // that makes Idunn refuse this daemon's health and stall promotion.
+    const store = decode(await readFile(path.join(idunnRuntimeFixtures, "provider-identity.credential"))) as unknown[][];
+    const record = decode(store[0]![2] as Uint8Array) as unknown[];
+    expect(providerHealthPublicIdentity(opened).publicKeyHex).toBe(
+      Buffer.from(record[2] as number[]).toString("hex")
+    );
+    await expect(access(path.join(dir, "would-be-self-enrolled.cc"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
 
-      const opened = await openProviderHealthIdentity(
-        path.join(dir, "would-be-self-enrolled.cc"),
-        { LISTEN_FDNAMES: names, LISTEN_PID: String(process.pid) }
-      );
+  it("refuses a bin-shaped record on the descriptor path, naming the key-shape check and no value", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "heimdall-presence-bin-"));
+    const store = decode(await readFile(path.join(idunnRuntimeFixtures, "provider-identity.credential"))) as unknown[][];
+    const record = decode(store[0]![2] as Uint8Array) as unknown[];
+    // What this process's own enroller writes: the same record with bin key fields.
+    const binRecord = record.map((field, index) =>
+      index === 2 || index === 3 ? Uint8Array.from(field as number[]) : field
+    );
+    const binStore = path.join(dir, "bin-shaped.cc");
+    await writeFile(binStore, encode([[store[0]![0], store[0]![1], encode(binRecord), store[0]![3], store[0]![4]]]));
+    const fd = openSync(binStore, "r");
 
-      // Same key means it came from the descriptor. A fresh self-enrolment
-      // would produce a different key -- which is exactly the failure that
-      // makes Idunn refuse this daemon's health and stall promotion.
-      expect(providerHealthPublicIdentity(opened).publicKeyHex).toBe(
-        providerHealthPublicIdentity(enrolled).publicKeyHex
-      );
-    } finally {
-      closeSync(fd);
-    }
+    const failure = await openProviderHealthIdentity(path.join(dir, "x.cc"), presenceEnv(fd), fixtureMachineId).then(
+      () => undefined,
+      (error: Error) => error
+    );
+
+    expect(failure?.message).toContain("key shape check");
+    expect(failure?.message).not.toContain((record[1] as string).slice(0, 16));
+  });
+
+  it.each([
+    ["schema", 0, "bogus", "schema check"],
+    ["protector", 4, "bogus", "protector check"],
+    ["binding", 5, "bogus", "binding check"],
+    ["version", 6, "v9", "version check"],
+  ])("a record failing only the %s check is refused by that check", async (_name, index, replacement, check) => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "heimdall-presence-check-"));
+    const store = decode(await readFile(path.join(idunnRuntimeFixtures, "provider-identity.credential"))) as unknown[][];
+    const record = decode(store[0]![2] as Uint8Array) as unknown[];
+    record[index] = replacement;
+    const damaged = path.join(dir, "damaged.cc");
+    await writeFile(damaged, encode([[store[0]![0], store[0]![1], encode(record), store[0]![3], store[0]![4]]]));
+    const fd = openSync(damaged, "r");
+
+    await expect(
+      openProviderHealthIdentity(path.join(dir, "x.cc"), presenceEnv(fd), fixtureMachineId)
+    ).rejects.toThrow(check);
   });
 });
 

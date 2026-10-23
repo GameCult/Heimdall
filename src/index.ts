@@ -6,14 +6,16 @@ import { publishHeimdallOdinState } from "./odin-publication.js";
 import { startHeimdallPrivateCommandPlane } from "./private-command-plane.js";
 import type { CultNetOperationServer } from "cultnet-ts";
 import { createHeimdallRuntimePulse, buildHeimdallHealthDetail, publishHeimdallVerseState } from "./verse-state.js";
-import {
-  buildPresenceStatement,
-  PublisherSequence,
-  readRuntimeBundleFacts,
-  type RuntimeBundleFacts,
-} from "./runtime-presence.js";
+import { openPresenceAuthority } from "./runtime-presence.js";
 
 const config = loadConfig();
+// Under Idunn the launch's presence keys, bundle facts and publisher sequence
+// open here, before anything listens. A launch-contract fault throws, uncaught,
+// and the process exits non-zero with no listener: Idunn fails Warming in
+// seconds rather than waiting on a candidate that can never sign.
+const presenceAuthority = config.idunnRuntimeBundlePath
+  ? await openPresenceAuthority(config)
+  : undefined;
 const app = await buildApp({ config });
 const versePulseIntervalMs = 60_000;
 const healthPulseIntervalMs = 10_000;
@@ -69,14 +71,6 @@ async function publishVerseState(): Promise<void> {
   await publishHeimdallOdinState(config, pulse);
 }
 
-/**
- * Read once and keep: the bundle is Idunn's immutable record of this launch and
- * cannot change while the process lives, so re-reading it every pulse would be
- * work that can only ever return the same answer or fail.
- */
-let runtimeBundleFacts: RuntimeBundleFacts | undefined;
-const presenceSequence = new PublisherSequence();
-
 async function publishHealthState(): Promise<void> {
   const pulse = createHeimdallRuntimePulse(config);
 
@@ -94,30 +88,17 @@ async function publishHealthState(): Promise<void> {
     ? buildHeimdallHealthDetail(config, pulse)
     : `Heimdall candidate warming; ${lease.reason}`;
 
-  if (!config.idunnRuntimeBundlePath) {
+  if (!presenceAuthority) {
     // Outside Idunn there is no launch to attest and nothing that admits the
     // statement; publishing is simply not part of that world.
     return;
   }
-  runtimeBundleFacts ??= await readRuntimeBundleFacts(config.idunnRuntimeBundlePath);
-
-  const observedAtUnixMillis = Date.parse(pulse.updatedAt);
-  const presence = await buildPresenceStatement({
-    bundle: runtimeBundleFacts,
-    state: lease.mayWrite ? "active" : "warming",
-    detail,
-    boundEndpoint: `http://${config.host}:${config.port}`,
-    // A warming candidate holds no lease and must not claim one; the contract
-    // refuses the pair, and Idunn needs the warming statement to promote it.
-    writeLeaseSha256: null,
-    observedAtUnixMillis,
-    publisherSequence: presenceSequence.next(observedAtUnixMillis),
-    providerHealthIdentityPath: config.providerHealthIdentityPath,
-  });
+  const state = lease.mayWrite ? "active" : "warming";
+  const presence = presenceAuthority.sign(state, detail, Date.parse(pulse.updatedAt));
 
   await publishIdunnRudpHealth(config, {
     daemonId: config.daemonId,
-    state: lease.mayWrite ? "active" : "warming",
+    state,
     detail,
     observedAt: pulse.updatedAt,
     presence,
