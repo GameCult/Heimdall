@@ -72,8 +72,8 @@ describe("the presence authority", () => {
       const observedAtUnixMillis = Date.parse("2026-10-23T12:00:00.000Z");
       const first = authority.sign("warming", "probe", observedAtUnixMillis);
       const second = authority.sign("warming", "probe", observedAtUnixMillis);
-      expect(first.target).toBe("heimdall");
-      expect(second.target).toBe("heimdall");
+      expect(first.target).toBe("streampixels-web");
+      expect(second.target).toBe("streampixels-web");
       expect(Buffer.from(second.payload).equals(Buffer.from(first.payload))).toBe(false);
     } finally {
       descriptors.close();
