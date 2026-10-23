@@ -128,6 +128,14 @@ export async function openProviderHealthIdentity(
 ): Promise<PrivateIdentity> {
   const descriptor = passedDescriptor(PRESENCE_IDENTITY_FD_NAME, env);
   if (descriptor === undefined) {
+    if (env.GAMECULT_IDUNN_RUNTIME_BUNDLE) {
+      // Inside an Idunn generation a self-enrolled key is one Idunn does not
+      // trust, and its private store would land in a state root the next
+      // generation must share. The descriptor is the only identity there.
+      throw new Error(
+        `Idunn runtime bundle is set but the ${PRESENCE_IDENTITY_FD_NAME} descriptor was not passed; refusing to self-enroll`
+      );
+    }
     return openOrEnrollProviderHealthIdentity(path);
   }
 

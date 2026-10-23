@@ -1,4 +1,3 @@
-import path from "node:path";
 import { resolveWriteLease, WriteLeaseNotHeldError } from "./process-write-lease.js";
 import { buildApp } from "./app.js";
 import { loadConfig } from "./config.js";
@@ -9,7 +8,7 @@ import type { CultNetOperationServer } from "cultnet-ts";
 import { createHeimdallRuntimePulse, buildHeimdallHealthDetail, publishHeimdallVerseState } from "./verse-state.js";
 import {
   buildPresenceStatement,
-  nextPublisherSequence,
+  PublisherSequence,
   readRuntimeBundleFacts,
   type RuntimeBundleFacts,
 } from "./runtime-presence.js";
@@ -76,6 +75,7 @@ async function publishVerseState(): Promise<void> {
  * work that can only ever return the same answer or fail.
  */
 let runtimeBundleFacts: RuntimeBundleFacts | undefined;
+const presenceSequence = new PublisherSequence();
 
 async function publishHealthState(): Promise<void> {
   const pulse = createHeimdallRuntimePulse(config);
@@ -111,9 +111,7 @@ async function publishHealthState(): Promise<void> {
     // refuses the pair, and Idunn needs the warming statement to promote it.
     writeLeaseSha256: null,
     observedAtUnixMillis,
-    publisherSequence: await nextPublisherSequence(
-      path.join(config.dataRoot, "runtime-presence-sequence"),
-    ),
+    publisherSequence: presenceSequence.next(observedAtUnixMillis),
     providerHealthIdentityPath: config.providerHealthIdentityPath,
   });
 

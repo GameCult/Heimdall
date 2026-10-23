@@ -20,7 +20,6 @@
 import path from "node:path";
 import { createHash, createPrivateKey, type KeyObject } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { readFile, writeFile, rename } from "node:fs/promises";
 
 import { decode } from "@msgpack/msgpack";
 import {
@@ -201,35 +200,25 @@ export function openActivationSigner(env: NodeJS.ProcessEnv = process.env): KeyO
 }
 
 /**
- * The publisher sequence must strictly increase for the life of a signer
- * identity, because Idunn treats a repeat or a regression as a replay and
- * refuses the observation.
+ * The publisher sequence a process stamps on its presence statements.
  *
- * An in-process counter is therefore not enough: a restart would reset it and
- * every statement afterwards would be refused until the count climbed past the
- * old high-water mark. It lives beside the target's state instead, and is
- * advanced before use.
+ * Odin compares `publisher_sequence` only against stored presence of the same
+ * activation, and Idunn mints a fresh activation for every start, continuity
+ * restarts included. So the sequence need only strictly increase within this
+ * process; nothing has to survive a restart, and nothing is written to the
+ * state root. Muninn derives its sequence the same way: the observation clock,
+ * never below the previous value plus one.
  */
-export async function nextPublisherSequence(sequencePath: string): Promise<number> {
-  let current = 0;
-  try {
-    const raw = (await readFile(sequencePath, "utf8")).trim();
-    const parsed = Number(raw);
-    if (Number.isSafeInteger(parsed) && parsed > 0) {
-      current = parsed;
+export class PublisherSequence {
+  private last = 0;
+
+  next(observedAtUnixMillis: number): number {
+    if (!Number.isSafeInteger(observedAtUnixMillis)) {
+      throw new Error("observedAtUnixMillis is not a safe integer");
     }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      throw error;
-    }
+    this.last = Math.max(observedAtUnixMillis, this.last + 1);
+    return this.last;
   }
-  const next = current + 1;
-  // Written through a temporary file: a torn write here would look like a
-  // regression and cost the target every future observation.
-  const temporary = `${sequencePath}.next`;
-  await writeFile(temporary, `${next}\n`, { mode: 0o600 });
-  await rename(temporary, sequencePath);
-  return next;
 }
 
 export interface PresenceStatementInputs {

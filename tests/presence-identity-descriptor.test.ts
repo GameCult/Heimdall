@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { openSync, closeSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -110,5 +110,31 @@ describe("presence identity descriptor selection", () => {
     ).catch((error) => {
       expect(String(error)).not.toContain("Idunn runtime presence identity");
     });
+  });
+});
+
+describe("an Idunn generation without the presence identity descriptor", () => {
+  it("refuses, naming the descriptor, and enrolls nothing", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "heimdall-nodescriptor-"));
+    const identityPath = path.join(dir, "provider-health-identity.cc");
+
+    await expect(
+      openProviderHealthIdentity(identityPath, {
+        GAMECULT_IDUNN_RUNTIME_BUNDLE: "/run/idunn/bundle",
+        LISTEN_FDNAMES: "some-other-descriptor",
+      })
+    ).rejects.toThrow("gamecult-runtime-presence-identity");
+
+    await expect(access(identityPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("still self-enrolls outside Idunn", async () => {
+    if (!machineIdAvailable) return;
+    const dir = await mkdtemp(path.join(os.tmpdir(), "heimdall-outside-idunn-"));
+    const identityPath = path.join(dir, "provider-health-identity.cc");
+
+    await openProviderHealthIdentity(identityPath, {});
+
+    await expect(access(identityPath)).resolves.toBeUndefined();
   });
 });
