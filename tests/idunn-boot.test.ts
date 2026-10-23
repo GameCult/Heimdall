@@ -199,13 +199,31 @@ describe.skipIf(!canLaunch)("the bundle booted as Idunn launches it", () => {
     const credential = await readFile(path.join(idunnRuntimeFixtures, "provider-identity.credential"));
     const generation = await launch("signs", credential);
 
-    // Startup publication, then one per 10 s pulse.
+    // Startup publication, then one per 10 s pulse. A publication fault is
+    // reported as it is logged rather than after the frames never arrive.
+    const publicationFault = new Promise<never>((_resolve, reject) => {
+      const watch = setInterval(() => {
+        if (generation.stderr().includes(" failed on ")) {
+          clearInterval(watch);
+          reject(new Error(`publication failed; stderr: ${generation.stderr()}`));
+        }
+      }, 200);
+      void idunn.frame(2).then(() => clearInterval(watch));
+    });
+    const exitedEarly = generation.exited.then((code) => {
+      throw new Error(`bundle exited ${code}; stderr: ${generation.stderr()}`);
+    });
+    // The first statement is the startup publication, which follows the listen
+    // directly; the 10 s pulse loop has not yet fired.
     await Promise.race([
-      idunn.frame(2),
-      generation.exited.then((code) => {
-        throw new Error(`bundle exited ${code}; stderr: ${generation.stderr()}`);
-      }),
+      idunn.frame(0),
+      publicationFault,
+      exitedEarly,
+      new Promise<never>((_resolve, reject) =>
+        setTimeout(() => reject(new Error(`no presence at startup; stderr: ${generation.stderr()}`)), 8_000)
+      ),
     ]);
+    await Promise.race([idunn.frame(2), publicationFault, exitedEarly]);
 
     expect(await answers(generation.candidatePort)).toBe(200);
 
