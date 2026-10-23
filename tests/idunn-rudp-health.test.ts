@@ -1,18 +1,12 @@
-import dgram from "node:dgram";
 import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { decode } from "@msgpack/msgpack";
-import {
-  CultNetRudpSession,
-  decodeRudpPacket,
-  encodeRudpPacket,
-  parseCultNetMessage,
-  type CultNetTransportFrame,
-} from "cultnet-ts";
+import { parseCultNetMessage } from "cultnet-ts";
 import { describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../src/config.js";
 import { publishIdunnRudpHealth } from "../src/idunn-rudp-health.js";
+import { startFakeIdunnRudp } from "./fixtures/fake-idunn-rudp.js";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:fs/promises")>();
@@ -27,37 +21,12 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 
 describe("Heimdall Idunn health publication", () => {
   it("completes the canonical RUDP handshake before publishing its signed frame", async () => {
-    const server = dgram.createSocket("udp4");
-    const session = new CultNetRudpSession({
-      connectionId: 0x1d0d0001,
-      initialSequence: 1,
-      resendDelayMs: 100,
-    });
-    let resolveFrame!: (frame: CultNetTransportFrame) => void;
-    const frameReceived = new Promise<CultNetTransportFrame>((resolve) => {
-      resolveFrame = resolve;
-    });
-
-    server.on("message", (wire, remote) => {
-      const packet = decodeRudpPacket(wire);
-      if (packet.packetType === "connect") {
-        server.send(encodeRudpPacket(session.acceptConnect(packet, Date.now())), remote.port, remote.address);
-        return;
-      }
-      const result = session.receive(packet, Date.now());
-      if (result.reply) server.send(encodeRudpPacket(result.reply), remote.port, remote.address);
-      for (const frame of result.delivered) resolveFrame(frame);
-      if (result.delivered.length > 0) {
-        server.send(encodeRudpPacket(session.createAck()), remote.port, remote.address);
-      }
-    });
-    await new Promise<void>((resolve) => server.bind(0, "127.0.0.1", resolve));
+    const server = await startFakeIdunnRudp();
 
     try {
       const tmp = await mkdtemp(path.join(os.tmpdir(), "heimdall-idunn-rudp-"));
-      const address = server.address();
       const config = loadConfig({
-        GC_ACCESS_IDUNN_RUDP_HEALTH: `127.0.0.1:${address.port}`,
+        GC_ACCESS_IDUNN_RUDP_HEALTH: `127.0.0.1:${server.port}`,
         GC_ACCESS_PROVIDER_HEALTH_IDENTITY_PATH: path.join(tmp, "provider-health-identity.cc"),
       });
       const observedAt = "2026-08-22T00:45:00.000Z";
@@ -78,7 +47,7 @@ describe("Heimdall Idunn health publication", () => {
         observedAt,
         presence,
       });
-      const frame = await frameReceived;
+      const frame = await server.frame(0);
       const message = parseCultNetMessage(decode(frame.payload), "cultnet.schema.v0");
 
       expect(frame.channelId).toBe("schema");
