@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 
+import { build } from "esbuild";
 import { describe, expect, it } from "vitest";
 
 import { writePresenceFixtures } from "./fixtures/presence-descriptors.js";
@@ -46,12 +47,28 @@ describe.skipIf(!isRoot)("Idunn state root across generations", () => {
     await chown(stateRoot, 0, STATE_GID);
     await chmod(stateRoot, 0o2770);
 
-    const child = path.join(import.meta.dirname, "fixtures", "state-root-generation-child.ts");
+    // The generations run as uids that cannot read the checkout, so each runs
+    // one self-contained bundle built into the world-readable scratch root.
+    const child = path.join(base, "generation.mjs");
+    await build({
+      entryPoints: [path.join(import.meta.dirname, "fixtures", "state-root-generation-child.ts")],
+      bundle: true,
+      platform: "node",
+      format: "esm",
+      target: "node24",
+      outfile: child,
+      external: ["pg-native"],
+      banner: {
+        js: "import{createRequire}from'node:module';const require=createRequire(import.meta.url);",
+      },
+      logLevel: "silent",
+    });
+    await chmod(child, 0o644);
     const generation = (role: "first" | "next", uid: number) =>
-      run(process.execPath, ["--import", "tsx", child, role, stateRoot, fixtures], {
+      run(process.execPath, [child, role, stateRoot, fixtures], {
         uid,
         gid: STATE_GID,
-        cwd: path.resolve(import.meta.dirname, ".."),
+        cwd: base,
         env: { PATH: process.env.PATH ?? "", HOME: fixtures },
       });
 
