@@ -106,6 +106,10 @@ CREATE INDEX IF NOT EXISTS auth_completions_lookup_idx
 -- redeem the completion it created without ever needing the code.
 ALTER TABLE auth_completions ADD COLUMN IF NOT EXISTS attempt_id TEXT;
 
+-- The connection target the signed state named (connection.targetId). Redeem
+-- compares it against the target the redeeming app states.
+ALTER TABLE auth_completions ADD COLUMN IF NOT EXISTS target_id TEXT;
+
 -- One attempt handle may bind at most one unconsumed completion (R21.1): a
 -- second completion for the same handle would let the by-attempt UPDATE in
 -- consumeAuthCompletionByAttempt match more than one row, silently consuming

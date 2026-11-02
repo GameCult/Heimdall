@@ -159,6 +159,8 @@ export interface StoredAuthCompletion {
   accountId: string;
   sessionId: string;
   returnTo: string;
+  /** The connection target the signed state named, if any; compared at redeem. */
+  targetId?: string;
   createdAt: string;
   expiresAt: string;
   consumedAt?: string;
@@ -171,6 +173,7 @@ export interface CreateAuthCompletionInput {
    * always mints `code` itself; a caller cannot choose it.
    */
   attemptId?: string;
+  targetId?: string;
   appSlug: AppSlug;
   provider: Provider;
   mode: OAuthMode;
@@ -263,6 +266,8 @@ export interface HeimdallStore {
   createPrivateCommandReceipt(input: CreatePrivateCommandReceiptInput): Promise<StoredPrivateCommandReceipt>;
   findPrivateCommandReceipt(appSlug: AppSlug, idempotencyKey: string): Promise<StoredPrivateCommandReceipt | null>;
   createAuthCompletion(input: CreateAuthCompletionInput): Promise<StoredAuthCompletion>;
+  /** Read a completion without consuming it, so redeem can refuse a mismatch without burning the code. */
+  findAuthCompletion(appSlug: AppSlug, code: string): Promise<StoredAuthCompletion | null>;
   consumeAuthCompletion(appSlug: AppSlug, code: string, at: string): Promise<StoredAuthCompletion | null>;
   /**
    * Consume a completion by its correlated attempt handle instead of its
