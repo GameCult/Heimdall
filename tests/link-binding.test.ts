@@ -120,6 +120,18 @@ describe("link start names its initiator", () => {
   });
 });
 
+describe("sign_in start carries no connection target", () => {
+  it("refuses connection.targetId on sign_in with connection_not_allowed_in_sign_in, with or without app auth", async () => {
+    const r = await rig("d-si");
+    const connection = { kind: "creator", targetId: "victim-target" };
+    for (const headers of [{}, appAuth]) {
+      const res = await start(r, { mode: "sign_in", connection }, headers);
+      expect([res.statusCode, res.json().error]).toEqual([400, "connection_not_allowed_in_sign_in"]);
+    }
+    expect((await start(r, { mode: "sign_in" }, {})).statusCode).toBe(201);
+  });
+});
+
 describe("link callback holds the provider identity to the initiator", () => {
   it("attaches an unlinked identity to the initiating account, not a new one", async () => {
     const r = await rig("d-new");

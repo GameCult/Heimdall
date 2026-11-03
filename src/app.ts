@@ -517,6 +517,16 @@ export async function startOAuthFlow(
     };
   }
 
+  // A connection target is app-backend authority: it rides only on connect
+  // and link starts, which are the flows gated by x-heimdall-app-secret.
+  // A sign_in start is open to any browser and must not carry one.
+  if (input.mode === "sign_in" && input.connection !== undefined) {
+    return {
+      statusCode: 400,
+      body: { error: "connection_not_allowed_in_sign_in", detail: "sign_in start must not carry a connection target." },
+    };
+  }
+
   if (callbackMint(profile, provider, input.mode, input.connection) === "refused") {
     return {
       statusCode: 400,
