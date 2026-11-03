@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildApp } from "../src/app.js";
 import { type HeimdallConfig } from "../src/config.js";
 import { type OAuthProviderRuntime } from "../src/oauth.js";
@@ -78,6 +78,7 @@ function discordRuntime(providerUserId: string): OAuthProviderRuntime {
 
 const apps: Awaited<ReturnType<typeof buildApp>>[] = [];
 afterEach(async () => {
+  vi.useRealTimers();
   await Promise.all(apps.splice(0).map((app) => app.close()));
 });
 
@@ -200,6 +201,38 @@ describe("redeem binds caller, target and replay", () => {
     const completionCode = await linked(r, "target-a");
     expect((await redeem(r, { completionCode, targetId: "target-a" }, appAuth)).statusCode).toBe(201);
     expect((await redeem(r, { completionCode, targetId: "target-a" }, appAuth)).statusCode).toBe(410);
+  });
+
+  it("refuses a completion at and after its expiry with 410, whatever the caller and target, and honours it just before", async () => {
+    // completionTtlSeconds is 300. Only Date is faked: the app and store run on real timers.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const t0 = Date.parse("2026-11-03T00:00:00.000Z");
+    const ttlMs = createTestConfig().completionTtlSeconds * 1000;
+    const expired = { statusCode: 410, error: "invalid_or_expired_completion_code" };
+    const outcome = async (r: Rig, payload: Record<string, unknown>) => {
+      const res = await redeem(r, payload, appAuth);
+      return { statusCode: res.statusCode, error: res.json().error };
+    };
+
+    vi.setSystemTime(t0);
+    const r = await rig("d-exp");
+    const code = await linked(r, "target-a");
+    const row = await r.store.findAuthCompletion("repixelizer", code);
+    expect(row?.expiresAt).toBe(new Date(t0 + ttlMs).toISOString());
+
+    // Just before expiry the right caller and target redeem it.
+    const early = await rig("d-exp-early");
+    const earlyCode = await linked(early, "target-a");
+    vi.setSystemTime(t0 + ttlMs - 1);
+    expect((await redeem(early, { completionCode: earlyCode, targetId: "target-a" }, appAuth)).statusCode).toBe(201);
+
+    // At the expiry instant and after it: 410, for the right target and for a wrong one (not 403), unconsumed.
+    for (const at of [t0 + ttlMs, t0 + ttlMs + 1]) {
+      vi.setSystemTime(at);
+      expect(await outcome(r, { completionCode: code, targetId: "target-a" })).toEqual(expired);
+      expect(await outcome(r, { completionCode: code, targetId: "target-b" })).toEqual(expired);
+    }
+    expect((await r.store.findAuthCompletion("repixelizer", code))?.consumedAt).toBeUndefined();
   });
 
   it("stores the target on the completion row", async () => {
