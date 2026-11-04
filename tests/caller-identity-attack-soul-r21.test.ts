@@ -66,6 +66,7 @@ function testConfig(overrides: Partial<HeimdallConfig> = {}): HeimdallConfig {
       youtube: {},
       spotify: {},
       joystick: {},
+      google: {},
     },
     ...overrides,
   };

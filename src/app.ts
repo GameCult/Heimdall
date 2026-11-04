@@ -28,6 +28,7 @@ import { renderBrowserHandoffPage } from "./browser-handoff.js";
 import { type HeimdallConfig, loadConfig } from "./config.js";
 import { createTokenCustody, type TokenCustody } from "./custody.js";
 import { grantFact } from "./facts.js";
+import { deriveOidcSecrets } from "./google-oidc.js";
 import {
   createOAuthRuntimeRegistry,
   fetchPatreonIdentity,
@@ -93,8 +94,9 @@ function buildOAuthStateToken(options: {
   connection: OAuthConnectionBinding | undefined;
   handoff: OAuthHandoff;
   entitlementPolicy: OAuthEntitlementPolicy | undefined;
+  linkAccountId: string | undefined;
   keys: ReturnType<typeof createRuntimeKeyMaterial>;
-}): { token: string; expiresAt: string } {
+}): { token: string; jti: string; expiresAt: string } {
   const issuedAt = nowEpochSeconds();
   const expiresAtEpoch = issuedAt + options.config.stateTtlSeconds;
   const payload: OAuthStatePayload = {
@@ -113,11 +115,13 @@ function buildOAuthStateToken(options: {
     connection: options.connection ?? null,
     handoff: options.handoff,
     entitlement_policy: options.entitlementPolicy ?? null,
+    link_account_id: options.linkAccountId ?? null,
   };
   const token = signJwt(payload as unknown as Record<string, unknown>, options.keys);
 
   return {
     token,
+    jti: payload.jti,
     expiresAt: new Date(expiresAtEpoch * 1000).toISOString(),
   };
 }
@@ -168,7 +172,10 @@ function parseOAuthStatePayload(payload: Record<string, unknown>): OAuthStatePay
     typeof payload.nbf !== "number" ||
     typeof payload.exp !== "number" ||
     !handoffIsValid ||
-    !entitlementPolicyIsValid
+    !entitlementPolicyIsValid ||
+    (payload.link_account_id !== undefined &&
+      payload.link_account_id !== null &&
+      typeof payload.link_account_id !== "string")
   ) {
     return null;
   }
@@ -180,6 +187,7 @@ function parseOAuthStatePayload(payload: Record<string, unknown>): OAuthStatePay
   if (!normalizedPayload.entitlement_policy) {
     normalizedPayload.entitlement_policy = null;
   }
+  normalizedPayload.link_account_id ??= null;
 
   return normalizedPayload;
 }
@@ -253,6 +261,21 @@ function relayedProviderText(value: string | undefined, bound: number): string |
  * code, each only when it is a short identifier. Never its message, which
  * carries whatever the thrower quoted (a host, a database, a provider's body).
  */
+/**
+ * A callback that would have attached an identity to the wrong account, or
+ * minted one for a person who has one. It carries a closed code and no text
+ * from the provider; `errorIdentity` records the class and the code.
+ */
+export class AccountLinkRefused extends Error {
+  readonly code: "identity_not_linked" | "identity_linked_elsewhere" | "link_account_missing";
+
+  constructor(code: AccountLinkRefused["code"]) {
+    super(`Account link refused (${code}).`);
+    this.name = "AccountLinkRefused";
+    this.code = code;
+  }
+}
+
 export function errorIdentity(error: unknown): { errorClass: string; errorCode: string | null } {
   const code = (error as { code?: unknown } | null)?.code;
   return {
@@ -486,6 +509,13 @@ export async function startOAuthFlow(
      * which one reaches the signed state token.
      */
     trustedBrowserAttemptId?: string;
+    /**
+     * The account an explicit link binds to. Like `trustedBrowserAttemptId`
+     * it is a function argument, never a value parsed out of the request:
+     * the HTTP route sets it only from a verified Heimdall access token for
+     * this app (`resolveLinkAccount`), so a caller cannot name an account.
+     */
+    linkAccountId?: string;
   }
 ): Promise<HandlerResult> {
   const { config, keys } = ctx;
@@ -558,6 +588,22 @@ export async function startOAuthFlow(
     return { statusCode: 401, body: { error: "app_auth_required" } };
   }
 
+  const descriptor = providerCatalog[provider];
+  // A provider that never mints an account attaches an identity only through
+  // a bound link. A link start without a verified Heimdall session would end
+  // in a refusal at the callback, so it is refused before the redirect.
+  // `sign_in` stays open: it signs in an identity already linked, and the
+  // callback refuses one that is not.
+  if (descriptor.firstLogin === "requires_link" && input.mode === "link" && !options?.linkAccountId) {
+    return {
+      statusCode: 401,
+      body: {
+        error: "link_session_required",
+        detail: `Linking ${descriptor.displayName} needs a Heimdall access token for ${profile.slug}: send it as a Bearer token.`,
+      },
+    };
+  }
+
   const providerConfig = config.providers[provider];
   if (!providerConfig.clientId) {
     return {
@@ -576,8 +622,10 @@ export async function startOAuthFlow(
     connection: input.connection,
     handoff,
     entitlementPolicy,
+    linkAccountId: options?.linkAccountId,
     keys,
   });
+  const oidc = descriptor.oidc ? deriveOidcSecrets(state.jti, keys.privateKey) : undefined;
 
   return {
     statusCode: 201,
@@ -592,12 +640,56 @@ export async function startOAuthFlow(
         redirectUri: callbackUrl,
         state: state.token,
         requestedScopes: input.requestedScopes,
+        ...(oidc ? { oidc: { nonce: oidc.nonce, codeChallenge: oidc.codeChallenge } } : {}),
       }),
       handoff,
       stateToken: state.token,
       stateExpiresAt: state.expiresAt,
     },
   };
+}
+
+/**
+ * The account a link start binds to: the one a live Heimdall access token for
+ * this app names. The token must verify under Heimdall's own key, be an access
+ * token for `appSlug`, be inside its validity window, and belong to a session
+ * the store still holds for that account at that revision. A bearer that fails
+ * any of these binds nothing: a link is explicit or it does not happen.
+ */
+async function resolveLinkAccount(
+  ctx: Pick<HeimdallRuntimeContext, "config" | "keys" | "store">,
+  appSlug: AppSlug,
+  authorization: string | undefined
+): Promise<string | null> {
+  const token = /^Bearer\s+(\S+)$/i.exec(authorization ?? "")?.[1];
+  if (!token) return null;
+  const verification = verifyJwt(token, ctx.keys.publicKey);
+  if (!verification.valid) return null;
+  const claims = verification.payload;
+  const now = nowEpochSeconds();
+  if (
+    claims.typ !== "heimdall_access" ||
+    claims.iss !== ctx.config.issuer ||
+    claims.aud !== appSlug ||
+    typeof claims.account_id !== "string" ||
+    typeof claims.sid !== "string" ||
+    typeof claims.access_revision !== "number" ||
+    typeof claims.exp !== "number" ||
+    claims.exp <= now ||
+    (typeof claims.nbf === "number" && claims.nbf > now)
+  ) {
+    return null;
+  }
+  const session = await ctx.store.findSession(appSlug, claims.sid);
+  if (
+    !session ||
+    session.accountId !== claims.account_id ||
+    session.accessRevision !== claims.access_revision ||
+    Date.parse(session.expiresAt) <= Date.now()
+  ) {
+    return null;
+  }
+  return claims.account_id;
 }
 
 /**
@@ -866,7 +958,18 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     },
     async (request, reply) => {
       const caller = resolveAppCaller(config, request.body.appSlug, request.headers);
-      const result = await startOAuthFlow({ config, keys, store }, request.params.provider, caller, request.body);
+      let linkAccountId: string | undefined;
+      if (request.body.mode === "link") {
+        const bound = await resolveLinkAccount({ config, keys, store }, request.body.appSlug, request.headers.authorization);
+        if (bound === null && request.headers.authorization !== undefined) {
+          reply.code(401);
+          return { error: "invalid_link_session", detail: "The bearer is not a live Heimdall access token for this app." };
+        }
+        linkAccountId = bound ?? undefined;
+      }
+      const result = await startOAuthFlow({ config, keys, store }, request.params.provider, caller, request.body, {
+        ...(linkAccountId !== undefined ? { linkAccountId } : {}),
+      });
       reply.code(result.statusCode);
       return result.body;
     }
@@ -1023,17 +1126,39 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         if (mint === "refused") {
           throw new Error("The signed state names a mode the provider has no role for in this app.");
         }
+        const callbackDescriptor = providerCatalog[request.params.provider];
+        const oidc = callbackDescriptor.oidc ? deriveOidcSecrets(statePayload.jti, keys.privateKey) : undefined;
         const tokenSet = await runtime.exchangeAuthorizationCode({
           config,
           code: request.query.code,
           redirectUri: callbackUrl,
+          ...(oidc ? { codeVerifier: oidc.codeVerifier } : {}),
         });
         const identity = await runtime.resolveIdentity({
           config,
           accessToken: tokenSet.accessToken,
+          tokenSet,
+          ...(oidc ? { oidcNonce: oidc.nonce } : {}),
         });
         const nowIso = new Date().toISOString();
         let account = await store.findAccountByLinkedIdentity(identity.provider, identity.providerUserId);
+        const boundAccountId = statePayload.link_account_id;
+
+        // One person, one account. An explicit link attaches to the account it
+        // was bound to and to no other; an identity another account already
+        // holds is never moved or merged.
+        if (boundAccountId && account && account.id !== boundAccountId) {
+          throw new AccountLinkRefused("identity_linked_elsewhere");
+        }
+        if (!account && boundAccountId) {
+          account = await store.findAccountById(boundAccountId);
+          if (!account) {
+            throw new AccountLinkRefused("link_account_missing");
+          }
+        }
+        if (!account && callbackDescriptor.firstLogin === "requires_link") {
+          throw new AccountLinkRefused("identity_not_linked");
+        }
 
         if (!account) {
           const createAccountInput: CreateAccountInput = {

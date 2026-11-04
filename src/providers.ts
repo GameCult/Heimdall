@@ -22,6 +22,18 @@ export interface ProviderDescriptor {
   clientIdEnv: string;
   clientSecretEnv: string;
   additionalAuthorizationParams?: Record<string, string>;
+  /**
+   * What a callback does with a (provider, subject) no account holds yet.
+   * `mints_account` is every provider's behaviour before Google: the first
+   * login makes an account. `requires_link` never mints: the identity
+   * attaches only to the account a verified link start bound
+   * (`link_account_id`), otherwise the callback refuses. Google is a second
+   * door into a person who already has an account, so a first Google login
+   * must not make a stranger of them.
+   */
+  firstLogin: "mints_account" | "requires_link";
+  /** OpenID Connect: the callback verifies an id_token and uses PKCE (S256) and a nonce. */
+  oidc?: true;
 }
 
 export const providerCatalog: Record<Provider, ProviderDescriptor> = {
@@ -35,6 +47,7 @@ export const providerCatalog: Record<Provider, ProviderDescriptor> = {
     defaultAccessTokenLifetimeSeconds: 3600,
     defaultScopes: ["identify", "guilds.members.read"],
     roles: ["identity", "entitlement"],
+    firstLogin: "mints_account",
     clientIdEnv: "GC_ACCESS_PROVIDER_DISCORD_CLIENT_ID",
     clientSecretEnv: "GC_ACCESS_PROVIDER_DISCORD_CLIENT_SECRET_FILE",
   },
@@ -48,6 +61,7 @@ export const providerCatalog: Record<Provider, ProviderDescriptor> = {
     defaultAccessTokenLifetimeSeconds: 3600,
     defaultScopes: ["identity", "identity[email]"],
     roles: ["identity", "entitlement"],
+    firstLogin: "mints_account",
     clientIdEnv: "GC_ACCESS_PROVIDER_PATREON_CLIENT_ID",
     clientSecretEnv: "GC_ACCESS_PROVIDER_PATREON_CLIENT_SECRET_FILE",
   },
@@ -61,6 +75,7 @@ export const providerCatalog: Record<Provider, ProviderDescriptor> = {
     defaultAccessTokenLifetimeSeconds: 3600,
     defaultScopes: ["read:user", "user:email"],
     roles: ["identity", "managed_credential"],
+    firstLogin: "mints_account",
     clientIdEnv: "GC_ACCESS_PROVIDER_GITHUB_CLIENT_ID",
     clientSecretEnv: "GC_ACCESS_PROVIDER_GITHUB_CLIENT_SECRET_FILE",
   },
@@ -74,6 +89,7 @@ export const providerCatalog: Record<Provider, ProviderDescriptor> = {
     defaultAccessTokenLifetimeSeconds: 3600,
     defaultScopes: ["user:read:email"],
     roles: ["identity", "managed_credential"],
+    firstLogin: "mints_account",
     clientIdEnv: "GC_ACCESS_PROVIDER_TWITCH_CLIENT_ID",
     clientSecretEnv: "GC_ACCESS_PROVIDER_TWITCH_CLIENT_SECRET_FILE",
   },
@@ -92,6 +108,7 @@ export const providerCatalog: Record<Provider, ProviderDescriptor> = {
       "https://www.googleapis.com/auth/youtube.readonly",
     ],
     roles: ["identity", "managed_credential"],
+    firstLogin: "mints_account",
     clientIdEnv: "GC_ACCESS_PROVIDER_YOUTUBE_CLIENT_ID",
     clientSecretEnv: "GC_ACCESS_PROVIDER_YOUTUBE_CLIENT_SECRET_FILE",
     additionalAuthorizationParams: {
@@ -114,8 +131,25 @@ export const providerCatalog: Record<Provider, ProviderDescriptor> = {
       "user-modify-playback-state",
     ],
     roles: ["identity", "managed_credential"],
+    firstLogin: "mints_account",
     clientIdEnv: "GC_ACCESS_PROVIDER_SPOTIFY_CLIENT_ID",
     clientSecretEnv: "GC_ACCESS_PROVIDER_SPOTIFY_CLIENT_SECRET_FILE",
+  },
+  google: {
+    key: "google",
+    displayName: "Google",
+    authorizationEndpoint: "https://accounts.google.com/o/oauth2/v2/auth",
+    tokenEndpoint: "https://oauth2.googleapis.com/token",
+    tokenEndpointAuthMethod: "client_secret_post",
+    rotatesRefreshTokens: false,
+    defaultAccessTokenLifetimeSeconds: 3600,
+    defaultScopes: ["openid", "email", "profile"],
+    roles: ["identity"],
+    firstLogin: "requires_link",
+    oidc: true,
+    clientIdEnv: "GC_ACCESS_PROVIDER_GOOGLE_CLIENT_ID",
+    clientSecretEnv: "GC_ACCESS_PROVIDER_GOOGLE_CLIENT_SECRET_FILE",
+    additionalAuthorizationParams: { prompt: "select_account" },
   },
   joystick: {
     key: "joystick",
@@ -127,6 +161,7 @@ export const providerCatalog: Record<Provider, ProviderDescriptor> = {
     defaultAccessTokenLifetimeSeconds: 3600,
     defaultScopes: ["identity:read", "stream:read", "chat:read", "followers:read", "subscribers:read"],
     roles: ["identity", "managed_credential"],
+    firstLogin: "mints_account",
     clientIdEnv: "GC_ACCESS_PROVIDER_JOYSTICK_CLIENT_ID",
     clientSecretEnv: "GC_ACCESS_PROVIDER_JOYSTICK_CLIENT_SECRET_FILE",
   },
@@ -138,6 +173,8 @@ export function buildAuthorizationUrl(options: {
   redirectUri: string;
   state: string;
   requestedScopes: string[] | undefined;
+  /** For an OIDC provider: the nonce, and the S256 challenge of the PKCE verifier. */
+  oidc?: { nonce: string; codeChallenge: string };
 }): string {
   const descriptor = providerCatalog[options.provider];
   const url = new URL(descriptor.authorizationEndpoint);
@@ -148,6 +185,14 @@ export function buildAuthorizationUrl(options: {
   url.searchParams.set("response_type", "code");
   url.searchParams.set("scope", scopes.join(" "));
   url.searchParams.set("state", options.state);
+  if (descriptor.oidc) {
+    if (!options.oidc) {
+      throw new Error(`${descriptor.displayName} is an OIDC provider: its authorization URL needs a nonce and a PKCE challenge.`);
+    }
+    url.searchParams.set("nonce", options.oidc.nonce);
+    url.searchParams.set("code_challenge", options.oidc.codeChallenge);
+    url.searchParams.set("code_challenge_method", "S256");
+  }
 
   for (const [key, value] of Object.entries(descriptor.additionalAuthorizationParams ?? {})) {
     url.searchParams.set(key, value);

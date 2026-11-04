@@ -14,7 +14,7 @@ The point is painfully simple:
 
 ## Front Door
 
-- **Value:** one shared auth authority: provider OAuth (Discord, Patreon, GitHub, Twitch, YouTube, Spotify), linked identities, grants, entitlements and session issuance, with Ed25519-signed claims that app backends verify locally.
+- **Value:** one shared auth authority: provider OAuth (Discord, Patreon, GitHub, Twitch, YouTube, Spotify, Google OIDC for linking), linked identities, grants, entitlements and session issuance, with Ed25519-signed claims that app backends verify locally.
 - **Problem:** every GameCult app was rebuilding Discord/Patreon login glue. Heimdall centralizes identity authority and keeps app-domain data in the apps.
 - **Entry points:**
   - `src/index.ts` and `src/app.ts`: the Fastify service. `src/signing.ts` and `src/claims.ts` issue JWTs and serve `/.well-known/jwks.json`; `src/oauth.ts` and `src/providers.ts` own provider flows.

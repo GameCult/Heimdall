@@ -1,4 +1,4 @@
-export const providers = ["discord", "patreon", "github", "twitch", "youtube", "spotify", "joystick"] as const;
+export const providers = ["discord", "patreon", "github", "twitch", "youtube", "spotify", "joystick", "google"] as const;
 
 export type Provider = (typeof providers)[number];
 
@@ -94,6 +94,13 @@ export interface OAuthStatePayload {
   connection: OAuthConnectionBinding | null;
   handoff: OAuthHandoff | null;
   entitlement_policy: OAuthEntitlementPolicy | null;
+  /**
+   * The account an explicit link binds to, set at start from a verified
+   * Heimdall access token and never from a request body. Absent or null for
+   * every other start. The callback attaches the provider identity to this
+   * account and to no other.
+   */
+  link_account_id?: string | null;
 }
 
 export interface LinkedIdentityInput {
