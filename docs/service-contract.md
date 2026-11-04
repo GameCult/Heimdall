@@ -203,6 +203,17 @@ door into a person who already has one.
   nothing. A `sub` linked to another account is refused and never moved.
   Both audit as `oauth_callback_failed` with error class `AccountLinkRefused`
   and the code `identity_not_linked` or `identity_linked_elsewhere`.
+- Link is two-phase. The callback verifies the identity and records a pending
+  link (TTL `completionTtlSeconds`), answering `status: "link_pending"` with a
+  `pendingLinkId` and no session; it writes no linked identity. The app calls
+  `POST /v1/apps/:appSlug/links/confirm` with `{ pendingLinkId }` and the
+  Heimdall access token of the account that began the link; only that call
+  attaches the identity. A different account, an expired, used or unknown id
+  answers 410; a `sub` another account holds by then answers 409. A refused
+  confirm does not consume the link.
+- A sign-in callback evaluates every linked identity of the account with the
+  start-time entitlement policy, so a member returning through Google keeps
+  what Discord or Patreon grant.
 - Configure with `GC_ACCESS_PROVIDER_GOOGLE_CLIENT_ID` and
   `GC_ACCESS_PROVIDER_GOOGLE_CLIENT_SECRET_FILE`. Admitted to the `bifrost`
   app profile only.

@@ -1,5 +1,5 @@
 import { createHash, createSign, generateKeyPairSync } from "node:crypto";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { type FastifyInstance } from "fastify";
 import { buildApp } from "../src/app.js";
 import { loadConfig, type HeimdallConfig } from "../src/config.js";
@@ -24,6 +24,7 @@ function config(): HeimdallConfig {
     storage: { backend: "memory", applySchemaOnStartup: true },
     tokenEncryptionKeyBase64: Buffer.alloc(32, 7).toString("base64"),
     bootstrapSigningPrivateKeyOnMissing: true,
+    appSharedSecrets: { ...base.appSharedSecrets, bifrost: "bifrost-secret" },
     providers: {
       ...base.providers,
       google: { clientId: CLIENT_ID, clientSecret: "google-secret" },
@@ -40,8 +41,9 @@ function discordRuntime(providerUserId: string, name: string): OAuthProviderRunt
     async resolveIdentity() {
       return { provider: "discord", providerUserId, username: name, displayName: name, profile: { id: providerUserId } };
     },
-    async evaluateEntitlements() {
-      return { facts: [], snapshots: [] };
+    // Discord grants app access only under a policy the app named at start.
+    async evaluateEntitlements(input) {
+      return { facts: input.callback.entitlementPolicy ? ["entitlement.app_access"] : [], snapshots: [] };
     },
   };
 }
@@ -139,6 +141,35 @@ function callbackGoogle(app: FastifyInstance, stateToken: string) {
   return app.inject({ method: "GET", url: `/v1/oauth/google/callback?code=g-code&state=${encodeURIComponent(stateToken)}` });
 }
 
+const DISCORD_POLICY = { kind: "discord_role_access", guildId: "g", allowedRoleIds: ["member"] } as const;
+
+/** Begin a link with `token`, let Google answer as `claims` says, and return the callback's answer. */
+async function linkGoogleCallback(app: FastifyInstance, token: string, claims?: Record<string, unknown>) {
+  const start = await startGoogle(app, token);
+  expect(start.statusCode).toBe(201);
+  const url = new URL(start.json().authorizationUrl);
+  fakeGoogle({ nonceFrom: () => url.searchParams.get("nonce") ?? undefined, ...(claims ? { claims } : {}) });
+  return callbackGoogle(app, start.json().stateToken);
+}
+
+function confirmLink(app: FastifyInstance, token: string | undefined, pendingLinkId: string) {
+  return app.inject({
+    method: "POST",
+    url: "/v1/apps/bifrost/links/confirm",
+    headers: token ? { authorization: `Bearer ${token}` } : {},
+    payload: { pendingLinkId },
+  });
+}
+
+/** The whole link: callback, then the initiator's confirm. */
+async function linkGoogle(app: FastifyInstance, token: string, claims?: Record<string, unknown>) {
+  const done = await linkGoogleCallback(app, token, claims);
+  expect(done.statusCode).toBe(201);
+  const confirmed = await confirmLink(app, token, done.json().pendingLinkId);
+  expect(confirmed.statusCode).toBe(201);
+  return confirmed;
+}
+
 afterEach(async () => {
   globalThis.fetch = originalFetch;
   resetGoogleJwksCache();
@@ -174,8 +205,14 @@ describe("Google as a Heimdall OIDC provider", () => {
 
     const done = await callbackGoogle(app, start.json().stateToken);
 
+    // Phase one verified the identity and recorded it; it linked nothing and issued no session.
     expect(done.statusCode).toBe(201);
-    expect(done.json().account.id).toBe(accountId);
+    expect(done.json().status).toBe("link_pending");
+    expect(done.json().accessToken).toBeUndefined();
+    expect(await store.findStoredLinkedIdentity("google", "g-sub-1")).toBeNull();
+    const confirmed = await confirmLink(app, accessToken, done.json().pendingLinkId);
+    expect(confirmed.statusCode).toBe(201);
+    expect(confirmed.json().accountId).toBe(accountId);
     expect(accountCount(store)).toBe(1);
     const sent = leg.tokenRequests[0]!;
     expect(sent.get("grant_type")).toBe("authorization_code");
@@ -192,10 +229,7 @@ describe("Google as a Heimdall OIDC provider", () => {
   it("signs in the account Google is linked to, with no session, and mints nothing", async () => {
     const { app, store } = await build();
     const { accessToken, accountId } = await signInWithDiscord(app);
-    const link = await startGoogle(app, accessToken);
-    const linkUrl = new URL(link.json().authorizationUrl);
-    fakeGoogle({ nonceFrom: () => linkUrl.searchParams.get("nonce") ?? undefined });
-    expect((await callbackGoogle(app, link.json().stateToken)).statusCode).toBe(201);
+    await linkGoogle(app, accessToken);
 
     const signIn = await startGoogle(app, undefined, "sign_in");
     expect(signIn.statusCode).toBe(201);
@@ -259,10 +293,7 @@ describe("Google as a Heimdall OIDC provider", () => {
     const store = new InMemoryStore();
     const first = await build(store, "discord-1");
     const a = await signInWithDiscord(first.app, "discord-1");
-    const startA = await startGoogle(first.app, a.accessToken);
-    const urlA = new URL(startA.json().authorizationUrl);
-    fakeGoogle({ nonceFrom: () => urlA.searchParams.get("nonce") ?? undefined });
-    expect((await callbackGoogle(first.app, startA.json().stateToken)).statusCode).toBe(201);
+    await linkGoogle(first.app, a.accessToken);
 
     // A second person, a second account, the same Google subject.
     const second = await build(store, "discord-2");
@@ -299,12 +330,150 @@ describe("Google as a Heimdall OIDC provider", () => {
   it("keys the identity by sub: the same email under a different sub is a different, unlinkable identity", async () => {
     const { app, store } = await build();
     const { accessToken, accountId } = await signInWithDiscord(app);
-    const start = await startGoogle(app, accessToken);
-    const url = new URL(start.json().authorizationUrl);
-    fakeGoogle({ nonceFrom: () => url.searchParams.get("nonce") ?? undefined, claims: { sub: "g-sub-2" } });
-    await callbackGoogle(app, start.json().stateToken);
+    await linkGoogle(app, accessToken, { sub: "g-sub-2" });
     expect((await store.findStoredLinkedIdentity("google", "g-sub-2"))?.accountId).toBe(accountId);
     expect(await store.findStoredLinkedIdentity("google", "person@example.org")).toBeNull();
+  });
+
+  describe("link is two-phase", () => {
+    it("a victim completing an attacker's link URL attaches the victim's Google sub to no account", async () => {
+      const store = new InMemoryStore();
+      const attacker = await build(store, "discord-attacker");
+      const a = await signInWithDiscord(attacker.app, "discord-attacker");
+      const victim = await build(store, "discord-victim");
+      const v = await signInWithDiscord(victim.app, "discord-victim");
+
+      // The attacker begins a link and sends the Google URL to the victim, who finishes it as themselves.
+      const done = await linkGoogleCallback(attacker.app, a.accessToken, { sub: "victim-google-sub" });
+      expect(done.statusCode).toBe(201);
+      expect(await store.findStoredLinkedIdentity("google", "victim-google-sub")).toBeNull();
+
+      // The victim's app holds the victim's token: Heimdall refuses it, and the link stays unwritten.
+      const asVictim = await confirmLink(victim.app, v.accessToken, done.json().pendingLinkId);
+      expect(asVictim.statusCode).toBe(410);
+      expect(await store.findStoredLinkedIdentity("google", "victim-google-sub")).toBeNull();
+
+      // No token at all, and a garbage token, are refused the same way.
+      expect((await confirmLink(attacker.app, undefined, done.json().pendingLinkId)).statusCode).toBe(401);
+      expect((await confirmLink(attacker.app, "garbage", done.json().pendingLinkId)).statusCode).toBe(401);
+      expect(await store.findStoredLinkedIdentity("google", "victim-google-sub")).toBeNull();
+
+      // The refused attempts did not burn the pending link: its initiator can still confirm it.
+      expect((await confirmLink(attacker.app, a.accessToken, done.json().pendingLinkId)).statusCode).toBe(201);
+    });
+
+    it("signing in with Google cannot reach a Google sub the attacker's pending link recorded", async () => {
+      const { app } = await build();
+      const a = await signInWithDiscord(app);
+      await linkGoogleCallback(app, a.accessToken, { sub: "victim-google-sub" });
+
+      const signIn = await startGoogle(app, undefined, "sign_in");
+      const url = new URL(signIn.json().authorizationUrl);
+      fakeGoogle({ nonceFrom: () => url.searchParams.get("nonce") ?? undefined, claims: { sub: "victim-google-sub" } });
+      expect((await callbackGoogle(app, signIn.json().stateToken)).statusCode).toBe(502);
+    });
+
+    it("a pending link is single-use", async () => {
+      const { app } = await build();
+      const a = await signInWithDiscord(app);
+      const done = await linkGoogleCallback(app, a.accessToken);
+      expect((await confirmLink(app, a.accessToken, done.json().pendingLinkId)).statusCode).toBe(201);
+      expect((await confirmLink(app, a.accessToken, done.json().pendingLinkId)).statusCode).toBe(410);
+    });
+
+    it("a pending link expires after the completion TTL", async () => {
+      const { app, store } = await build();
+      const a = await signInWithDiscord(app);
+      const done = await linkGoogleCallback(app, a.accessToken);
+      const ttlMs = Date.parse(done.json().expiresAt) - Date.now();
+      expect(ttlMs).toBeGreaterThan(0);
+      expect(ttlMs).toBeLessThanOrEqual(300_000);
+
+      vi.useFakeTimers({ toFake: ["Date"], now: Date.now() + 301_000 });
+      try {
+        expect((await confirmLink(app, a.accessToken, done.json().pendingLinkId)).statusCode).toBe(410);
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(await store.findStoredLinkedIdentity("google", "g-sub-1")).toBeNull();
+    });
+
+    it("a pending link is bound to its app: another app's session cannot confirm it", async () => {
+      const { app, store } = await build();
+      const a = await signInWithDiscord(app);
+      const done = await linkGoogleCallback(app, a.accessToken);
+      const other = await app.inject({
+        method: "POST",
+        url: "/v1/oauth/discord/start",
+        payload: { appSlug: "repixelizer", mode: "sign_in", returnTo: "https://repixelizer.gamecult.org/app/" },
+      });
+      const cb = await app.inject({ method: "GET", url: `/v1/oauth/discord/callback?code=c&state=${encodeURIComponent(other.json().stateToken)}` });
+      const res = await app.inject({
+        method: "POST",
+        url: "/v1/apps/repixelizer/links/confirm",
+        headers: { authorization: `Bearer ${cb.json().accessToken}` },
+        payload: { pendingLinkId: done.json().pendingLinkId },
+      });
+      expect(res.statusCode).toBe(410);
+      expect(await store.findStoredLinkedIdentity("google", "g-sub-1")).toBeNull();
+    });
+
+    it("refuses at confirm a sub another account linked in between, and never moves it", async () => {
+      const store = new InMemoryStore();
+      const first = await build(store, "discord-1");
+      const a = await signInWithDiscord(first.app, "discord-1");
+      const second = await build(store, "discord-2");
+      const b = await signInWithDiscord(second.app, "discord-2");
+
+      const pendingA = await linkGoogleCallback(first.app, a.accessToken);
+      const pendingB = await linkGoogleCallback(second.app, b.accessToken);
+      expect((await confirmLink(first.app, a.accessToken, pendingA.json().pendingLinkId)).statusCode).toBe(201);
+      const lost = await confirmLink(second.app, b.accessToken, pendingB.json().pendingLinkId);
+
+      expect(lost.statusCode).toBe(409);
+      expect((await store.findStoredLinkedIdentity("google", "g-sub-1"))?.accountId).toBe(a.accountId);
+    });
+  });
+
+  describe("entitlements at the callback", () => {
+    it("a Discord-origin member returning through Google keeps entitlement.app_access under the start-time policy", async () => {
+      const { app } = await build();
+      const member = await signInWithDiscord(app);
+      await linkGoogle(app, member.accessToken);
+
+      const start = await app.inject({
+        method: "POST",
+        url: "/v1/oauth/google/start",
+        headers: { "x-heimdall-app-secret": "bifrost-secret" },
+        payload: {
+          appSlug: "bifrost",
+          mode: "sign_in",
+          returnTo: "https://bifrost.gamecult.org/auth/heimdall/complete",
+          entitlementPolicy: DISCORD_POLICY,
+        },
+      });
+      expect(start.statusCode).toBe(201);
+      const url = new URL(start.json().authorizationUrl);
+      fakeGoogle({ nonceFrom: () => url.searchParams.get("nonce") ?? undefined });
+      const done = await callbackGoogle(app, start.json().stateToken);
+
+      expect(done.statusCode).toBe(201);
+      expect(done.json().claimSet.facts).toContain("entitlement.app_access");
+    });
+
+    it("without a start-time policy the other identities grant nothing", async () => {
+      const { app } = await build();
+      const member = await signInWithDiscord(app);
+      await linkGoogle(app, member.accessToken);
+
+      const start = await startGoogle(app, undefined, "sign_in");
+      const url = new URL(start.json().authorizationUrl);
+      fakeGoogle({ nonceFrom: () => url.searchParams.get("nonce") ?? undefined });
+      const done = await callbackGoogle(app, start.json().stateToken);
+
+      expect(done.statusCode).toBe(201);
+      expect(done.json().claimSet.facts).not.toContain("entitlement.app_access");
+    });
   });
 
   it("leaves the six existing providers minting on first login", async () => {

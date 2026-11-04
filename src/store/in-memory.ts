@@ -4,6 +4,8 @@ import {
   type CreateAccountInput,
   type CreateAuthAttemptInput,
   type CreateAuthCompletionInput,
+  type CreatePendingLinkInput,
+  type StoredPendingLink,
   type CreateAuditEventInput,
   type CreateCapabilityGrantInput,
   type CredentialDecision,
@@ -47,6 +49,7 @@ export class InMemoryStore implements HeimdallStore {
   private readonly authAttempts = new Map<string, StoredAuthAttempt>();
   private readonly privateCommandReceipts = new Map<string, StoredPrivateCommandReceipt>();
   private readonly authCompletions = new Map<string, StoredAuthCompletion>();
+  private readonly pendingLinks = new Map<string, StoredPendingLink>();
   private readonly authCompletionsByAttempt = new Map<string, string>();
   private readonly entitlementSnapshots = new Map<string, CreateEntitlementSnapshotInput>();
   private readonly auditEvents = new Map<string, CreateAuditEventInput>();
@@ -422,6 +425,21 @@ export class InMemoryStore implements HeimdallStore {
       return null;
     }
     return this.consumeAuthCompletion(appSlug, code, at);
+  }
+
+  async createPendingLink(input: CreatePendingLinkInput): Promise<StoredPendingLink> {
+    const link: StoredPendingLink = { id: randomUUID(), ...clone(input) };
+    this.pendingLinks.set(link.id, clone(link));
+    return clone(link);
+  }
+
+  async consumePendingLink(appSlug: AppSlug, id: string, accountId: string, at: string): Promise<StoredPendingLink | null> {
+    const link = this.pendingLinks.get(id);
+    if (!link || link.appSlug !== appSlug || link.accountId !== accountId || link.expiresAt <= at || link.consumedAt) {
+      return null;
+    }
+    link.consumedAt = at;
+    return clone(link);
   }
 
   async upsertEntitlementSnapshot(input: CreateEntitlementSnapshotInput): Promise<void> {

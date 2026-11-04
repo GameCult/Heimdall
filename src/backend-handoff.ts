@@ -39,7 +39,16 @@ export interface BackendHandoffErrorPayload extends BackendHandoffBase {
   errorDescription?: string;
 }
 
-export type BackendHandoffPayload = BackendHandoffSuccessPayload | BackendHandoffErrorPayload;
+/** A verified link that waits for the initiating account's confirm: no session, no tokens. */
+export interface BackendHandoffLinkPendingPayload extends BackendHandoffBase {
+  status: "link_pending";
+  mode: OAuthMode;
+  pendingLinkId: string;
+  expiresAt: string;
+  confirmEndpoint: string;
+}
+
+export type BackendHandoffPayload = BackendHandoffSuccessPayload | BackendHandoffErrorPayload | BackendHandoffLinkPendingPayload;
 
 export async function deliverBackendHandoff(callbackUrl: string, payload: BackendHandoffPayload): Promise<void> {
   const response = await fetch(callbackUrl, {

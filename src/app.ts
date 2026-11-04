@@ -415,6 +415,8 @@ async function evaluateStoredEntitlements(options: {
   appSlug: AppSlug;
   accountId: string;
   entitlementPolicies: OAuthEntitlementPolicy[];
+  /** A provider the caller has already evaluated with fresh tokens. */
+  skipProvider?: Provider;
 }): Promise<string[]> {
   const profile = getAppProfile(options.appSlug);
   if (!profile) {
@@ -424,7 +426,7 @@ async function evaluateStoredEntitlements(options: {
   const facts: string[] = [];
 
   for (const storedIdentity of linkedIdentities) {
-    if (!profile.entitlementSources.includes(storedIdentity.provider)) {
+    if (!profile.entitlementSources.includes(storedIdentity.provider) || storedIdentity.provider === options.skipProvider) {
       continue;
     }
 
@@ -1160,6 +1162,99 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           throw new AccountLinkRefused("identity_not_linked");
         }
 
+        const buildLinkedIdentityInput = (accountId: string): UpsertLinkedIdentityInput => {
+        const linkedIdentityInput: UpsertLinkedIdentityInput = {
+          accountId,
+          provider: identity.provider,
+          providerUserId: identity.providerUserId,
+          scopes: tokenSet.scope,
+          profileJson: identity.profile,
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        };
+        if (identity.username !== undefined) {
+          linkedIdentityInput.username = identity.username;
+        }
+        if (identity.displayName !== undefined) {
+          linkedIdentityInput.displayName = identity.displayName;
+        }
+        if (identity.primaryEmail !== undefined) {
+          linkedIdentityInput.primaryEmail = identity.primaryEmail;
+        }
+        linkedIdentityInput.accessTokenEncrypted = tokenCustody.encrypt(tokenSet.accessToken);
+        if (tokenSet.refreshToken !== undefined) {
+          linkedIdentityInput.refreshTokenEncrypted = tokenCustody.encrypt(tokenSet.refreshToken);
+        }
+        if (tokenSet.expiresAt !== undefined) {
+          linkedIdentityInput.tokenExpiresAt = tokenSet.expiresAt;
+        }
+        return linkedIdentityInput;
+        };
+
+        // A link is two-phase. The callback cannot tie itself to the browser
+        // that began the link (start is a server-to-server POST), so whoever
+        // completes the Google login here may be someone the initiator sent
+        // the URL to. Nothing is written to the account: the verified identity
+        // waits as a pending link, and only a confirm bearing the access token
+        // of the account that began the link attaches it.
+        if (boundAccountId) {
+          const pendingLink = await store.createPendingLink({
+            appSlug: statePayload.app_slug,
+            accountId: boundAccountId,
+            provider: identity.provider,
+            providerUserId: identity.providerUserId,
+            identity: buildLinkedIdentityInput(boundAccountId),
+            returnTo: statePayload.return_to,
+            createdAt: nowIso,
+            expiresAt: new Date(Date.now() + config.completionTtlSeconds * 1000).toISOString(),
+          });
+          await store.createAuditEvent({
+            accountId: boundAccountId,
+            appSlug: statePayload.app_slug,
+            eventType: "link_pending",
+            // Never the pending link's id: it is the confirm secret.
+            eventPayloadJson: { provider: identity.provider, expiresAt: pendingLink.expiresAt },
+            createdAt: nowIso,
+          });
+          const pendingBody = {
+            status: "link_pending" as const,
+            provider: request.params.provider,
+            mode: statePayload.mode,
+            appSlug: statePayload.app_slug,
+            returnTo: statePayload.return_to,
+            pendingLinkId: pendingLink.id,
+            expiresAt: pendingLink.expiresAt,
+            confirmEndpoint: `${config.publicBaseUrl}/v1/apps/${statePayload.app_slug}/links/confirm`,
+          };
+          if (handoff.kind === "backend_callback") {
+            await maybeDeliverBackendHandoff(handoff, {
+              source: "heimdall",
+              kind: "oauth_result",
+              handoffKind: "backend_callback",
+              attemptId: handoff.attemptId,
+              connection: statePayload.connection,
+              ...pendingBody,
+            });
+          }
+          if (prefersHtml(request.headers.accept)) {
+            reply.type("text/html; charset=utf-8");
+            return reply.send(
+              renderBrowserHandoffPage({
+                handoffKind: handoff.kind,
+                status: "success",
+                provider: request.params.provider,
+                appSlug: statePayload.app_slug,
+                mode: statePayload.mode,
+                returnTo: statePayload.return_to,
+                pendingLinkId: pendingLink.id,
+                ...(handoff.attemptId ? { attemptId: handoff.attemptId } : {}),
+              })
+            );
+          }
+          reply.code(201);
+          return pendingBody;
+        }
+
         if (!account) {
           const createAccountInput: CreateAccountInput = {
             createdAt: nowIso,
@@ -1185,32 +1280,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           await store.touchAccount(account.id, nowIso, accountUpdates);
         }
 
-        const linkedIdentityInput: UpsertLinkedIdentityInput = {
-          accountId: account.id,
-          provider: identity.provider,
-          providerUserId: identity.providerUserId,
-          scopes: tokenSet.scope,
-          profileJson: identity.profile,
-          createdAt: nowIso,
-          updatedAt: nowIso,
-        };
-        if (identity.username !== undefined) {
-          linkedIdentityInput.username = identity.username;
-        }
-        if (identity.displayName !== undefined) {
-          linkedIdentityInput.displayName = identity.displayName;
-        }
-        if (identity.primaryEmail !== undefined) {
-          linkedIdentityInput.primaryEmail = identity.primaryEmail;
-        }
-        linkedIdentityInput.accessTokenEncrypted = tokenCustody.encrypt(tokenSet.accessToken);
-        if (tokenSet.refreshToken !== undefined) {
-          linkedIdentityInput.refreshTokenEncrypted = tokenCustody.encrypt(tokenSet.refreshToken);
-        }
-        if (tokenSet.expiresAt !== undefined) {
-          linkedIdentityInput.tokenExpiresAt = tokenSet.expiresAt;
-        }
-        await store.upsertLinkedIdentity(linkedIdentityInput);
+        await store.upsertLinkedIdentity(buildLinkedIdentityInput(account.id));
 
         const entitlementEvaluation = await runtime.evaluateEntitlements({
           config,
@@ -1226,13 +1296,27 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         for (const snapshot of entitlementEvaluation.snapshots) {
           await store.upsertEntitlementSnapshot(snapshot);
         }
+        // The account's other linked identities count too: a member who
+        // returns through a provider that grants nothing (Google) keeps what
+        // Discord or Patreon grant. They are evaluated with the app's
+        // start-time policy, the same call the refresh route makes.
+        const linkedFacts = await evaluateStoredEntitlements({
+          config,
+          store,
+          tokenCustody,
+          oauthRuntimes,
+          appSlug: statePayload.app_slug,
+          accountId: account.id,
+          entitlementPolicies: statePayload.entitlement_policy ? [statePayload.entitlement_policy] : [],
+          skipProvider: identity.provider,
+        });
 
         const grants = await store.listActiveGrants(account.id, statePayload.app_slug, nowIso);
         const issueInput: IssueAccessClaimInput = {
           appSlug: statePayload.app_slug,
           accountId: account.id,
           linkedIdentities: await store.listLinkedIdentitiesForAccount(account.id),
-          facts: [...entitlementEvaluation.facts, ...buildGrantFacts(grants)],
+          facts: [...new Set([...entitlementEvaluation.facts, ...linkedFacts]), ...buildGrantFacts(grants)],
           ...(mint === "custody_only" ? { withoutCapabilities: true } : {}),
         };
         if (account.displayName !== undefined) {
@@ -1492,6 +1576,58 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           returnTo: statePayload.return_to,
         };
       }
+    }
+  );
+
+  // Second phase of a link. The callback only recorded the verified identity;
+  // this writes it, and only for the account whose access token began the
+  // link. The bearer is the same proof start demanded, so a stranger who
+  // completed the provider login (or holds the id) attaches nothing.
+  app.post<{ Params: { appSlug: AppSlug }; Body: { pendingLinkId: string } }>(
+    "/v1/apps/:appSlug/links/confirm",
+    {
+      schema: {
+        params: {
+          type: "object",
+          required: ["appSlug"],
+          additionalProperties: false,
+          properties: { appSlug: { type: "string", enum: [...appSlugs] } },
+        },
+        body: {
+          type: "object",
+          required: ["pendingLinkId"],
+          additionalProperties: false,
+          properties: { pendingLinkId: { type: "string", minLength: 1 } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const accountId = await resolveLinkAccount({ config, keys, store }, request.params.appSlug, request.headers.authorization);
+      if (!accountId) {
+        reply.code(401);
+        return { error: "invalid_link_session", detail: "The bearer is not a live Heimdall access token for this app." };
+      }
+      const nowIso = new Date().toISOString();
+      const pending = await store.consumePendingLink(request.params.appSlug, request.body.pendingLinkId, accountId, nowIso);
+      if (!pending) {
+        reply.code(410);
+        return { error: "invalid_or_expired_pending_link" };
+      }
+      const holder = await store.findAccountByLinkedIdentity(pending.provider, pending.providerUserId);
+      if (holder && holder.id !== accountId) {
+        reply.code(409);
+        return { error: "identity_linked_elsewhere" };
+      }
+      await store.upsertLinkedIdentity({ ...pending.identity, accountId, updatedAt: nowIso });
+      await store.createAuditEvent({
+        accountId,
+        appSlug: pending.appSlug,
+        eventType: "link_confirmed",
+        eventPayloadJson: { provider: pending.provider },
+        createdAt: nowIso,
+      });
+      reply.code(201);
+      return { status: "linked", provider: pending.provider, accountId, returnTo: pending.returnTo };
     }
   );
 

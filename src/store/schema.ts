@@ -82,6 +82,19 @@ CREATE TABLE IF NOT EXISTS private_command_receipts (
 CREATE INDEX IF NOT EXISTS private_command_receipts_expiry_idx
   ON private_command_receipts(expires_at);
 
+CREATE TABLE IF NOT EXISTS pending_links (
+  id TEXT PRIMARY KEY,
+  app_slug TEXT NOT NULL,
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  provider TEXT NOT NULL,
+  provider_user_id TEXT NOT NULL,
+  identity_json JSONB NOT NULL,
+  return_to TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  consumed_at TIMESTAMPTZ
+);
+
 CREATE TABLE IF NOT EXISTS auth_completions (
   code TEXT PRIMARY KEY,
   app_slug TEXT NOT NULL,

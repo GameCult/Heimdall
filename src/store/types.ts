@@ -182,6 +182,28 @@ export interface CreateAuthCompletionInput {
   payloadJson: Record<string, unknown>;
 }
 
+/**
+ * A link the callback has verified but not written. The identity attaches to
+ * `accountId` (the account whose Heimdall access token began the link) only
+ * when that same account confirms it; until then no linked-identity row
+ * exists. `identity` holds the already-encrypted row to write.
+ */
+export interface StoredPendingLink {
+  id: string;
+  appSlug: AppSlug;
+  accountId: string;
+  provider: Provider;
+  providerUserId: string;
+  identity: UpsertLinkedIdentityInput;
+  returnTo: string;
+  createdAt: string;
+  expiresAt: string;
+  consumedAt?: string;
+}
+
+/** The store mints `id`; a caller cannot choose it. */
+export type CreatePendingLinkInput = Omit<StoredPendingLink, "id" | "consumedAt">;
+
 export interface StoredAuthAttempt {
   handle: string;
   appSlug: AppSlug;
@@ -271,6 +293,13 @@ export interface HeimdallStore {
    * it created without ever needing to know (or forge) the code.
    */
   consumeAuthCompletionByAttempt(appSlug: AppSlug, attemptId: string, at: string): Promise<StoredAuthCompletion | null>;
+  createPendingLink(input: CreatePendingLinkInput): Promise<StoredPendingLink>;
+  /**
+   * Single-use redemption: returns the link only for the app and the account
+   * it was begun by, before it expires and once. A mismatch returns null and
+   * leaves the link unconsumed.
+   */
+  consumePendingLink(appSlug: AppSlug, id: string, accountId: string, at: string): Promise<StoredPendingLink | null>;
   upsertEntitlementSnapshot(input: CreateEntitlementSnapshotInput): Promise<void>;
   createAuditEvent(input: CreateAuditEventInput): Promise<void>;
 }

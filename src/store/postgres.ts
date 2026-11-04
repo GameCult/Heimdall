@@ -6,6 +6,8 @@ import {
   type CreateAccountInput,
   type CreateAuthAttemptInput,
   type CreateAuthCompletionInput,
+  type CreatePendingLinkInput,
+  type StoredPendingLink,
   type CreateAuditEventInput,
   type CreateCapabilityGrantInput,
   type CredentialDecision,
@@ -83,6 +85,19 @@ interface AuthCompletionRow extends QueryResultRow {
   session_id: string;
   return_to: string;
   payload_json: Record<string, unknown>;
+  created_at: string | Date;
+  expires_at: string | Date;
+  consumed_at: string | Date | null;
+}
+
+interface PendingLinkRow extends QueryResultRow {
+  id: string;
+  app_slug: AppSlug;
+  account_id: string;
+  provider: Provider;
+  provider_user_id: string;
+  identity_json: StoredPendingLink["identity"];
+  return_to: string;
   created_at: string | Date;
   expires_at: string | Date;
   consumed_at: string | Date | null;
@@ -229,6 +244,24 @@ function mapSessionRow(row: SessionRow): StoredSession {
     accessRevision: row.access_revision,
     claimsJson: row.claims_json,
   };
+}
+
+function mapPendingLinkRow(row: PendingLinkRow): StoredPendingLink {
+  const link: StoredPendingLink = {
+    id: row.id,
+    appSlug: row.app_slug,
+    accountId: row.account_id,
+    provider: row.provider,
+    providerUserId: row.provider_user_id,
+    identity: row.identity_json,
+    returnTo: row.return_to,
+    createdAt: normalizeTimestamp(row.created_at),
+    expiresAt: normalizeTimestamp(row.expires_at),
+  };
+  if (row.consumed_at) {
+    link.consumedAt = normalizeTimestamp(row.consumed_at);
+  }
+  return link;
 }
 
 function mapAuthCompletionRow(row: AuthCompletionRow): StoredAuthCompletion {
@@ -378,6 +411,7 @@ export const STORE_TABLE_PRIVILEGES: Readonly<Record<string, readonly ("SELECT" 
   auth_attempts: ["SELECT", "INSERT", "UPDATE"],
   private_command_receipts: ["SELECT", "INSERT"],
   auth_completions: ["SELECT", "INSERT", "UPDATE"],
+  pending_links: ["SELECT", "INSERT", "UPDATE"],
   capability_grants: ["SELECT", "INSERT"],
   entitlement_snapshots: ["SELECT", "INSERT", "UPDATE"],
   audit_events: ["INSERT"],
@@ -1059,6 +1093,48 @@ export class PostgresStore implements HeimdallStore {
     );
 
     return result.rowCount ? mapAuthCompletionRow(expectRow(result.rows[0], "consumeAuthCompletionByAttempt")) : null;
+  }
+
+  async createPendingLink(input: CreatePendingLinkInput): Promise<StoredPendingLink> {
+    const result = await this.pool.query<PendingLinkRow>(
+      `
+      INSERT INTO pending_links (
+        id, app_slug, account_id, provider, provider_user_id, identity_json,
+        return_to, created_at, expires_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      RETURNING *
+      `,
+      [
+        randomUUID(),
+        input.appSlug,
+        input.accountId,
+        input.provider,
+        input.providerUserId,
+        JSON.stringify(input.identity),
+        input.returnTo,
+        input.createdAt,
+        input.expiresAt,
+      ]
+    );
+    return mapPendingLinkRow(expectRow(result.rows[0], "createPendingLink"));
+  }
+
+  async consumePendingLink(appSlug: AppSlug, id: string, accountId: string, at: string): Promise<StoredPendingLink | null> {
+    const result = await this.pool.query<PendingLinkRow>(
+      `
+      UPDATE pending_links
+      SET consumed_at = $4
+      WHERE id = $1
+        AND app_slug = $2
+        AND account_id = $3
+        AND consumed_at IS NULL
+        AND expires_at > $4
+      RETURNING *
+      `,
+      [id, appSlug, accountId, at]
+    );
+    return result.rowCount ? mapPendingLinkRow(expectRow(result.rows[0], "consumePendingLink")) : null;
   }
 
   async upsertEntitlementSnapshot(input: CreateEntitlementSnapshotInput): Promise<void> {
