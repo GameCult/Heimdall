@@ -12,6 +12,8 @@ export interface BrowserHandoffSuccess extends BrowserHandoffBase {
   status: "success";
   mode: OAuthMode;
   completionCode?: string;
+  /** A verified link waiting for its initiator's confirm; carries no session. */
+  pendingLinkId?: string;
   attemptId?: string;
 }
 
@@ -47,6 +49,8 @@ function buildBrowserFallbackUrl(payload: BrowserHandoffPayload): string {
 
   if (payload.status === "success" && payload.completionCode) {
     fragment.set("heimdall_completion_code", payload.completionCode);
+  } else if (payload.status === "success" && payload.pendingLinkId) {
+    fragment.set("heimdall_pending_link_id", payload.pendingLinkId);
   } else {
     if (payload.status === "error") {
       fragment.set("heimdall_error", payload.error);

@@ -49,6 +49,7 @@ function createTestConfig(): HeimdallConfig {
       youtube: { clientId: "youtube-client", clientSecret: "youtube-secret" },
       spotify: { clientId: "spotify-client", clientSecret: "spotify-secret" },
       joystick: { clientId: "joystick-client", clientSecret: "joystick-secret" },
+      google: { clientId: "google-client", clientSecret: "google-secret" },
     },
   };
 }

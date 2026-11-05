@@ -32,6 +32,7 @@ describe("Heimdall Verse witness advertisement", () => {
       "youtube",
       "spotify",
       "joystick",
+      "google",
     ]);
     expect(advertisement.appProfiles.map((profile) => profile.slug)).toEqual([
       "repixelizer",

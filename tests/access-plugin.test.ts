@@ -291,7 +291,7 @@ function testConfig(): HeimdallConfig {
     storage: { backend: "memory", applySchemaOnStartup: true },
     providers: {
       discord: { clientId: "discord-client", clientSecret: "discord-secret" },
-      patreon: {}, github: {}, twitch: {}, youtube: {}, spotify: {}, joystick: {},
+      patreon: {}, github: {}, twitch: {}, youtube: {}, spotify: {}, joystick: {}, google: {},
     },
   };
 }

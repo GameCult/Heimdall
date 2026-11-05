@@ -119,6 +119,7 @@ Supported providers in the skeleton:
 - `youtube`
 - `spotify`
 - `joystick`
+- `google`
 
 Request body:
 
@@ -178,6 +179,44 @@ Launch note:
 - GitHub is still catalogued for start URLs, but its callback runtime is not
   implemented yet
 - Repixelizer launch can configure Discord and Patreon on its provider buttons
+
+### Google (OpenID Connect, link-only)
+
+`google` is an identity provider that never mints an account. It is a second
+door into a person who already has one.
+
+- Callback redirect URI (register exactly this in the Google Cloud OAuth
+  client): `{GC_ACCESS_BASE_URL}/v1/oauth/google/callback`, which is
+  `https://heimdall.gamecult.org/v1/oauth/google/callback` in production.
+- Scopes `openid email profile`. The authorization request carries `state`
+  (signed, Heimdall's), a `nonce`, and a PKCE `S256` challenge. The verifier
+  and the nonce are derived from the state's `jti` and Heimdall's signing key,
+  so nothing is stored between start and callback.
+- The callback verifies the `id_token` (RS256 against Google's published
+  keys; `iss` is Google, `aud` is this client, `exp`, `iat`, `nonce`) and
+  requires a `sub` and a verified email. The account key is `sub`; the email
+  is a display and contact field and never a lookup key.
+- `mode: "link"` needs `Authorization: Bearer <Heimdall access token>` for the
+  same app; the identity attaches to that token's account and to no other.
+  `mode: "sign_in"` signs in an account the `sub` is already linked to.
+- A `sub` no account holds, arriving with `sign_in`, is refused and mints
+  nothing. A `sub` linked to another account is refused and never moved.
+  Both audit as `oauth_callback_failed` with error class `LinkRefusal`
+  and the code `identity_not_linked` or `link_initiator_mismatch`.
+- Link is two-phase. The callback verifies the identity and records a pending
+  link (TTL `completionTtlSeconds`), answering `status: "link_pending"` with a
+  `pendingLinkId` and no session; it writes no linked identity. The app calls
+  `POST /v1/apps/:appSlug/links/confirm` with `{ pendingLinkId }` and the
+  Heimdall access token of the account that began the link; only that call
+  attaches the identity. A different account, an expired, used or unknown id
+  answers 410; a `sub` another account holds by then answers 409. A refused
+  confirm does not consume the link.
+- A sign-in callback evaluates every linked identity of the account with the
+  start-time entitlement policy, so a member returning through Google keeps
+  what Discord or Patreon grant.
+- Configure with `GC_ACCESS_PROVIDER_GOOGLE_CLIENT_ID` and
+  `GC_ACCESS_PROVIDER_GOOGLE_CLIENT_SECRET_FILE`. Admitted to the `bifrost`
+  app profile only.
 
 ### `GET /v1/oauth/{provider}/callback`
 

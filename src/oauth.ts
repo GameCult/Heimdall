@@ -7,6 +7,7 @@ import {
 } from "./contracts.js";
 import { type HeimdallConfig } from "./config.js";
 import { entitlementFacts } from "./facts.js";
+import { verifyGoogleIdToken } from "./google-oidc.js";
 import { providerCatalog } from "./providers.js";
 import { type CreateEntitlementSnapshotInput } from "./store/types.js";
 
@@ -49,13 +50,22 @@ export interface OAuthProviderRuntime {
     config: HeimdallConfig;
     code: string;
     redirectUri: string;
+    /** PKCE verifier of an OIDC provider's request (RFC 7636). */
+    codeVerifier?: string;
   }): Promise<OAuthTokenSet>;
   refreshAccessToken?(options: {
     config: HeimdallConfig;
     refreshToken: string;
     signal?: AbortSignal;
   }): Promise<ExpiringTokenSet>;
-  resolveIdentity(options: { config: HeimdallConfig; accessToken: string }): Promise<ResolvedIdentity>;
+  resolveIdentity(options: {
+    config: HeimdallConfig;
+    accessToken: string;
+    /** The exchange's answer: an OIDC provider's identity is its id_token, not a lookup with the access token. */
+    tokenSet?: OAuthTokenSet;
+    /** The nonce this authorization request carried; an OIDC provider's id_token must echo it. */
+    oidcNonce?: string;
+  }): Promise<ResolvedIdentity>;
   evaluateEntitlements(options: {
     config: HeimdallConfig;
     callback: OAuthCallbackContext;
@@ -144,7 +154,7 @@ function normalizeScopes(scope: string | string[] | undefined): string[] {
 }
 
 export type TokenGrant =
-  | { grant_type: "authorization_code"; code: string; redirect_uri: string }
+  | { grant_type: "authorization_code"; code: string; redirect_uri: string; code_verifier?: string }
   | { grant_type: "refresh_token"; refresh_token: string };
 
 /**
@@ -249,6 +259,7 @@ function sharedRuntimeExchange(provider: Provider): OAuthProviderRuntime["exchan
       grant_type: "authorization_code",
       code: options.code,
       redirect_uri: options.redirectUri,
+      ...(options.codeVerifier !== undefined ? { code_verifier: options.codeVerifier } : {}),
     });
     // A rotating provider's refresh token is the only way back to the
     // credential: a grant that arrives without one would be stored as a row
@@ -524,6 +535,31 @@ async function resolveYouTubeIdentity(options: { accessToken: string }): Promise
     identity.avatarUrl = userInfo.picture;
   }
 
+  return identity;
+}
+
+async function resolveGoogleIdentity(options: {
+  config: HeimdallConfig;
+  tokenSet?: OAuthTokenSet;
+  oidcNonce?: string;
+}): Promise<ResolvedIdentity> {
+  const clientId = options.config.providers.google.clientId;
+  const idToken = options.tokenSet?.raw.id_token;
+  if (!clientId || typeof idToken !== "string" || !options.oidcNonce) {
+    throw new Error("Google sign-in needs a client id, an id_token and the request's nonce.");
+  }
+  const claims = await verifyGoogleIdToken(idToken, { clientId, nonce: options.oidcNonce });
+  const identity: ResolvedIdentity = {
+    provider: "google",
+    providerUserId: claims.sub,
+    username: claims.email,
+    displayName: claims.name ?? claims.email,
+    primaryEmail: claims.email,
+    profile: { sub: claims.sub, email: claims.email, email_verified: true, name: claims.name, picture: claims.picture, hd: claims.hd },
+  };
+  if (claims.picture) {
+    identity.avatarUrl = claims.picture;
+  }
   return identity;
 }
 
@@ -945,6 +981,15 @@ const youtubeRuntime: OAuthProviderRuntime = {
   },
 };
 
+const googleRuntime: OAuthProviderRuntime = {
+  exchangeAuthorizationCode: sharedRuntimeExchange("google"),
+  refreshAccessToken: sharedRuntimeRefresh("google"),
+  resolveIdentity: resolveGoogleIdentity,
+  async evaluateEntitlements() {
+    return { facts: [], snapshots: [] };
+  },
+};
+
 const spotifyRuntime: OAuthProviderRuntime = {
   exchangeAuthorizationCode: sharedRuntimeExchange("spotify"),
   refreshAccessToken: sharedRuntimeRefresh("spotify"),
@@ -986,5 +1031,6 @@ export function createOAuthRuntimeRegistry(): OAuthRuntimeRegistry {
     youtube: youtubeRuntime,
     spotify: spotifyRuntime,
     joystick: joystickRuntime,
+    google: googleRuntime,
   };
 }

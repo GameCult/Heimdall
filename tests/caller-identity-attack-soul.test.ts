@@ -52,6 +52,7 @@ function testConfig(): HeimdallConfig {
       youtube: {},
       spotify: {},
       joystick: {},
+      google: {},
     },
   };
 }

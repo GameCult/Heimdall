@@ -28,6 +28,7 @@ import { renderBrowserHandoffPage } from "./browser-handoff.js";
 import { type HeimdallConfig, loadConfig } from "./config.js";
 import { createTokenCustody, type TokenCustody } from "./custody.js";
 import { grantFact } from "./facts.js";
+import { deriveOidcSecrets } from "./google-oidc.js";
 import {
   createOAuthRuntimeRegistry,
   fetchPatreonIdentity,
@@ -95,7 +96,7 @@ function buildOAuthStateToken(options: {
   handoff: OAuthHandoff;
   entitlementPolicy: OAuthEntitlementPolicy | undefined;
   keys: ReturnType<typeof createRuntimeKeyMaterial>;
-}): { token: string; expiresAt: string } {
+}): { token: string; jti: string; expiresAt: string } {
   const issuedAt = nowEpochSeconds();
   const expiresAtEpoch = issuedAt + options.config.stateTtlSeconds;
   const payload: OAuthStatePayload = {
@@ -120,6 +121,7 @@ function buildOAuthStateToken(options: {
 
   return {
     token,
+    jti: payload.jti,
     expiresAt: new Date(expiresAtEpoch * 1000).toISOString(),
   };
 }
@@ -254,18 +256,14 @@ function relayedProviderText(value: string | undefined, bound: number): string |
   return printable ? printable : undefined;
 }
 
-/**
- * What may be recorded or answered about a caught error: its class and its
- * code, each only when it is a short identifier. Never its message, which
- * carries whatever the thrower quoted (a host, a database, a provider's body).
- */
 /** A link callback the signed state's initiator does not license. Its message is static and safe to relay. */
-class LinkRefusal extends Error {
+export class LinkRefusal extends Error {
   constructor(
-    readonly code: "link_initiator_missing" | "link_initiator_mismatch" | "link_initiator_unknown",
+    readonly code: "link_initiator_missing" | "link_initiator_mismatch" | "link_initiator_unknown" | "identity_not_linked",
     message: string
   ) {
     super(message);
+    this.name = "LinkRefusal";
   }
 }
 
@@ -408,6 +406,8 @@ async function evaluateStoredEntitlements(options: {
   appSlug: AppSlug;
   accountId: string;
   entitlementPolicies: OAuthEntitlementPolicy[];
+  /** A provider the caller has already evaluated with fresh tokens. */
+  skipProvider?: Provider;
 }): Promise<string[]> {
   const profile = getAppProfile(options.appSlug);
   if (!profile) {
@@ -417,7 +417,7 @@ async function evaluateStoredEntitlements(options: {
   const facts: string[] = [];
 
   for (const storedIdentity of linkedIdentities) {
-    if (!profile.entitlementSources.includes(storedIdentity.provider)) {
+    if (!profile.entitlementSources.includes(storedIdentity.provider) || storedIdentity.provider === options.skipProvider) {
       continue;
     }
 
@@ -502,6 +502,13 @@ export async function startOAuthFlow(
      * which one reaches the signed state token.
      */
     trustedBrowserAttemptId?: string;
+    /**
+     * The account an explicit link binds to. Like `trustedBrowserAttemptId`
+     * it is a function argument, never a value parsed out of the request:
+     * the HTTP route sets it only from a verified Heimdall access token for
+     * this app (`resolveLinkAccount`), so a caller cannot name an account.
+     */
+    linkAccountId?: string;
   }
 ): Promise<HandlerResult> {
   const { config, keys } = ctx;
@@ -537,19 +544,43 @@ export async function startOAuthFlow(
     };
   }
 
+  const descriptor = providerCatalog[provider];
+  // A provider that never mints an account attaches an identity only through
+  // a bound link: the user's own access token, since the app's word does not
+  // name this person to Google. A link start without a verified Heimdall session would end
+  // in a refusal at the callback, so it is refused before the redirect.
+  // `sign_in` stays open: it signs in an identity already linked, and the
+  // callback refuses one that is not.
+  if (descriptor.firstLogin === "requires_link" && input.mode === "link" && !options?.linkAccountId) {
+    return {
+      statusCode: 401,
+      body: {
+        error: "link_session_required",
+        detail: `Linking ${descriptor.displayName} needs a Heimdall access token for ${profile.slug}: send it as a Bearer token.`,
+      },
+    };
+  }
+
   // Link mode binds an identity to an existing account, so the account must
   // be named by someone Heimdall can believe: the authenticated app backend.
   // The name rides in the signed state and the callback holds the provider's
   // identity to it. No other mode carries an initiator.
   if (input.mode === "link") {
-    if (!isAppCaller(caller) || caller.appSlug !== profile.slug) {
-      return { statusCode: 401, body: { error: "app_auth_required" } };
-    }
-    if (!input.initiatingAccountId) {
-      return { statusCode: 400, body: { error: "link_initiator_required", detail: "link mode needs initiatingAccountId." } };
-    }
-    if (!(await ctx.store.findAccountById(input.initiatingAccountId))) {
-      return { statusCode: 400, body: { error: "link_initiator_unknown", detail: "initiatingAccountId names no account." } };
+    if (options?.linkAccountId) {
+      // The user's own access token for this app names the account.
+      if (input.initiatingAccountId !== undefined && input.initiatingAccountId !== options.linkAccountId) {
+        return { statusCode: 400, body: { error: "link_initiator_conflict", detail: "initiatingAccountId differs from the bearer's account." } };
+      }
+    } else {
+      if (!isAppCaller(caller) || caller.appSlug !== profile.slug) {
+        return { statusCode: 401, body: { error: "app_auth_required" } };
+      }
+      if (!input.initiatingAccountId) {
+        return { statusCode: 400, body: { error: "link_initiator_required", detail: "link mode needs initiatingAccountId." } };
+      }
+      if (!(await ctx.store.findAccountById(input.initiatingAccountId))) {
+        return { statusCode: 400, body: { error: "link_initiator_unknown", detail: "initiatingAccountId names no account." } };
+      }
     }
   } else if (input.initiatingAccountId !== undefined) {
     return { statusCode: 400, body: { error: "initiator_only_in_link_mode" } };
@@ -618,11 +649,12 @@ export async function startOAuthFlow(
     mode: input.mode,
     returnTo: input.returnTo,
     connection: input.connection,
-    initiatorAccountId: input.initiatingAccountId,
+    initiatorAccountId: options?.linkAccountId ?? input.initiatingAccountId,
     handoff,
     entitlementPolicy,
     keys,
   });
+  const oidc = descriptor.oidc ? deriveOidcSecrets(state.jti, keys.privateKey) : undefined;
 
   return {
     statusCode: 201,
@@ -637,12 +669,56 @@ export async function startOAuthFlow(
         redirectUri: callbackUrl,
         state: state.token,
         requestedScopes: input.requestedScopes,
+        ...(oidc ? { oidc: { nonce: oidc.nonce, codeChallenge: oidc.codeChallenge } } : {}),
       }),
       handoff,
       stateToken: state.token,
       stateExpiresAt: state.expiresAt,
     },
   };
+}
+
+/**
+ * The account a link start binds to: the one a live Heimdall access token for
+ * this app names. The token must verify under Heimdall's own key, be an access
+ * token for `appSlug`, be inside its validity window, and belong to a session
+ * the store still holds for that account at that revision. A bearer that fails
+ * any of these binds nothing: a link is explicit or it does not happen.
+ */
+async function resolveLinkAccount(
+  ctx: Pick<HeimdallRuntimeContext, "config" | "keys" | "store">,
+  appSlug: AppSlug,
+  authorization: string | undefined
+): Promise<string | null> {
+  const token = /^Bearer\s+(\S+)$/i.exec(authorization ?? "")?.[1];
+  if (!token) return null;
+  const verification = verifyJwt(token, ctx.keys.publicKey);
+  if (!verification.valid) return null;
+  const claims = verification.payload;
+  const now = nowEpochSeconds();
+  if (
+    claims.typ !== "heimdall_access" ||
+    claims.iss !== ctx.config.issuer ||
+    claims.aud !== appSlug ||
+    typeof claims.account_id !== "string" ||
+    typeof claims.sid !== "string" ||
+    typeof claims.access_revision !== "number" ||
+    typeof claims.exp !== "number" ||
+    claims.exp <= now ||
+    (typeof claims.nbf === "number" && claims.nbf > now)
+  ) {
+    return null;
+  }
+  const session = await ctx.store.findSession(appSlug, claims.sid);
+  if (
+    !session ||
+    session.accountId !== claims.account_id ||
+    session.accessRevision !== claims.access_revision ||
+    Date.parse(session.expiresAt) <= Date.now()
+  ) {
+    return null;
+  }
+  return claims.account_id;
 }
 
 /**
@@ -912,7 +988,18 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     },
     async (request, reply) => {
       const caller = resolveAppCaller(config, request.body.appSlug, request.headers);
-      const result = await startOAuthFlow({ config, keys, store }, request.params.provider, caller, request.body);
+      let linkAccountId: string | undefined;
+      if (request.body.mode === "link") {
+        const bound = await resolveLinkAccount({ config, keys, store }, request.body.appSlug, request.headers.authorization);
+        if (bound === null && request.headers.authorization !== undefined) {
+          reply.code(401);
+          return { error: "invalid_link_session", detail: "The bearer is not a live Heimdall access token for this app." };
+        }
+        linkAccountId = bound ?? undefined;
+      }
+      const result = await startOAuthFlow({ config, keys, store }, request.params.provider, caller, request.body, {
+        ...(linkAccountId !== undefined ? { linkAccountId } : {}),
+      });
       reply.code(result.statusCode);
       return result.body;
     }
@@ -1069,35 +1156,136 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         if (mint === "refused") {
           throw new Error("The signed state names a mode the provider has no role for in this app.");
         }
+        const callbackDescriptor = providerCatalog[request.params.provider];
+        const oidc = callbackDescriptor.oidc ? deriveOidcSecrets(statePayload.jti, keys.privateKey) : undefined;
         const tokenSet = await runtime.exchangeAuthorizationCode({
           config,
           code: request.query.code,
           redirectUri: callbackUrl,
+          ...(oidc ? { codeVerifier: oidc.codeVerifier } : {}),
         });
         const identity = await runtime.resolveIdentity({
           config,
           accessToken: tokenSet.accessToken,
+          tokenSet,
+          ...(oidc ? { oidcNonce: oidc.nonce } : {}),
         });
         const nowIso = new Date().toISOString();
         let account = await store.findAccountByLinkedIdentity(identity.provider, identity.providerUserId);
-
-        // Link mode attaches the provider identity to the account the app
-        // named at start, and to no other: an identity already held by
-        // another account is a refusal, never a quiet sign-in as that account.
-        const linkInitiatorId = statePayload.mode === "link" ? statePayload.initiator_account_id : null;
+        // One person, one account. A link attaches the provider identity to the
+        // account the signed state names, and to no other: an identity another
+        // account holds is a refusal, never a quiet sign-in as that account or a
+        // move. A provider that never mints an account refuses an identity no
+        // account holds.
+        const boundAccountId = statePayload.mode === "link" ? statePayload.initiator_account_id : null;
         if (statePayload.mode === "link") {
-          if (!linkInitiatorId) {
+          if (!boundAccountId) {
             throw new LinkRefusal("link_initiator_missing", "The signed link state names no initiating account.");
           }
-          if (account && account.id !== linkInitiatorId) {
+          if (account && account.id !== boundAccountId) {
             throw new LinkRefusal("link_initiator_mismatch", "This identity belongs to a different account than the one that started the link.");
           }
           if (!account) {
-            account = await store.findAccountById(linkInitiatorId);
+            account = await store.findAccountById(boundAccountId);
             if (!account) {
               throw new LinkRefusal("link_initiator_unknown", "The initiating account no longer exists.");
             }
           }
+        } else if (!account && callbackDescriptor.firstLogin === "requires_link") {
+          throw new LinkRefusal("identity_not_linked", "No account holds this identity; sign in another way and link it first.");
+        }
+
+        const buildLinkedIdentityInput = (accountId: string): UpsertLinkedIdentityInput => {
+        const linkedIdentityInput: UpsertLinkedIdentityInput = {
+          accountId,
+          provider: identity.provider,
+          providerUserId: identity.providerUserId,
+          scopes: tokenSet.scope,
+          profileJson: identity.profile,
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        };
+        if (identity.username !== undefined) {
+          linkedIdentityInput.username = identity.username;
+        }
+        if (identity.displayName !== undefined) {
+          linkedIdentityInput.displayName = identity.displayName;
+        }
+        if (identity.primaryEmail !== undefined) {
+          linkedIdentityInput.primaryEmail = identity.primaryEmail;
+        }
+        linkedIdentityInput.accessTokenEncrypted = tokenCustody.encrypt(tokenSet.accessToken);
+        if (tokenSet.refreshToken !== undefined) {
+          linkedIdentityInput.refreshTokenEncrypted = tokenCustody.encrypt(tokenSet.refreshToken);
+        }
+        if (tokenSet.expiresAt !== undefined) {
+          linkedIdentityInput.tokenExpiresAt = tokenSet.expiresAt;
+        }
+        return linkedIdentityInput;
+        };
+
+        // A link is two-phase. The callback cannot tie itself to the browser
+        // that began the link (start is a server-to-server POST), so whoever
+        // completes the Google login here may be someone the initiator sent
+        // the URL to. Nothing is written to the account: the verified identity
+        // waits as a pending link, and only a confirm bearing the access token
+        // of the account that began the link attaches it.
+        if (boundAccountId && callbackDescriptor.firstLogin === "requires_link") {
+          const pendingLink = await store.createPendingLink({
+            appSlug: statePayload.app_slug,
+            accountId: boundAccountId,
+            provider: identity.provider,
+            providerUserId: identity.providerUserId,
+            identity: buildLinkedIdentityInput(boundAccountId),
+            returnTo: statePayload.return_to,
+            createdAt: nowIso,
+            expiresAt: new Date(Date.now() + config.completionTtlSeconds * 1000).toISOString(),
+          });
+          await store.createAuditEvent({
+            accountId: boundAccountId,
+            appSlug: statePayload.app_slug,
+            eventType: "link_pending",
+            // Never the pending link's id: it is the confirm secret.
+            eventPayloadJson: { provider: identity.provider, expiresAt: pendingLink.expiresAt },
+            createdAt: nowIso,
+          });
+          const pendingBody = {
+            status: "link_pending" as const,
+            provider: request.params.provider,
+            mode: statePayload.mode,
+            appSlug: statePayload.app_slug,
+            returnTo: statePayload.return_to,
+            pendingLinkId: pendingLink.id,
+            expiresAt: pendingLink.expiresAt,
+            confirmEndpoint: `${config.publicBaseUrl}/v1/apps/${statePayload.app_slug}/links/confirm`,
+          };
+          if (handoff.kind === "backend_callback") {
+            await maybeDeliverBackendHandoff(handoff, {
+              source: "heimdall",
+              kind: "oauth_result",
+              handoffKind: "backend_callback",
+              attemptId: handoff.attemptId,
+              connection: statePayload.connection,
+              ...pendingBody,
+            });
+          }
+          if (prefersHtml(request.headers.accept)) {
+            reply.type("text/html; charset=utf-8");
+            return reply.send(
+              renderBrowserHandoffPage({
+                handoffKind: handoff.kind,
+                status: "success",
+                provider: request.params.provider,
+                appSlug: statePayload.app_slug,
+                mode: statePayload.mode,
+                returnTo: statePayload.return_to,
+                pendingLinkId: pendingLink.id,
+                ...(handoff.attemptId ? { attemptId: handoff.attemptId } : {}),
+              })
+            );
+          }
+          reply.code(201);
+          return pendingBody;
         }
 
         if (!account) {
@@ -1126,32 +1314,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           await store.touchAccount(account.id, nowIso, accountUpdates);
         }
 
-        const linkedIdentityInput: UpsertLinkedIdentityInput = {
-          accountId: account.id,
-          provider: identity.provider,
-          providerUserId: identity.providerUserId,
-          scopes: tokenSet.scope,
-          profileJson: identity.profile,
-          createdAt: nowIso,
-          updatedAt: nowIso,
-        };
-        if (identity.username !== undefined) {
-          linkedIdentityInput.username = identity.username;
-        }
-        if (identity.displayName !== undefined) {
-          linkedIdentityInput.displayName = identity.displayName;
-        }
-        if (identity.primaryEmail !== undefined) {
-          linkedIdentityInput.primaryEmail = identity.primaryEmail;
-        }
-        linkedIdentityInput.accessTokenEncrypted = tokenCustody.encrypt(tokenSet.accessToken);
-        if (tokenSet.refreshToken !== undefined) {
-          linkedIdentityInput.refreshTokenEncrypted = tokenCustody.encrypt(tokenSet.refreshToken);
-        }
-        if (tokenSet.expiresAt !== undefined) {
-          linkedIdentityInput.tokenExpiresAt = tokenSet.expiresAt;
-        }
-        await store.upsertLinkedIdentity(linkedIdentityInput);
+        await store.upsertLinkedIdentity(buildLinkedIdentityInput(account.id));
 
         const entitlementEvaluation = await runtime.evaluateEntitlements({
           config,
@@ -1167,13 +1330,27 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         for (const snapshot of entitlementEvaluation.snapshots) {
           await store.upsertEntitlementSnapshot(snapshot);
         }
+        // The account's other linked identities count too: a member who
+        // returns through a provider that grants nothing (Google) keeps what
+        // Discord or Patreon grant. They are evaluated with the app's
+        // start-time policy, the same call the refresh route makes.
+        const linkedFacts = await evaluateStoredEntitlements({
+          config,
+          store,
+          tokenCustody,
+          oauthRuntimes,
+          appSlug: statePayload.app_slug,
+          accountId: account.id,
+          entitlementPolicies: statePayload.entitlement_policy ? [statePayload.entitlement_policy] : [],
+          skipProvider: identity.provider,
+        });
 
         const grants = await store.listActiveGrants(account.id, statePayload.app_slug, nowIso);
         const issueInput: IssueAccessClaimInput = {
           appSlug: statePayload.app_slug,
           accountId: account.id,
           linkedIdentities: await store.listLinkedIdentitiesForAccount(account.id),
-          facts: [...entitlementEvaluation.facts, ...buildGrantFacts(grants)],
+          facts: [...new Set([...entitlementEvaluation.facts, ...linkedFacts]), ...buildGrantFacts(grants)],
           ...(mint === "custody_only" ? { withoutCapabilities: true } : {}),
         };
         if (account.displayName !== undefined) {
@@ -1438,6 +1615,58 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           returnTo: statePayload.return_to,
         };
       }
+    }
+  );
+
+  // Second phase of a link. The callback only recorded the verified identity;
+  // this writes it, and only for the account whose access token began the
+  // link. The bearer is the same proof start demanded, so a stranger who
+  // completed the provider login (or holds the id) attaches nothing.
+  app.post<{ Params: { appSlug: AppSlug }; Body: { pendingLinkId: string } }>(
+    "/v1/apps/:appSlug/links/confirm",
+    {
+      schema: {
+        params: {
+          type: "object",
+          required: ["appSlug"],
+          additionalProperties: false,
+          properties: { appSlug: { type: "string", enum: [...appSlugs] } },
+        },
+        body: {
+          type: "object",
+          required: ["pendingLinkId"],
+          additionalProperties: false,
+          properties: { pendingLinkId: { type: "string", minLength: 1 } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const accountId = await resolveLinkAccount({ config, keys, store }, request.params.appSlug, request.headers.authorization);
+      if (!accountId) {
+        reply.code(401);
+        return { error: "invalid_link_session", detail: "The bearer is not a live Heimdall access token for this app." };
+      }
+      const nowIso = new Date().toISOString();
+      const pending = await store.consumePendingLink(request.params.appSlug, request.body.pendingLinkId, accountId, nowIso);
+      if (!pending) {
+        reply.code(410);
+        return { error: "invalid_or_expired_pending_link" };
+      }
+      const holder = await store.findAccountByLinkedIdentity(pending.provider, pending.providerUserId);
+      if (holder && holder.id !== accountId) {
+        reply.code(409);
+        return { error: "identity_linked_elsewhere" };
+      }
+      await store.upsertLinkedIdentity({ ...pending.identity, accountId, updatedAt: nowIso });
+      await store.createAuditEvent({
+        accountId,
+        appSlug: pending.appSlug,
+        eventType: "link_confirmed",
+        eventPayloadJson: { provider: pending.provider },
+        createdAt: nowIso,
+      });
+      reply.code(201);
+      return { status: "linked", provider: pending.provider, accountId, returnTo: pending.returnTo };
     }
   );
 

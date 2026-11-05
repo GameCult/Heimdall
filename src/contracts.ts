@@ -1,4 +1,4 @@
-export const providers = ["discord", "patreon", "github", "twitch", "youtube", "spotify", "joystick"] as const;
+export const providers = ["discord", "patreon", "github", "twitch", "youtube", "spotify", "joystick", "google"] as const;
 
 export type Provider = (typeof providers)[number];
 

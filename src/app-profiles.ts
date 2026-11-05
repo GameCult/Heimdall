@@ -137,8 +137,8 @@ const streampixelsProfile: AppProfile = {
 const bifrostProfile: AppProfile = {
   slug: "bifrost",
   displayName: "Bifrost",
-  profileVersion: "2026-06-08",
-  identityProviders: ["discord", "patreon"],
+  profileVersion: "2026-11-04",
+  identityProviders: ["discord", "patreon", "google"],
   entitlementSources: ["discord", "patreon"],
   managedConnectionProviders: [],
   allowedReturnOrigins: ["https://bifrost.gamecult.org"],

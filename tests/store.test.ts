@@ -232,12 +232,13 @@ describe("PostgresStore.checkSchema", () => {
       "sessions",
       "auth_attempts",
       "private_command_receipts",
+      "pending_links",
       "auth_completions",
       "capability_grants",
       "entitlement_snapshots",
       "audit_events",
     ]);
-    expect(REQUIRED_COLUMNS).toHaveLength(86);
+    expect(REQUIRED_COLUMNS).toHaveLength(96);
     expect(REQUIRED_COLUMNS).toEqual(
       expect.arrayContaining([
         { table: "auth_completions", column: "code", type: "TEXT", nullable: false },
@@ -248,7 +249,7 @@ describe("PostgresStore.checkSchema", () => {
         { table: "auth_completions", column: "attempt_id", type: "TEXT", nullable: true },
       ])
     );
-    expect(REQUIRED_KEYS).toHaveLength(12);
+    expect(REQUIRED_KEYS).toHaveLength(13);
     expect(REQUIRED_KEYS).toEqual(
       expect.arrayContaining([
         { table: "linked_identities", columns: "provider,provider_user_id", predicate: "" },
