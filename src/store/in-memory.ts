@@ -24,6 +24,9 @@ import {
   type UpsertLinkedIdentityInput,
 } from "./types.js";
 
+/** The skew a signed OAuth state is still accepted for past its exp (verifyOAuthState). */
+const OAUTH_STATE_SKEW_MS = 30_000;
+
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
@@ -452,8 +455,10 @@ export class InMemoryStore implements HeimdallStore {
   }
 
   async claimOAuthStateUse(input: ClaimOAuthStateUseInput): Promise<boolean> {
+    // A state is still accepted until its exp + 30 s skew, so a use record must outlive that.
+    const usedAtMs = Date.parse(input.usedAt);
     for (const [key, expiresAt] of this.oauthStateUses) {
-      if (expiresAt <= input.usedAt) {
+      if (Date.parse(expiresAt) + OAUTH_STATE_SKEW_MS <= usedAtMs) {
         this.oauthStateUses.delete(key);
       }
     }

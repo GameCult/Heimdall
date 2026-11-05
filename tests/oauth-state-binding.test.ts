@@ -176,11 +176,127 @@ describe("OAuth state binding", () => {
       expect(stranger.statusCode, query).toBe(400);
       expect(stranger.json(), query).toEqual({ error: "state_not_bound" });
     }
-    expect((await ctx.store.findAuthAttempt("repixelizer", attempt.handle))?.status).toBe("pending");
 
-    // The victim's own callback is unharmed.
+    // The state is still unclaimed, so the launcher's cookie still completes it...
     const response = await callback(app, victim.state, victim.cookie, "code=victim-code");
     expect(response.statusCode).toBe(201);
+  });
+
+  it("a callback with no binding denies the attempt its state names, once, and never a completed one", async () => {
+    const app = await newApp();
+    const ctx = getHeimdallRuntimeContext(app);
+    const make = async (handle: string) => {
+      await ctx.store.createAuthAttempt({
+        handle,
+        appSlug: "repixelizer",
+        provider: "discord",
+        mode: "sign_in",
+        returnTo: "https://repixelizer.gamecult.org/app/",
+        createdAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 600_000).toISOString(),
+      });
+      const caller = resolveAppCaller(ctx.config, "repixelizer", { "x-heimdall-app-secret": "repixelizer-secret" });
+      const started = await startOAuthFlow(
+        ctx,
+        "discord",
+        caller,
+        { appSlug: "repixelizer", mode: "sign_in", returnTo: "https://repixelizer.gamecult.org/app/", handoff: { kind: "browser_completion" } },
+        { trustedBrowserAttemptId: handle }
+      );
+      return started.body as unknown as { authorizationUrl: string };
+    };
+
+    // Lapsed cookie: the launcher launched, then its cookie is gone at the callback.
+    const lapsed = await make("lapsed");
+    await launchFlow(app, lapsed);
+    const refused = await callback(app, stateOf(lapsed), undefined, "code=c");
+    expect(refused.json()).toEqual({ error: "state_not_bound" });
+    const denied = await ctx.store.findAuthAttempt("repixelizer", "lapsed");
+    expect(denied?.status).toBe("denied");
+    expect(denied?.denialCode).toBe("state_not_bound");
+
+    // A completed attempt stays completed under a later cookieless callback.
+    const done = await make("done");
+    const launched = await launchFlow(app, done);
+    expect((await callback(app, launched.state, launched.cookie, "code=c")).statusCode).toBe(201);
+    await callback(app, launched.state, undefined, "code=c");
+    expect(["completed", "consumed"]).toContain((await ctx.store.findAuthAttempt("repixelizer", "done"))?.status);
+  });
+
+  it("a state with no jti is refused as invalid and names no attempt to deny", async () => {
+    const app = await newApp();
+    const ctx = getHeimdallRuntimeContext(app);
+    const original = decodeJwt(stateOf(await bifrostStart(app))).payload;
+    const { jti: _jti, ...rest } = original;
+    const token = signJwt(rest, ctx.keys);
+    const response = await callback(app, token, undefined, "code=c");
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({ error: "invalid_state" });
+  });
+
+  describe("a browser refused for its binding gets a page back to the app, not bare JSON", () => {
+    const html = { accept: "text/html" };
+    const get = (app: FastifyInstance, url: string, cookie?: string) =>
+      app.inject({ method: "GET", url, headers: { ...html, ...(cookie ? { cookie } : {}) } });
+
+    it("on a cookieless callback, a lapsed cookie and a reloaded launch", async () => {
+      const app = await newApp();
+      const start = await bifrostStart(app);
+      const state = stateOf(start);
+
+      const reloadBeforeLaunch = await get(app, `/v1/oauth/discord/callback?code=c&state=${encodeURIComponent(state)}`);
+      expect(reloadBeforeLaunch.statusCode).toBe(400);
+      expect(reloadBeforeLaunch.headers["content-type"]).toContain("text/html");
+      expect(reloadBeforeLaunch.body).toContain("state_not_bound");
+      expect(reloadBeforeLaunch.body).toContain("https://bifrost.gamecult.org/auth/heimdall/complete");
+
+      const victim = await launchFlow(app, start);
+      const reloaded = await get(app, launchUrl(start));
+      expect(reloaded.statusCode).toBe(400);
+      expect(reloaded.headers["content-type"]).toContain("text/html");
+      expect(reloaded.body).toContain("state_already_launched");
+      expect(setCookieOf(reloaded)).toEqual([]);
+
+      // Handoff reload: the page after a completed callback, loaded again.
+      expect((await get(app, `/v1/oauth/discord/callback?code=c&state=${encodeURIComponent(victim.state)}`, victim.cookie)).statusCode).toBeLessThan(300);
+      const reload = await get(app, `/v1/oauth/discord/callback?code=c&state=${encodeURIComponent(victim.state)}`, victim.cookie);
+      expect(reload.statusCode).toBe(400);
+      expect(reload.headers["content-type"]).toContain("text/html");
+      expect(reload.body).toContain("state_already_used");
+    });
+
+    it("never links to an origin the app does not own, and JSON stays JSON without Accept", async () => {
+      const app = await newApp();
+      const ctx = getHeimdallRuntimeContext(app);
+      const original = decodeJwt(stateOf(await bifrostStart(app))).payload;
+      const token = signJwt({ ...original, return_to: "https://evil.example/steal" }, ctx.keys);
+      const evil = await get(app, `/v1/oauth/discord/callback?code=c&state=${encodeURIComponent(token)}`);
+      expect(evil.statusCode).toBe(400);
+      expect(evil.json()).toEqual({ error: "state_not_bound" });
+      expect(evil.body).not.toContain("evil.example");
+
+      const plain = await callback(app, stateOf(await bifrostStart(app)));
+      expect(plain.json()).toEqual({ error: "state_not_bound" });
+    });
+  });
+
+  it("the memory store keeps a use record until the state's exp + 30 s skew", async () => {
+    const app = await newApp();
+    const ctx = getHeimdallRuntimeContext(app);
+    const claim = (jti: string, usedAt: number) =>
+      ctx.store.claimOAuthStateUse({
+        jti,
+        phase: "launch",
+        appSlug: "bifrost",
+        usedAt: new Date(usedAt).toISOString(),
+        expiresAt: new Date(1_000_000).toISOString(),
+      });
+    expect(await claim("a", 900_000)).toBe(true);
+    // Past exp but inside the skew a state still verifies, so its record must still refuse a replay.
+    expect(await claim("b", 1_000_000 + 29_999)).toBe(true);
+    expect(await claim("a", 1_000_000 + 29_999)).toBe(false);
+    expect(await claim("c", 1_000_000 + 30_000)).toBe(true);
+    expect(await claim("a", 1_000_000 + 30_000)).toBe(true);
   });
 
   it("a provider error from the launching browser still denies the attempt, once", async () => {

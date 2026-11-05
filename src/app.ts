@@ -1,7 +1,7 @@
 import { createHmac, randomUUID } from "node:crypto";
 import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
-import Fastify, { type FastifyError, type FastifyInstance, type FastifyReply } from "fastify";
+import Fastify, { type FastifyError, type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { type AppCaller, isAppCaller, resolveAppCaller } from "./app-caller.js";
 import { deliverBackendHandoff, type BackendHandoffPayload } from "./backend-handoff.js";
 import {
@@ -1094,6 +1094,38 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     }
   );
 
+  /**
+   * A refusal of a verified state. A browser (Accept: text/html) gets the
+   * handoff page linking back to the state's return_to, so the person is not
+   * left on a bare JSON body; the origin is re-checked against the app's
+   * allowlist here rather than trusting the signed value. Anything else gets
+   * the fixed JSON code.
+   */
+  const refuseVerifiedState = (
+    request: FastifyRequest,
+    reply: FastifyReply,
+    state: OAuthStatePayload,
+    error: "state_not_bound" | "state_already_launched" | "state_already_used"
+  ) => {
+    reply.code(400);
+    const profile = getAppProfile(state.app_slug);
+    if (prefersHtml(request.headers.accept) && profile && isAllowedReturnOrigin(profile, state.return_to)) {
+      reply.type("text/html; charset=utf-8");
+      return reply.send(
+        renderBrowserHandoffPage({
+          handoffKind: (state.handoff ?? { kind: "browser_completion" }).kind,
+          status: "error",
+          provider: state.provider,
+          appSlug: state.app_slug,
+          mode: state.mode,
+          returnTo: state.return_to,
+          error,
+        })
+      );
+    }
+    return { error };
+  };
+
   app.get<{
     Params: { provider: Provider };
     Querystring: { state: string };
@@ -1140,8 +1172,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         expiresAt: new Date(state.exp * 1000).toISOString(),
       });
       if (!first) {
-        reply.code(400);
-        return { error: "state_already_launched" };
+        return refuseVerifiedState(request, reply, state, "state_already_launched");
       }
 
       const oidc = providerCatalog[state.provider].oidc ? deriveOidcSecrets(state.jti, keys.privateKey) : undefined;
@@ -1201,11 +1232,23 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         return { error: verified.error };
       }
       const statePayload = verified.payload;
+      const handoff = statePayload.handoff ?? { kind: "browser_completion" };
+      const denyBrowserAttempt = async (denialCode: string): Promise<void> => {
+        if (handoff.kind !== "browser_completion" || !handoff.attemptId) return;
+        await store.updateAuthAttempt(statePayload.app_slug, handoff.attemptId, {
+          status: "denied",
+          at: new Date().toISOString(),
+          denialCode,
+        });
+      };
       // The cookie is checked before the claim: a stranger without it must not be
       // able to burn the state that the browser that launched it still needs.
+      // The attempt is denied, though: a launcher whose cookie lapsed can never
+      // complete this state, and its page polls an attempt that would otherwise
+      // sit pending until it expires.
       if (!oauthBindingHolds(config, keys, request.cookies[oauthBindingCookieName(statePayload.jti)], statePayload)) {
-        reply.code(400);
-        return { error: "state_not_bound" };
+        await denyBrowserAttempt("state_not_bound");
+        return refuseVerifiedState(request, reply, statePayload, "state_not_bound");
       }
       setOAuthBindingCookie(reply, statePayload, "", 0);
       const firstCallback = await store.claimOAuthStateUse({
@@ -1216,18 +1259,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         expiresAt: new Date(statePayload.exp * 1000).toISOString(),
       });
       if (!firstCallback) {
-        reply.code(400);
-        return { error: "state_already_used" };
+        return refuseVerifiedState(request, reply, statePayload, "state_already_used");
       }
-      const handoff = statePayload.handoff ?? { kind: "browser_completion" };
-      const denyBrowserAttempt = async (denialCode: string): Promise<void> => {
-        if (handoff.kind !== "browser_completion" || !handoff.attemptId) return;
-        await store.updateAuthAttempt(statePayload.app_slug, handoff.attemptId, {
-          status: "denied",
-          at: new Date().toISOString(),
-          denialCode,
-        });
-      };
 
       if (request.query.error) {
         const providerError = relayedProviderText(request.query.error, 64);

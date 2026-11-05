@@ -216,14 +216,17 @@ describe("InMemoryStore.claimOAuthStateUse", () => {
     expect(await store.claimOAuthStateUse({ ...use, jti: "state-2" })).toBe(true);
   });
 
-  it("drops a record once its state has expired, and keeps it until then", async () => {
+  it("drops a record once its state's exp + 30 s skew has passed, and keeps it until then", async () => {
     const store = new InMemoryStore();
     await store.claimOAuthStateUse(use);
     // Before expiry a later claim of another state leaves the record in force.
     await store.claimOAuthStateUse({ ...use, jti: "state-2", usedAt: "2026-04-26T12:09:59.000Z" });
     expect(await store.claimOAuthStateUse(use)).toBe(false);
-    // At and after expiry the record is dead weight: the state is refused before any claim.
-    await store.claimOAuthStateUse({ ...use, jti: "state-3", usedAt: "2026-04-26T12:10:00.000Z" });
+    // Inside the 30 s skew past expiry the state still verifies, so the record still refuses a replay.
+    await store.claimOAuthStateUse({ ...use, jti: "state-3", usedAt: "2026-04-26T12:10:29.999Z" });
+    expect(await store.claimOAuthStateUse(use)).toBe(false);
+    // At exp + 30 s the state is refused before any claim and the record is dead weight.
+    await store.claimOAuthStateUse({ ...use, jti: "state-4", usedAt: "2026-04-26T12:10:30.000Z" });
     expect(await store.claimOAuthStateUse(use)).toBe(true);
   });
 });
