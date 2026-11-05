@@ -237,7 +237,7 @@ describe("PostgresStore.checkSchema", () => {
       "entitlement_snapshots",
       "audit_events",
     ]);
-    expect(REQUIRED_COLUMNS).toHaveLength(85);
+    expect(REQUIRED_COLUMNS).toHaveLength(86);
     expect(REQUIRED_COLUMNS).toEqual(
       expect.arrayContaining([
         { table: "auth_completions", column: "code", type: "TEXT", nullable: false },
