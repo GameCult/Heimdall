@@ -201,8 +201,8 @@ door into a person who already has one.
   `mode: "sign_in"` signs in an account the `sub` is already linked to.
 - A `sub` no account holds, arriving with `sign_in`, is refused and mints
   nothing. A `sub` linked to another account is refused and never moved.
-  Both audit as `oauth_callback_failed` with error class `AccountLinkRefused`
-  and the code `identity_not_linked` or `identity_linked_elsewhere`.
+  Both audit as `oauth_callback_failed` with error class `LinkRefusal`
+  and the code `identity_not_linked` or `link_initiator_mismatch`.
 - Link is two-phase. The callback verifies the identity and records a pending
   link (TTL `completionTtlSeconds`), answering `status: "link_pending"` with a
   `pendingLinkId` and no session; it writes no linked identity. The app calls
@@ -372,6 +372,11 @@ Request body:
   "completionCode": "<one-time-code>"
 }
 ```
+
+Binding rules:
+
+- A completion minted for a connection target (`connection.targetId` in the signed state) is redeemed only with `targetId` equal to it; absent or different answers `403 completion_target_mismatch` and leaves the code unconsumed.
+- A `link` completion is redeemed only by the authenticated app backend (`x-heimdall-app-secret`); otherwise `401 app_auth_required`, code unconsumed. `link` start itself needs that authentication and `initiatingAccountId`; the callback refuses with `403 link_initiator_mismatch` when the provider identity belongs to a different account, and attaches an unlinked identity to the initiator.
 
 Response:
 

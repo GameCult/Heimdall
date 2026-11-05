@@ -589,7 +589,7 @@ for (const { kind, live } of rigKinds) describe.skipIf(live && !adminUrl)(`manag
       const redeem = await app.inject({
         method: "POST",
         url: "/v1/apps/streampixels/auth-completions/redeem",
-        payload: { completionCode: callback.json().completion.code as string },
+        payload: { completionCode: callback.json().completion.code as string, ...(mode === "connect" ? { targetId: "creator-1" } : {}) },
       });
       expect(redeem.statusCode).toBe(201);
       return { callback, redeem };

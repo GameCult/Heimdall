@@ -73,6 +73,8 @@ export interface OAuthStartRequest {
   mode: OAuthMode;
   returnTo: string;
   connection?: OAuthConnectionBinding;
+  /** Link mode only: the account the authenticated app says is linking. Carried in the signed state. */
+  initiatingAccountId?: string;
   handoff?: OAuthHandoff;
   requestedScopes?: string[];
   entitlementPolicy?: OAuthEntitlementPolicy;
@@ -92,15 +94,9 @@ export interface OAuthStatePayload {
   mode: OAuthMode;
   return_to: string;
   connection: OAuthConnectionBinding | null;
+  initiator_account_id: string | null;
   handoff: OAuthHandoff | null;
   entitlement_policy: OAuthEntitlementPolicy | null;
-  /**
-   * The account an explicit link binds to, set at start from a verified
-   * Heimdall access token and never from a request body. Absent or null for
-   * every other start. The callback attaches the provider identity to this
-   * account and to no other.
-   */
-  link_account_id?: string | null;
 }
 
 export interface LinkedIdentityInput {
@@ -112,6 +108,8 @@ export interface LinkedIdentityInput {
 
 export interface RedeemAuthCompletionRequest {
   completionCode: string;
+  /** Required when the completion was minted for a connection target; must equal it. */
+  targetId?: string;
 }
 
 export type HeimdallAuthAttemptStatus = "pending" | "completed" | "denied" | "consumed" | "expired";

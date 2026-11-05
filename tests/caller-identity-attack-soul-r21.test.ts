@@ -265,8 +265,8 @@ describe("R21.1: the attempt handle is unreachable from the public start route",
       const calls = source.match(/(?<!function )startOAuthFlow\(/g) ?? [];
       if (calls.length) callers.push(`${file}:${calls.length}`);
       if (file.endsWith("app.ts")) {
-        // The HTTP route's call ends at the body; no fifth argument.
-        expect(source).toMatch(/startOAuthFlow\(\{ config, keys, store \}, request\.params\.provider, caller, request\.body\);/);
+        // The HTTP route passes only the bearer-derived linkAccountId; never an attempt handle.
+        expect(source).toMatch(/startOAuthFlow\(\{ config, keys, store \}, request\.params\.provider, caller, request\.body, \{\s*\.\.\.\(linkAccountId !== undefined \? \{ linkAccountId \} : \{\}\),\s*\}\);/);
       }
     }
     expect(callers.sort()).toEqual(["app.ts:1", "private-command-plane.ts:1"]);
@@ -364,7 +364,7 @@ describe("R21.2: the WeakSet brand at every consumer", () => {
         if (line.includes("caller.appSlug")) expect(line, `${file}: ${line.trim()}`).toContain("isAppCaller(caller)");
       }
     }
-    expect(consumers).toEqual(["app.ts: reads=2 guards=2"]);
+    expect(consumers).toEqual(["app.ts: reads=3 guards=3"]);
   });
 
   it("a caller minted for app A is refused where app B is expected, over HTTP and by direct call", async () => {

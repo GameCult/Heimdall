@@ -92,9 +92,9 @@ function buildOAuthStateToken(options: {
   mode: OAuthMode;
   returnTo: string;
   connection: OAuthConnectionBinding | undefined;
+  initiatorAccountId: string | undefined;
   handoff: OAuthHandoff;
   entitlementPolicy: OAuthEntitlementPolicy | undefined;
-  linkAccountId: string | undefined;
   keys: ReturnType<typeof createRuntimeKeyMaterial>;
 }): { token: string; jti: string; expiresAt: string } {
   const issuedAt = nowEpochSeconds();
@@ -113,9 +113,9 @@ function buildOAuthStateToken(options: {
     mode: options.mode,
     return_to: options.returnTo,
     connection: options.connection ?? null,
+    initiator_account_id: options.initiatorAccountId ?? null,
     handoff: options.handoff,
     entitlement_policy: options.entitlementPolicy ?? null,
-    link_account_id: options.linkAccountId ?? null,
   };
   const token = signJwt(payload as unknown as Record<string, unknown>, options.keys);
 
@@ -173,9 +173,7 @@ function parseOAuthStatePayload(payload: Record<string, unknown>): OAuthStatePay
     typeof payload.exp !== "number" ||
     !handoffIsValid ||
     !entitlementPolicyIsValid ||
-    (payload.link_account_id !== undefined &&
-      payload.link_account_id !== null &&
-      typeof payload.link_account_id !== "string")
+    !(payload.initiator_account_id === undefined || payload.initiator_account_id === null || typeof payload.initiator_account_id === "string")
   ) {
     return null;
   }
@@ -184,10 +182,12 @@ function parseOAuthStatePayload(payload: Record<string, unknown>): OAuthStatePay
   if (!normalizedPayload.handoff) {
     normalizedPayload.handoff = { kind: "browser_completion" };
   }
+  if (!normalizedPayload.initiator_account_id) {
+    normalizedPayload.initiator_account_id = null;
+  }
   if (!normalizedPayload.entitlement_policy) {
     normalizedPayload.entitlement_policy = null;
   }
-  normalizedPayload.link_account_id ??= null;
 
   return normalizedPayload;
 }
@@ -256,23 +256,14 @@ function relayedProviderText(value: string | undefined, bound: number): string |
   return printable ? printable : undefined;
 }
 
-/**
- * What may be recorded or answered about a caught error: its class and its
- * code, each only when it is a short identifier. Never its message, which
- * carries whatever the thrower quoted (a host, a database, a provider's body).
- */
-/**
- * A callback that would have attached an identity to the wrong account, or
- * minted one for a person who has one. It carries a closed code and no text
- * from the provider; `errorIdentity` records the class and the code.
- */
-export class AccountLinkRefused extends Error {
-  readonly code: "identity_not_linked" | "identity_linked_elsewhere" | "link_account_missing";
-
-  constructor(code: AccountLinkRefused["code"]) {
-    super(`Account link refused (${code}).`);
-    this.name = "AccountLinkRefused";
-    this.code = code;
+/** A link callback the signed state's initiator does not license. Its message is static and safe to relay. */
+export class LinkRefusal extends Error {
+  constructor(
+    readonly code: "link_initiator_missing" | "link_initiator_mismatch" | "link_initiator_unknown" | "identity_not_linked",
+    message: string
+  ) {
+    super(message);
+    this.name = "LinkRefusal";
   }
 }
 
@@ -533,6 +524,16 @@ export async function startOAuthFlow(
     };
   }
 
+  // A connection target is app-backend authority: it rides only on connect
+  // and link starts, which are the flows gated by x-heimdall-app-secret.
+  // A sign_in start is open to any browser and must not carry one.
+  if (input.mode === "sign_in" && input.connection !== undefined) {
+    return {
+      statusCode: 400,
+      body: { error: "connection_not_allowed_in_sign_in", detail: "sign_in start must not carry a connection target." },
+    };
+  }
+
   if (callbackMint(profile, provider, input.mode, input.connection) === "refused") {
     return {
       statusCode: 400,
@@ -541,6 +542,48 @@ export async function startOAuthFlow(
         detail: `${provider} on ${profile.slug} is a managed creator connection: connect needs connection.kind creator and a targetId.`,
       },
     };
+  }
+
+  const descriptor = providerCatalog[provider];
+  // A provider that never mints an account attaches an identity only through
+  // a bound link: the user's own access token, since the app's word does not
+  // name this person to Google. A link start without a verified Heimdall session would end
+  // in a refusal at the callback, so it is refused before the redirect.
+  // `sign_in` stays open: it signs in an identity already linked, and the
+  // callback refuses one that is not.
+  if (descriptor.firstLogin === "requires_link" && input.mode === "link" && !options?.linkAccountId) {
+    return {
+      statusCode: 401,
+      body: {
+        error: "link_session_required",
+        detail: `Linking ${descriptor.displayName} needs a Heimdall access token for ${profile.slug}: send it as a Bearer token.`,
+      },
+    };
+  }
+
+  // Link mode binds an identity to an existing account, so the account must
+  // be named by someone Heimdall can believe: the authenticated app backend.
+  // The name rides in the signed state and the callback holds the provider's
+  // identity to it. No other mode carries an initiator.
+  if (input.mode === "link") {
+    if (options?.linkAccountId) {
+      // The user's own access token for this app names the account.
+      if (input.initiatingAccountId !== undefined && input.initiatingAccountId !== options.linkAccountId) {
+        return { statusCode: 400, body: { error: "link_initiator_conflict", detail: "initiatingAccountId differs from the bearer's account." } };
+      }
+    } else {
+      if (!isAppCaller(caller) || caller.appSlug !== profile.slug) {
+        return { statusCode: 401, body: { error: "app_auth_required" } };
+      }
+      if (!input.initiatingAccountId) {
+        return { statusCode: 400, body: { error: "link_initiator_required", detail: "link mode needs initiatingAccountId." } };
+      }
+      if (!(await ctx.store.findAccountById(input.initiatingAccountId))) {
+        return { statusCode: 400, body: { error: "link_initiator_unknown", detail: "initiatingAccountId names no account." } };
+      }
+    }
+  } else if (input.initiatingAccountId !== undefined) {
+    return { statusCode: 400, body: { error: "initiator_only_in_link_mode" } };
   }
 
   if (!isAllowedReturnOrigin(profile, input.returnTo)) {
@@ -590,22 +633,6 @@ export async function startOAuthFlow(
     return { statusCode: 401, body: { error: "app_auth_required" } };
   }
 
-  const descriptor = providerCatalog[provider];
-  // A provider that never mints an account attaches an identity only through
-  // a bound link. A link start without a verified Heimdall session would end
-  // in a refusal at the callback, so it is refused before the redirect.
-  // `sign_in` stays open: it signs in an identity already linked, and the
-  // callback refuses one that is not.
-  if (descriptor.firstLogin === "requires_link" && input.mode === "link" && !options?.linkAccountId) {
-    return {
-      statusCode: 401,
-      body: {
-        error: "link_session_required",
-        detail: `Linking ${descriptor.displayName} needs a Heimdall access token for ${profile.slug}: send it as a Bearer token.`,
-      },
-    };
-  }
-
   const providerConfig = config.providers[provider];
   if (!providerConfig.clientId) {
     return {
@@ -622,9 +649,9 @@ export async function startOAuthFlow(
     mode: input.mode,
     returnTo: input.returnTo,
     connection: input.connection,
+    initiatorAccountId: options?.linkAccountId ?? input.initiatingAccountId,
     handoff,
     entitlementPolicy,
-    linkAccountId: options?.linkAccountId,
     keys,
   });
   const oidc = descriptor.oidc ? deriveOidcSecrets(state.jti, keys.privateKey) : undefined;
@@ -916,6 +943,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
                 summary: { type: "string" },
               },
             },
+            initiatingAccountId: { type: "string", minLength: 1 },
             handoff: {
               type: "object",
               required: ["kind"],
@@ -1144,22 +1172,27 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         });
         const nowIso = new Date().toISOString();
         let account = await store.findAccountByLinkedIdentity(identity.provider, identity.providerUserId);
-        const boundAccountId = statePayload.link_account_id;
-
-        // One person, one account. An explicit link attaches to the account it
-        // was bound to and to no other; an identity another account already
-        // holds is never moved or merged.
-        if (boundAccountId && account && account.id !== boundAccountId) {
-          throw new AccountLinkRefused("identity_linked_elsewhere");
-        }
-        if (!account && boundAccountId) {
-          account = await store.findAccountById(boundAccountId);
-          if (!account) {
-            throw new AccountLinkRefused("link_account_missing");
+        // One person, one account. A link attaches the provider identity to the
+        // account the signed state names, and to no other: an identity another
+        // account holds is a refusal, never a quiet sign-in as that account or a
+        // move. A provider that never mints an account refuses an identity no
+        // account holds.
+        const boundAccountId = statePayload.mode === "link" ? statePayload.initiator_account_id : null;
+        if (statePayload.mode === "link") {
+          if (!boundAccountId) {
+            throw new LinkRefusal("link_initiator_missing", "The signed link state names no initiating account.");
           }
-        }
-        if (!account && callbackDescriptor.firstLogin === "requires_link") {
-          throw new AccountLinkRefused("identity_not_linked");
+          if (account && account.id !== boundAccountId) {
+            throw new LinkRefusal("link_initiator_mismatch", "This identity belongs to a different account than the one that started the link.");
+          }
+          if (!account) {
+            account = await store.findAccountById(boundAccountId);
+            if (!account) {
+              throw new LinkRefusal("link_initiator_unknown", "The initiating account no longer exists.");
+            }
+          }
+        } else if (!account && callbackDescriptor.firstLogin === "requires_link") {
+          throw new LinkRefusal("identity_not_linked", "No account holds this identity; sign in another way and link it first.");
         }
 
         const buildLinkedIdentityInput = (accountId: string): UpsertLinkedIdentityInput => {
@@ -1197,7 +1230,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         // the URL to. Nothing is written to the account: the verified identity
         // waits as a pending link, and only a confirm bearing the access token
         // of the account that began the link attaches it.
-        if (boundAccountId) {
+        if (boundAccountId && callbackDescriptor.firstLogin === "requires_link") {
           const pendingLink = await store.createPendingLink({
             appSlug: statePayload.app_slug,
             accountId: boundAccountId,
@@ -1271,10 +1304,11 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         } else {
           const accountUpdates: { displayName?: string; primaryEmail?: string } = {};
           const displayName = identity.displayName ?? identity.username;
-          if (displayName !== undefined) {
+          // A link adds an identity; it does not rewrite the account's profile.
+          if (displayName !== undefined && statePayload.mode !== "link") {
             accountUpdates.displayName = displayName;
           }
-          if (identity.primaryEmail !== undefined) {
+          if (identity.primaryEmail !== undefined && statePayload.mode !== "link") {
             accountUpdates.primaryEmail = identity.primaryEmail;
           }
           await store.touchAccount(account.id, nowIso, accountUpdates);
@@ -1455,6 +1489,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           accountId: account.id,
           sessionId: issued.session.sessionId,
           returnTo: statePayload.return_to,
+          ...(statePayload.connection ? { targetId: statePayload.connection.targetId } : {}),
           createdAt: nowIso,
           expiresAt: completionExpiresAt,
           payloadJson: completionPayload as unknown as Record<string, unknown>,
@@ -1516,12 +1551,16 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         // JSON.parse quotes the provider's response body. The audit event
         // keeps the error's class, its code, and a provider's HTTP status.
         const status = (error as { status?: unknown }).status;
-        const failure = "The provider callback could not be completed.";
+        // A link refusal is a typed decision with a static message; every
+        // other failure keeps the opaque answer above.
+        const refusal = error instanceof LinkRefusal ? error : null;
+        const failureCode = refusal?.code ?? "oauth_callback_failed";
+        const failure = refusal?.message ?? "The provider callback could not be completed.";
         const nowIso = new Date().toISOString();
-        await denyBrowserAttempt("oauth_callback_failed");
+        await denyBrowserAttempt(failureCode);
         await store.createAuditEvent({
           appSlug: statePayload.app_slug,
-          eventType: "oauth_callback_failed",
+          eventType: refusal ? "oauth_link_refused" : "oauth_callback_failed",
           eventPayloadJson: {
             provider: request.params.provider,
             mode: statePayload.mode,
@@ -1544,7 +1583,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
               mode: statePayload.mode,
               returnTo: statePayload.return_to,
               connection: statePayload.connection,
-              error: "oauth_callback_failed",
+              error: failureCode,
               errorDescription: failure,
             });
           } catch {}
@@ -1561,15 +1600,15 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
               mode: statePayload.mode,
               returnTo: statePayload.return_to,
               ...(handoff.kind === "backend_callback" ? { attemptId: handoff.attemptId } : {}),
-              error: "oauth_callback_failed",
+              error: failureCode,
               errorDescription: failure,
             })
           );
         }
 
-        reply.code(502);
+        reply.code(refusal ? 403 : 502);
         return {
-          error: "oauth_callback_failed",
+          error: failureCode,
           detail: failure,
           provider: request.params.provider,
           appSlug: statePayload.app_slug,
@@ -1649,12 +1688,38 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           additionalProperties: false,
           properties: {
             completionCode: { type: "string", minLength: 1 },
+            targetId: { type: "string", minLength: 1 },
           },
         },
       },
     },
     async (request, reply) => {
       const nowIso = new Date().toISOString();
+      // Sign-in and connect completions are redeemed by the browser flow, so
+      // the route stays open to it. A link completion was minted for an
+      // initiator the authenticated app named at start; only that app's
+      // backend redeems it. Redeem is also where the connection target is
+      // held to what the signed state named. Both refusals read the row
+      // without consuming it, so a wrong caller or target cannot burn the code.
+      const pending = await store.findAuthCompletion(request.params.appSlug, request.body.completionCode);
+      if (pending && !pending.consumedAt && pending.expiresAt > nowIso) {
+        if (pending.mode === "link" && !resolveAppCaller(config, request.params.appSlug, request.headers)) {
+          reply.code(401);
+          return { error: "app_auth_required" };
+        }
+        if (pending.targetId !== undefined && pending.targetId !== request.body.targetId) {
+          await store.createAuditEvent({
+            accountId: pending.accountId,
+            sessionId: pending.sessionId,
+            appSlug: pending.appSlug,
+            eventType: "auth_completion_target_refused",
+            eventPayloadJson: { provider: pending.provider, mode: pending.mode },
+            createdAt: nowIso,
+          });
+          reply.code(403);
+          return { error: "completion_target_mismatch" };
+        }
+      }
       const completion = await store.consumeAuthCompletion(request.params.appSlug, request.body.completionCode, nowIso);
 
       if (!completion) {

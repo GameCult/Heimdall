@@ -242,6 +242,24 @@ describe("Google as a Heimdall OIDC provider", () => {
     expect(accountCount(store)).toBe(1);
   });
 
+  it("refuses a link start whose named initiator is not the bearer's account", async () => {
+    const { app, store } = await build();
+    const a = await signInWithDiscord(app, "discord-1");
+    const start = await app.inject({
+      method: "POST",
+      url: "/v1/oauth/google/start",
+      headers: { authorization: `Bearer ${a.accessToken}` },
+      payload: {
+        appSlug: "bifrost",
+        mode: "link",
+        returnTo: "https://bifrost.gamecult.org/auth/heimdall/complete",
+        initiatingAccountId: `${a.accountId}-other`,
+      },
+    });
+    expect([start.statusCode, start.json().error]).toEqual([400, "link_initiator_conflict"]);
+    expect(accountCount(store)).toBe(1);
+  });
+
   it("refuses a link start with no Heimdall session", async () => {
     const { app, store } = await build();
     const start = await startGoogle(app);
@@ -283,8 +301,8 @@ describe("Google as a Heimdall OIDC provider", () => {
     const before = accountCount(store);
     const done = await callbackGoogle(app, start.json().stateToken);
 
-    expect(done.statusCode).toBe(502);
-    expect(done.json().error).toBe("oauth_callback_failed");
+    expect(done.statusCode).toBe(403);
+    expect(done.json().error).toBe("identity_not_linked");
     expect(accountCount(store)).toBe(before);
     expect(await store.findStoredLinkedIdentity("google", "g-sub-1")).toBeNull();
   });
@@ -304,7 +322,7 @@ describe("Google as a Heimdall OIDC provider", () => {
     fakeGoogle({ nonceFrom: () => urlB.searchParams.get("nonce") ?? undefined });
     const done = await callbackGoogle(second.app, startB.json().stateToken);
 
-    expect(done.statusCode).toBe(502);
+    expect(done.statusCode).toBe(403);
     expect((await store.findStoredLinkedIdentity("google", "g-sub-1"))?.accountId).toBe(a.accountId);
   });
 
@@ -370,7 +388,7 @@ describe("Google as a Heimdall OIDC provider", () => {
       const signIn = await startGoogle(app, undefined, "sign_in");
       const url = new URL(signIn.json().authorizationUrl);
       fakeGoogle({ nonceFrom: () => url.searchParams.get("nonce") ?? undefined, claims: { sub: "victim-google-sub" } });
-      expect((await callbackGoogle(app, signIn.json().stateToken)).statusCode).toBe(502);
+      expect((await callbackGoogle(app, signIn.json().stateToken)).statusCode).toBe(403);
     });
 
     it("a pending link is single-use", async () => {

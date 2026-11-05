@@ -27,7 +27,7 @@ export interface ProviderDescriptor {
    * `mints_account` is every provider's behaviour before Google: the first
    * login makes an account. `requires_link` never mints: the identity
    * attaches only to the account a verified link start bound
-   * (`link_account_id`), otherwise the callback refuses. Google is a second
+   * (`initiator_account_id`), otherwise the callback refuses. Google is a second
    * door into a person who already has an account, so a first Google login
    * must not make a stranger of them.
    */

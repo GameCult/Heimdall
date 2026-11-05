@@ -393,6 +393,7 @@ export class InMemoryStore implements HeimdallStore {
       accountId: input.accountId,
       sessionId: input.sessionId,
       returnTo: input.returnTo,
+      ...(input.targetId ? { targetId: input.targetId } : {}),
       createdAt: input.createdAt,
       expiresAt: input.expiresAt,
       payloadJson: clone(input.payloadJson),
@@ -403,6 +404,11 @@ export class InMemoryStore implements HeimdallStore {
       this.authCompletionsByAttempt.set(`${input.appSlug}:${input.attemptId}`, completion.code);
     }
     return clone(completion);
+  }
+
+  async findAuthCompletion(appSlug: AppSlug, code: string): Promise<StoredAuthCompletion | null> {
+    const completion = this.authCompletions.get(code);
+    return completion && completion.appSlug === appSlug ? clone(completion) : null;
   }
 
   async consumeAuthCompletion(appSlug: AppSlug, code: string, at: string): Promise<StoredAuthCompletion | null> {

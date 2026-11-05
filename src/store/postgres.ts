@@ -84,6 +84,7 @@ interface AuthCompletionRow extends QueryResultRow {
   account_id: string;
   session_id: string;
   return_to: string;
+  target_id: string | null;
   payload_json: Record<string, unknown>;
   created_at: string | Date;
   expires_at: string | Date;
@@ -280,6 +281,10 @@ function mapAuthCompletionRow(row: AuthCompletionRow): StoredAuthCompletion {
 
   if (row.attempt_id) {
     completion.attemptId = row.attempt_id;
+  }
+
+  if (row.target_id) {
+    completion.targetId = row.target_id;
   }
 
   if (row.consumed_at) {
@@ -1038,9 +1043,9 @@ export class PostgresStore implements HeimdallStore {
       `
       INSERT INTO auth_completions (
         code, attempt_id, app_slug, provider, mode, account_id, session_id,
-        return_to, payload_json, created_at, expires_at
+        return_to, target_id, payload_json, created_at, expires_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
       RETURNING *
       `,
       [
@@ -1052,6 +1057,7 @@ export class PostgresStore implements HeimdallStore {
         input.accountId,
         input.sessionId,
         input.returnTo,
+        input.targetId ?? null,
         JSON.stringify(input.payloadJson),
         input.createdAt,
         input.expiresAt,
@@ -1059,6 +1065,14 @@ export class PostgresStore implements HeimdallStore {
     );
 
     return mapAuthCompletionRow(expectRow(result.rows[0], "createAuthCompletion"));
+  }
+
+  async findAuthCompletion(appSlug: AppSlug, code: string): Promise<StoredAuthCompletion | null> {
+    const result = await this.pool.query<AuthCompletionRow>(
+      "SELECT * FROM auth_completions WHERE code = $1 AND app_slug = $2",
+      [code, appSlug]
+    );
+    return result.rowCount ? mapAuthCompletionRow(expectRow(result.rows[0], "findAuthCompletion")) : null;
   }
 
   async consumeAuthCompletion(appSlug: AppSlug, code: string, at: string): Promise<StoredAuthCompletion | null> {
