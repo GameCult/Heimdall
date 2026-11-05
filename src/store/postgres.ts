@@ -5,6 +5,7 @@ import { CREATE_SCHEMA_SQL, REQUIRED_COLUMNS, REQUIRED_KEYS, REQUIRED_TABLES } f
 import {
   type CreateAccountInput,
   type CreateAuthAttemptInput,
+  type ClaimOAuthStateUseInput,
   type CreateAuthCompletionInput,
   type CreatePendingLinkInput,
   type StoredPendingLink,
@@ -417,6 +418,7 @@ export const STORE_TABLE_PRIVILEGES: Readonly<Record<string, readonly ("SELECT" 
   private_command_receipts: ["SELECT", "INSERT"],
   auth_completions: ["SELECT", "INSERT", "UPDATE"],
   pending_links: ["SELECT", "INSERT", "UPDATE"],
+  oauth_state_uses: ["INSERT"],
   capability_grants: ["SELECT", "INSERT"],
   entitlement_snapshots: ["SELECT", "INSERT", "UPDATE"],
   audit_events: ["INSERT"],
@@ -1149,6 +1151,19 @@ export class PostgresStore implements HeimdallStore {
       [id, appSlug, accountId, at]
     );
     return result.rowCount ? mapPendingLinkRow(expectRow(result.rows[0], "consumePendingLink")) : null;
+  }
+
+  async claimOAuthStateUse(input: ClaimOAuthStateUseInput): Promise<boolean> {
+    // No conflict target and no RETURNING: both need SELECT, and the role has INSERT only.
+    const result = await this.pool.query(
+      `
+      INSERT INTO oauth_state_uses (jti, phase, app_slug, used_at, expires_at)
+      VALUES ($1, $2, $3, $4, $5)
+      ON CONFLICT DO NOTHING
+      `,
+      [input.jti, input.phase, input.appSlug, input.usedAt, input.expiresAt]
+    );
+    return result.rowCount === 1;
   }
 
   async upsertEntitlementSnapshot(input: CreateEntitlementSnapshotInput): Promise<void> {

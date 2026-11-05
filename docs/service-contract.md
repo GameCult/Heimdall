@@ -150,11 +150,28 @@ Response:
   "appSlug": "repixelizer",
   "mode": "sign_in",
   "callbackUrl": "https://heimdall.gamecult.org/v1/oauth/discord/callback",
-  "authorizationUrl": "https://discord.com/oauth2/authorize?...",
-  "stateToken": "<signed-jwt>",
+  "authorizationUrl": "https://heimdall.gamecult.org/v1/oauth/discord/launch?state=<signed-jwt>",
   "stateExpiresAt": "2026-04-26T12:10:00.000Z"
 }
 ```
+
+Send the user's browser to `authorizationUrl` unchanged. It is Heimdall's launch
+hop, not the provider's URL.
+
+### `GET /v1/oauth/{provider}/launch?state=<signed-jwt>`
+
+The first thing the user's browser does with a state. Heimdall verifies the
+state (signature, issuer, provider, `nbf`/`exp` with 30 s of skew), claims the
+state's single launch, sets the binding cookie
+`__Host-heimdall-oauth-<jti>` (`Path=/`, `Secure`, `HttpOnly`, `SameSite=Lax`,
+`Max-Age` until the state expires; the value is a Heimdall-signed binding for
+that state) and answers `302` to the provider's authorize URL, with
+`Cache-Control: no-store` and `Referrer-Policy: no-referrer`. A second launch of
+the same state is `400 state_already_launched` and sets no cookie. The state is
+refused with `400 invalid_state`, `state_provider_mismatch` or `state_expired`.
+
+The binding cookie needs an `https` public base URL (or `localhost`). A browser
+must finish the flow in the browser that launched it.
 
 Failure modes:
 
@@ -169,7 +186,17 @@ Failure modes:
 - `401 app_auth_required` when the request body carries `entitlementPolicy` and
   the caller did not authenticate as that app via `x-heimdall-app-secret`
   (`resolveAppCaller`, `src/app-caller.ts`) -- this applies regardless of
-  `handoff.kind` or app slug; a caller with no policy to attach needs no secret
+  `handoff.kind` or app slug; a caller with no policy to attach needs no secret,
+  unless the app's profile sets `startRequiresAppCaller` (Bifrost only): then
+  every start for that app, with or without a policy, needs that app's secret.
+  Bifrost binds browser completion to a nonce that rides readable in the signed
+  state's `return_to`, so only Bifrost may mint a Bifrost state; apps whose
+  browser starts are public by design leave the flag unset
+- `401 app_auth_required` also when `mode` is `connect` and the body carries a
+  `connection` (a creator or account target): a connection target is app-backend
+  authority, so only the authenticated app named by `appSlug` may start it. No
+  secret, or another app's, is refused before any state is signed. `sign_in`
+  starts carrying a `connection` are `400 connection_not_allowed_in_sign_in`
 
 Launch note:
 
@@ -189,7 +216,8 @@ door into a person who already has one.
   client): `{GC_ACCESS_BASE_URL}/v1/oauth/google/callback`, which is
   `https://heimdall.gamecult.org/v1/oauth/google/callback` in production.
 - Scopes `openid email profile`. The authorization request carries `state`
-  (signed, Heimdall's), a `nonce`, and a PKCE `S256` challenge. The verifier
+  (signed, Heimdall's), a `nonce`, and a PKCE `S256` challenge, all built at the
+  launch hop, which is where the browser first meets the provider URL. The verifier
   and the nonce are derived from the state's `jti` and Heimdall's signing key,
   so nothing is stored between start and callback.
 - The callback verifies the `id_token` (RS256 against Google's published
@@ -228,7 +256,11 @@ Purpose:
 
 Current status:
 
-- validates signed `state`
+- validates signed `state` (signature, issuer, provider, expiry), requires the
+  binding cookie the launch hop set, and consumes the state: a second callback
+  is `400 state_already_used`, a missing or foreign cookie `400 state_not_bound`,
+  an expired state `400 state_expired`; the binding is checked before the claim,
+  so a browser without the cookie cannot burn the launching browser's state
 - returns provider errors cleanly
 - for Discord, exchanges the authorization code, resolves the provider
   identity, persists the local account/link/session/audit records, evaluates

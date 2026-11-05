@@ -305,7 +305,6 @@ async function beginAuth(
     throw new Error(String(startPayload.detail ?? startPayload.error ?? "OAuth start was denied."));
   }
   const authorizationUrl = String(startPayload.authorizationUrl ?? "");
-  const authorizationOrigin = new URL(authorizationUrl).origin;
   return {
     status: "accepted",
     payloadSchema: "heimdall.auth_begin_receipt.v1",
@@ -316,7 +315,7 @@ async function beginAuth(
       expiresAt: attempt.expiresAt,
       navigation: {
         url: authorizationUrl,
-        allowedOrigins: [authorizationOrigin, new URL(config.publicBaseUrl).origin],
+        allowedOrigins: [new URL(config.publicBaseUrl).origin],
       },
     },
   };

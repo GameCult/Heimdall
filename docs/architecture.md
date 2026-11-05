@@ -154,7 +154,11 @@ The important split:
 
 - Heimdall owns provider OAuth, identity linking, entitlement refresh, signed
   sessions, claims, grants, audit surfaces, and managed provider credential
-  custody
+  custody. It authenticates; it does not issue GameCult identity. Bifrost is
+  the identity provider, and the account id Heimdall mints is an authenticator
+  handle. Remaining scar: Heimdall still creates that account id on first
+  login (`store.createAccount`, `src/app.ts`), which the chat work does not
+  need moved
 - the host experiment owns its workload, queue, editor, render path, viewer
   profile model, creator model, or other product-specific machinery
 - the host experiment also owns which local entity a connection attaches to,
@@ -613,8 +617,9 @@ Only the browser-driven OAuth flow:
 
 | Path | Why it must be public |
 |---|---|
-| `/v1/oauth/{provider}/start` | the user's browser goes here |
-| `/v1/oauth/{provider}/callback` | the provider redirects here; one-shot and not retryable |
+| `/v1/oauth/{provider}/start` | the app's server calls it, with its app secret where the profile requires one |
+| `/v1/oauth/{provider}/launch` | the user's browser goes here first; it sets the binding cookie and redirects to the provider, once per state |
+| `/v1/oauth/{provider}/callback` | the provider redirects here; one-shot: it needs the binding cookie and consumes the state |
 | `/.well-known/jwks.json` | *nothing external consumes it today* — see below |
 
 Everything else is internal by the design already written down:
