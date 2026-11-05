@@ -398,6 +398,19 @@ async function exerciseStore(store: PostgresStore): Promise<Set<string>> {
   await s.consumeAuthCompletion("ghostlight", byCode.code, now);
   await s.createAuthCompletion({ ...completion, attemptId: attempt.handle });
   await s.consumeAuthCompletionByAttempt("ghostlight", attempt.handle, now);
+  const found = await s.createAuthCompletion(completion);
+  await s.findAuthCompletion("ghostlight", found.code);
+  const pending = await s.createPendingLink({
+    appSlug: "ghostlight",
+    accountId: account.id,
+    provider: "discord",
+    providerUserId: "u2",
+    identity: { ...identity, providerUserId: "u2" },
+    returnTo: "https://x.test/",
+    createdAt: now,
+    expiresAt: later,
+  });
+  await s.consumePendingLink("ghostlight", pending.id, account.id, now);
   const snapshot = { accountId: account.id, provider: "discord" as const, scope: "ghostlight:probe", evaluatedAt: now, isAllowed: true, reasonCode: "ok", rawSummaryJson: {} };
   await s.upsertEntitlementSnapshot(snapshot);
   await s.upsertEntitlementSnapshot({ ...snapshot, isAllowed: false });
