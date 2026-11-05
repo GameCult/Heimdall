@@ -11,7 +11,8 @@ evidence only.
 
 ## Owner Map
 
-- Owner: Heimdall owns provider identity/linking, OAuth attempts, signed session and claim
+- Owner: Heimdall owns provider identity/linking (an authenticator handle, not
+  GameCult identity, which is Bifrost's), OAuth attempts, signed session and claim
   issuance, entitlement refresh, managed provider token custody, grants,
   auth-completion handoffs, refresh sessions, and audit events.
 - Inputs: provider OAuth callbacks, app profile requests, caller-supplied

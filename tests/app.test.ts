@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { inspect } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { type FastifyInstance } from "fastify";
-import { buildApp, errorIdentity } from "../src/app.js";
+import { buildApp, errorIdentity, getHeimdallRuntimeContext, startOAuthFlow } from "../src/app.js";
+import { resolveAppCaller } from "../src/app-caller.js";
 import { builtInAppProfiles, callbackMint } from "../src/app-profiles.js";
 import { deliverBackendHandoff, type BackendHandoffPayload } from "../src/backend-handoff.js";
 import { type HeimdallConfig, loadConfig } from "../src/config.js";
@@ -12,97 +13,7 @@ import { entitlementFacts, identityFacts } from "../src/facts.js";
 import { createOAuthRuntimeRegistry, ProviderResponseError, type OAuthProviderRuntime } from "../src/oauth.js";
 import { createRuntimeKeyMaterial, signJwt, verifyJwt } from "../src/signing.js";
 import { InMemoryStore } from "../src/store/index.js";
-
-function createTestConfig(): HeimdallConfig {
-  return {
-    serviceName: "heimdall",
-    host: "127.0.0.1",
-    port: 4100,
-    workspaceRoot: "E:/Projects/Heimdall",
-    dataRoot: "E:/Projects/Heimdall/.heimdall-data",
-    cultCachePath: "E:/Projects/Heimdall/.heimdall-data/cultcache/heimdall.service.cc",
-    publicBaseUrl: "https://heimdall.gamecult.org",
-    issuer: "https://heimdall.gamecult.org",
-    daemonId: "yggdrasil-heimdall",
-    idunnRudpHealth: undefined,
-    idunnHealthContract: "heimdall.cultnet-rudp-provider-health",
-    providerHealthIdentityPath: "E:/Projects/Heimdall/.heimdall-data/provider-health-identity.cc",
-    sessionTtlSeconds: 3600,
-    refreshTtlSeconds: 60 * 60 * 24 * 30,
-    stateTtlSeconds: 600,
-    completionTtlSeconds: 300,
-    bootstrapSigningPrivateKeyOnMissing: false,
-    tokenEncryptionKeyBase64: Buffer.alloc(32, 7).toString("base64"),
-    appSharedSecrets: {
-      streampixels: "streampixels-secret",
-      repixelizer: "repixelizer-secret",
-      bifrost: "bifrost-secret",
-    },
-    appBackendCallbacks: {
-      bifrost: ["https://bifrost.gamecult.org/auth/heimdall/callback"],
-      repixelizer: ["https://repixelizer.gamecult.org/api/auth/heimdall/callback"],
-    },
-    storage: {
-      backend: "memory",
-      applySchemaOnStartup: true,
-    },
-    providers: {
-      discord: { clientId: "discord-client", clientSecret: "discord-secret" },
-      patreon: { clientId: "patreon-client", clientSecret: "patreon-secret" },
-      github: { clientId: "github-client", clientSecret: "github-secret" },
-      twitch: { clientId: "twitch-client", clientSecret: "twitch-secret" },
-      youtube: { clientId: "youtube-client", clientSecret: "youtube-secret" },
-      spotify: { clientId: "spotify-client", clientSecret: "spotify-secret" },
-      joystick: { clientId: "joystick-client", clientSecret: "joystick-secret" },
-      google: { clientId: "google-client", clientSecret: "google-secret" },
-    },
-  };
-}
-
-function createMockDiscordRuntime(): OAuthProviderRuntime {
-  return {
-    async exchangeAuthorizationCode() {
-      return {
-        accessToken: "discord-access-token",
-        refreshToken: "discord-refresh-token",
-        tokenType: "Bearer",
-        scope: ["identify", "guilds.members.read"],
-        expiresAt: "2026-04-26T13:00:00.000Z",
-        raw: { source: "test" },
-      };
-    },
-    async resolveIdentity() {
-      return {
-        provider: "discord",
-        providerUserId: "discord-user-123",
-        username: "meta",
-        displayName: "Meta",
-        primaryEmail: "meta@gamecult.org",
-        profile: { id: "discord-user-123", username: "meta" },
-      };
-    },
-    async evaluateEntitlements({ callback }) {
-      return {
-        facts: [entitlementFacts.appAccess],
-        snapshots: [
-          {
-            accountId: callback.accountId,
-            provider: "discord",
-            scope: "repixelizer:discord_role_access:gamecult-guild",
-            evaluatedAt: "2026-04-26T12:00:00.000Z",
-            isAllowed: true,
-            reasonCode: "matched_role",
-            reasonDetail: "Matched Repixelizer access role.",
-            rawSummaryJson: {
-              guildId: "gamecult-guild",
-              matchedRoles: ["role-repixelizer"],
-            },
-          },
-        ],
-      };
-    },
-  };
-}
+import { createMockDiscordRuntime, createTestConfig, launchFlow, providerRedirect, stateOf, type LaunchedFlow } from "./oauth-flow.js";
 
 const apps: Awaited<ReturnType<typeof buildApp>>[] = [];
 const originalFetch = globalThis.fetch;
@@ -135,7 +46,7 @@ function getHeimdallContext(app: FastifyInstance) {
   }).heimdallContext;
 }
 
-async function startDiscordSignIn(app: FastifyInstance): Promise<string> {
+async function startDiscordSignIn(app: FastifyInstance): Promise<LaunchedFlow> {
   const response = await app.inject({
     method: "POST",
     url: "/v1/oauth/discord/start",
@@ -147,7 +58,7 @@ async function startDiscordSignIn(app: FastifyInstance): Promise<string> {
   });
 
   expect(response.statusCode).toBe(201);
-  return response.json().stateToken as string;
+  return launchFlow(app, response.json());
 }
 
 afterEach(async () => {
@@ -208,9 +119,9 @@ describe("Heimdall service", () => {
 
     expect(response.statusCode).toBe(201);
     const payload = response.json();
-    expect(payload.authorizationUrl).toContain("discord.com/oauth2/authorize");
+    expect((await providerRedirect(app, payload)).href).toContain("discord.com/oauth2/authorize");
 
-    const verified = verifyJwt(payload.stateToken as string, getPublicKey(app));
+    const verified = verifyJwt(stateOf(payload), getPublicKey(app));
     expect(verified.valid).toBe(true);
     if (verified.valid) {
       expect(verified.payload).toEqual(
@@ -248,6 +159,170 @@ describe("Heimdall service", () => {
 
     expect(response.statusCode).toBe(401);
     expect(response.json()).toEqual(expect.objectContaining({ error: "app_auth_required" }));
+  });
+
+  describe("apps that bind browser completion to their own attempt", () => {
+    // Bifrost's browser binding is the secrecy of its attempt nonce, which
+    // travels readable in the signed state. Only Bifrost may mint a Bifrost
+    // state, so a known nonce cannot carry a stranger's completion
+    // (finding known-nonce-login-csrf).
+    const victimAttempt = "VICTIM-ATTEMPT-NONCE";
+    const bifrostReturn = `https://bifrost.gamecult.org/auth/heimdall/complete?attempt=${victimAttempt}`;
+    const bifrostStart = (handoff?: { kind: "browser_completion" }) => ({
+      appSlug: "bifrost" as const,
+      mode: "sign_in" as const,
+      returnTo: bifrostReturn,
+      ...(handoff ? { handoff } : {}),
+    });
+
+    it("refuses an unauthenticated Bifrost start for browser_completion and for an omitted handoff", async () => {
+      const app = await buildApp({ config: createTestConfig() });
+      apps.push(app);
+
+      for (const payload of [bifrostStart({ kind: "browser_completion" }), bifrostStart()]) {
+        const response = await app.inject({ method: "POST", url: "/v1/oauth/discord/start", payload });
+        expect(response.statusCode).toBe(401);
+        expect(response.json()).toEqual({ error: "app_auth_required" });
+      }
+    });
+
+    it("the attack fails: a stranger cannot obtain a Bifrost state carrying a chosen return_to nonce", async () => {
+      const app = await buildApp({ config: createTestConfig() });
+      apps.push(app);
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/oauth/discord/start",
+        payload: bifrostStart({ kind: "browser_completion" }),
+      });
+      expect(response.statusCode).toBe(401);
+      expect(response.body).not.toContain(victimAttempt);
+      expect(response.body).not.toContain("stateToken");
+      expect(response.body).not.toContain("authorizationUrl");
+    });
+
+    it("still starts for Bifrost's own app secret, with the requested return_to in the state", async () => {
+      const app = await buildApp({ config: createTestConfig() });
+      apps.push(app);
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/v1/oauth/discord/start",
+        headers: { "x-heimdall-app-secret": "bifrost-secret" },
+        payload: bifrostStart({ kind: "browser_completion" }),
+      });
+      expect(response.statusCode).toBe(201);
+      const verified = verifyJwt(stateOf(response.json()), getPublicKey(app));
+      expect(verified.valid).toBe(true);
+      if (verified.valid) {
+        expect(verified.payload).toEqual(expect.objectContaining({ app_slug: "bifrost", return_to: bifrostReturn }));
+      }
+    });
+
+    it("refuses another app's credentials on a Bifrost start", async () => {
+      const app = await buildApp({ config: createTestConfig() });
+      apps.push(app);
+
+      for (const secret of ["streampixels-secret", "repixelizer-secret"]) {
+        const response = await app.inject({
+          method: "POST",
+          url: "/v1/oauth/discord/start",
+          headers: { "x-heimdall-app-secret": secret },
+          payload: bifrostStart({ kind: "browser_completion" }),
+        });
+        expect(response.statusCode, secret).toBe(401);
+        expect(response.json()).toEqual({ error: "app_auth_required" });
+      }
+    });
+
+    it("refuses another app's authenticated caller on a direct Bifrost start, with no policy attached", async () => {
+      // Over HTTP the caller is resolved against the body's slug, so a foreign
+      // secret never becomes a caller at all. The command plane and direct
+      // callers hand startOAuthFlow a caller of their own, so the slug match is
+      // decided here too.
+      const config = createTestConfig();
+      const app = await buildApp({ config });
+      apps.push(app);
+      const foreign = resolveAppCaller(config, "repixelizer", { "x-heimdall-app-secret": "repixelizer-secret" });
+      const own = resolveAppCaller(config, "bifrost", { "x-heimdall-app-secret": "bifrost-secret" });
+
+      const refused = await startOAuthFlow(getHeimdallRuntimeContext(app), "discord", foreign, bifrostStart({ kind: "browser_completion" }));
+      expect(refused.statusCode).toBe(401);
+      const allowed = await startOAuthFlow(getHeimdallRuntimeContext(app), "discord", own, bifrostStart({ kind: "browser_completion" }));
+      expect(allowed.statusCode).toBe(201);
+    });
+
+    it("gates every mode, provider and handoff kind Bifrost admits, not one spelling of them", async () => {
+      // Hand mutants narrowing the gate to browser_completion or to sign_in
+      // survived the single-case tests (finding gate-tests-narrow).
+      const store = new InMemoryStore();
+      const now = new Date().toISOString();
+      const initiator = await store.createAccount({ createdAt: now, lastSeenAt: now });
+      const app = await buildApp({ config: createTestConfig(), store });
+      apps.push(app);
+      const handoffs = [
+        undefined,
+        { kind: "browser_completion" },
+        {
+          kind: "backend_callback",
+          attemptId: "bifrost-attempt-1",
+          callbackUrl: "https://bifrost.gamecult.org/auth/heimdall/callback",
+        },
+      ];
+
+      let cases = 0;
+      for (const mode of ["sign_in", "link", "connect"] as const) {
+        for (const provider of ["discord", "patreon"] as const) {
+          for (const handoff of handoffs) {
+            const label = `${mode} ${provider} ${handoff?.kind ?? "omitted"}`;
+            const payload = {
+              appSlug: "bifrost",
+              mode,
+              returnTo: bifrostReturn,
+              ...(mode === "link" ? { initiatingAccountId: initiator.id } : {}),
+              ...(handoff ? { handoff } : {}),
+            };
+            const refused = await app.inject({ method: "POST", url: `/v1/oauth/${provider}/start`, payload });
+            expect(refused.statusCode, label).toBe(401);
+            expect(refused.json(), label).toEqual({ error: "app_auth_required" });
+
+            const allowed = await app.inject({
+              method: "POST",
+              url: `/v1/oauth/${provider}/start`,
+              headers: { "x-heimdall-app-secret": "bifrost-secret" },
+              payload,
+            });
+            expect(allowed.statusCode, label).toBe(201);
+            expect(allowed.json().authorizationUrl, label).toContain(`/v1/oauth/${provider}/launch?state=`);
+            cases += 1;
+          }
+        }
+      }
+      expect(cases).toBe(18);
+    });
+
+    it("leaves public-by-design apps unchanged: unauthenticated browser_completion starts still succeed", async () => {
+      const app = await buildApp({ config: createTestConfig() });
+      apps.push(app);
+
+      for (const [appSlug, provider, returnTo] of [
+        ["repixelizer", "discord", "https://repixelizer.gamecult.org/app/"],
+        ["streampixels", "twitch", "https://streampixels.gamecult.org/app/"],
+      ] as const) {
+        const response = await app.inject({
+          method: "POST",
+          url: `/v1/oauth/${provider}/start`,
+          payload: { appSlug, mode: "sign_in", returnTo, handoff: { kind: "browser_completion" } },
+        });
+        expect(response.statusCode, appSlug).toBe(201);
+      }
+    });
+
+    it("flags only Bifrost's profile", () => {
+      expect(
+        Object.values(builtInAppProfiles).filter((profile) => profile.startRequiresAppCaller).map((profile) => profile.slug)
+      ).toEqual(["bifrost"]);
+    });
   });
 
   it("accepts caller-owned entitlement policy for a browser completion handoff when the caller is trusted", async () => {
@@ -303,9 +378,9 @@ describe("Heimdall service", () => {
 
     expect(response.statusCode).toBe(201);
     const payload = response.json();
-    expect(payload.authorizationUrl).toContain("discord.com/oauth2/authorize");
+    expect((await providerRedirect(app, payload)).href).toContain("discord.com/oauth2/authorize");
 
-    const verified = verifyJwt(payload.stateToken as string, getPublicKey(app));
+    const verified = verifyJwt(stateOf(payload), getPublicKey(app));
     expect(verified.valid).toBe(true);
     if (verified.valid) {
       expect(verified.payload).toEqual(
@@ -349,11 +424,11 @@ describe("Heimdall service", () => {
 
     expect(response.statusCode).toBe(201);
     const payload = response.json();
-    const authorizationUrl = new URL(payload.authorizationUrl as string);
+    const authorizationUrl = await providerRedirect(app, payload);
     expect(`${authorizationUrl.origin}${authorizationUrl.pathname}`).toBe("https://www.patreon.com/oauth2/authorize");
     expect(authorizationUrl.searchParams.get("scope")).toBe("identity identity[email]");
 
-    const verified = verifyJwt(payload.stateToken as string, getPublicKey(app));
+    const verified = verifyJwt(stateOf(payload), getPublicKey(app));
     expect(verified.valid).toBe(true);
     if (verified.valid) {
       expect(verified.payload).toEqual(
@@ -397,9 +472,9 @@ describe("Heimdall service", () => {
 
     expect(response.statusCode).toBe(201);
     const payload = response.json();
-    expect(payload.authorizationUrl).toContain("discord.com/oauth2/authorize");
+    expect((await providerRedirect(app, payload)).href).toContain("discord.com/oauth2/authorize");
 
-    const verified = verifyJwt(payload.stateToken as string, getPublicKey(app));
+    const verified = verifyJwt(stateOf(payload), getPublicKey(app));
     expect(verified.valid).toBe(true);
     if (verified.valid) {
       expect(verified.payload).toEqual(
@@ -443,10 +518,10 @@ describe("Heimdall service", () => {
 
     expect(response.statusCode).toBe(201);
     const payload = response.json();
-    const authorizationUrl = new URL(payload.authorizationUrl as string);
+    const authorizationUrl = await providerRedirect(app, payload);
     expect(`${authorizationUrl.origin}${authorizationUrl.pathname}`).toBe("https://www.patreon.com/oauth2/authorize");
 
-    const verified = verifyJwt(payload.stateToken as string, getPublicKey(app));
+    const verified = verifyJwt(stateOf(payload), getPublicKey(app));
     expect(verified.valid).toBe(true);
     if (verified.valid) {
       expect(verified.payload).toEqual(
@@ -474,10 +549,11 @@ describe("Heimdall service", () => {
     });
     apps.push(app);
 
-    const stateToken = await startDiscordSignIn(app);
+    const flow = await startDiscordSignIn(app);
     const response = await app.inject({
       method: "GET",
-      url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(stateToken)}`,
+      url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(flow.state)}`,
+      headers: { cookie: flow.cookie },
     });
 
     expect(response.statusCode).toBe(201);
@@ -690,10 +766,11 @@ describe("Heimdall service", () => {
     });
     apps.push(app);
 
-    const stateToken = await startDiscordSignIn(app);
+    const flow = await startDiscordSignIn(app);
     const callbackResponse = await app.inject({
       method: "GET",
-      url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(stateToken)}`,
+      url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(flow.state)}`,
+      headers: { cookie: flow.cookie },
     });
     const completionCode = callbackResponse.json().completion.code as string;
 
@@ -732,10 +809,11 @@ describe("Heimdall service", () => {
     const auditEvents = () =>
       [...(store as unknown as { auditEvents: Map<string, { eventType: string; sessionId?: string; eventPayloadJson: unknown }> }).auditEvents.values()];
 
-    const stateToken = await startDiscordSignIn(app);
+    const flow = await startDiscordSignIn(app);
     const callback = await app.inject({
       method: "GET",
-      url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(stateToken)}`,
+      url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(flow.state)}`,
+      headers: { cookie: flow.cookie },
     });
     const { code, expiresAt } = callback.json().completion as { code: string; expiresAt: string };
     const created = auditEvents().filter((event) => event.eventType === "auth_completion_created");
@@ -816,10 +894,11 @@ describe("Heimdall service", () => {
     });
     apps.push(app);
 
-    const stateToken = await startDiscordSignIn(app);
+    const flow = await startDiscordSignIn(app);
     const callbackResponse = await app.inject({
       method: "GET",
-      url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(stateToken)}`,
+      url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(flow.state)}`,
+      headers: { cookie: flow.cookie },
     });
     expect(callbackResponse.statusCode).toBe(201);
     const refreshToken = callbackResponse.json().refreshToken as string;
@@ -863,11 +942,12 @@ describe("Heimdall service", () => {
     });
     apps.push(app);
 
-    const stateToken = await startDiscordSignIn(app);
+    const flow = await startDiscordSignIn(app);
     const response = await app.inject({
       method: "GET",
-      url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(stateToken)}`,
+      url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(flow.state)}`,
       headers: {
+        cookie: flow.cookie,
         accept: "text/html",
       },
     });
@@ -913,12 +993,13 @@ describe("Heimdall service", () => {
       },
     });
     expect(startResponse.statusCode).toBe(201);
-    const stateToken = startResponse.json().stateToken as string;
+    const flow = await launchFlow(app, startResponse.json());
 
     const response = await app.inject({
       method: "GET",
-      url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(stateToken)}`,
+      url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(flow.state)}`,
       headers: {
+        cookie: flow.cookie,
         accept: "text/html",
       },
     });
@@ -1124,11 +1205,12 @@ describe("Heimdall service", () => {
         returnTo: "https://streampixels.gamecult.org/auth/connect",
       },
     });
-    const stateToken = startResponse.json().stateToken as string;
+    const flow = await launchFlow(app, startResponse.json());
 
     const callbackResponse = await app.inject({
       method: "GET",
-      url: `/v1/oauth/twitch/callback?code=test-code&state=${encodeURIComponent(stateToken)}`,
+      url: `/v1/oauth/twitch/callback?code=test-code&state=${encodeURIComponent(flow.state)}`,
+      headers: { cookie: flow.cookie },
     });
     const accountId = callbackResponse.json().account.id as string;
 
@@ -1211,11 +1293,12 @@ describe("Heimdall service", () => {
         returnTo: "https://streampixels.gamecult.org/auth/connect",
       },
     });
-    const stateToken = startResponse.json().stateToken as string;
+    const flow = await launchFlow(app, startResponse.json());
 
     const callbackResponse = await app.inject({
       method: "GET",
-      url: `/v1/oauth/twitch/callback?code=test-code&state=${encodeURIComponent(stateToken)}`,
+      url: `/v1/oauth/twitch/callback?code=test-code&state=${encodeURIComponent(flow.state)}`,
+      headers: { cookie: flow.cookie },
     });
     const accountId = callbackResponse.json().account.id as string;
 
@@ -1277,10 +1360,11 @@ describe("Heimdall service", () => {
     });
     apps.push(app);
 
-    const stateToken = await startDiscordSignIn(app);
+    const flow = await startDiscordSignIn(app);
     const callbackResponse = await app.inject({
       method: "GET",
-      url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(stateToken)}`,
+      url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(flow.state)}`,
+      headers: { cookie: flow.cookie },
     });
     expect(callbackResponse.statusCode).toBe(201);
     const evaluationsAtSignIn = evaluations;
@@ -1362,10 +1446,30 @@ describe("Heimdall service", () => {
       const start = await app.inject({
         method: "POST",
         url: "/v1/oauth/joystick/start",
+        headers: { "x-heimdall-app-secret": "streampixels-secret" },
         payload: { appSlug: "streampixels", mode: "connect", returnTo: "https://streampixels.gamecult.org/auth/connect", ...extra },
       });
       return start;
     }
+
+    it("gates a connect start that names a creator on the app's own secret: none and a foreign app's are 401, its own is 201", async () => {
+      const config = createTestConfig();
+      const app = await buildApp({ config });
+      apps.push(app);
+      const body = { appSlug: "streampixels", mode: "connect", returnTo: "https://streampixels.gamecult.org/auth/connect", connection: creator };
+      const start = (headers: Record<string, string>) => app.inject({ method: "POST", url: "/v1/oauth/joystick/start", headers, payload: body });
+
+      for (const headers of [{}, { "x-heimdall-app-secret": "repixelizer-secret" }, { "x-heimdall-app-secret": "wrong" }]) {
+        const refused = await start(headers);
+        expect([refused.statusCode, refused.json()]).toEqual([401, { error: "app_auth_required" }]);
+      }
+      expect((await start({ "x-heimdall-app-secret": "streampixels-secret" })).statusCode).toBe(201);
+
+      // A direct caller (the command plane hands startOAuthFlow its own) is held to the slug too.
+      const input = { appSlug: "streampixels" as const, mode: "connect" as const, returnTo: body.returnTo, connection: { kind: "creator" as const, targetId: "creator-1" } };
+      const foreign = resolveAppCaller(config, "repixelizer", { "x-heimdall-app-secret": "repixelizer-secret" });
+      expect((await startOAuthFlow(getHeimdallRuntimeContext(app), "joystick", foreign, input)).statusCode).toBe(401);
+    });
 
     it.each([
       ["no connection", {}, "creator_connection_required"],
@@ -1378,7 +1482,7 @@ describe("Heimdall service", () => {
       expect(start.statusCode).toBe(400);
       expect(start.json().error).toBe(error);
       expect(start.json().authorizationUrl).toBeUndefined();
-      expect(start.json().stateToken).toBeUndefined();
+      expect(start.json()).not.toHaveProperty("stateToken");
     });
 
     it.each([
@@ -1394,14 +1498,15 @@ describe("Heimdall service", () => {
         apps.push(app);
         const keys = createRuntimeKeyMaterial({ ...config, bootstrapSigningPrivateKeyOnMissing: false });
         const calls = stubJoystick({ channel_id: "chan-forged", username: "deru" });
-        const stateToken = (await connect(app)).json().stateToken as string;
-        const verified = verifyJwt(stateToken, keys.publicKey);
+        const flow = await launchFlow(app, (await connect(app)).json());
+        const verified = verifyJwt(flow.state, keys.publicKey);
         expect(verified.valid).toBe(true);
         const forged = signJwt({ ...(verified as { payload: Record<string, unknown> }).payload, connection }, keys);
 
         const callback = await app.inject({
           method: "GET",
           url: `/v1/oauth/joystick/callback?code=c&state=${encodeURIComponent(forged)}`,
+          headers: { cookie: flow.cookie },
         });
         expect(callback.statusCode).toBeGreaterThanOrEqual(400);
         expect(calls).toEqual([]);
@@ -1433,9 +1538,11 @@ describe("Heimdall service", () => {
         handoff: { kind: "backend_callback", attemptId: "attempt-js-1", callbackUrl },
       });
       expect(start.statusCode).toBe(201);
+      const flow = await launchFlow(app, start.json());
       const callback = await app.inject({
         method: "GET",
-        url: `/v1/oauth/joystick/callback?code=c&state=${encodeURIComponent(start.json().stateToken as string)}`,
+        url: `/v1/oauth/joystick/callback?code=c&state=${encodeURIComponent(flow.state)}`,
+        headers: { cookie: flow.cookie },
       });
       expect(callback.statusCode).toBeLessThan(300);
 
@@ -1454,7 +1561,7 @@ describe("Heimdall service", () => {
       apps.push(app);
       const start = await connect(app);
       expect(start.statusCode).toBe(201);
-      const url = new URL(start.json().authorizationUrl as string);
+      const url = await providerRedirect(app, start.json());
       expect(`${url.origin}${url.pathname}`).toBe("https://joystick.tv/api/oauth/authorize");
       expect(url.searchParams.get("client_id")).toBe("joystick-client");
       expect(url.searchParams.get("scope")).toBe("identity:read stream:read chat:read followers:read subscribers:read");
@@ -1468,10 +1575,11 @@ describe("Heimdall service", () => {
         const app = await buildApp({ config: createTestConfig(), store });
         apps.push(app);
         stubJoystick({ channel_id: "deru-chan", username: "deru" });
-        const stateToken = (await connect(app)).json().stateToken as string;
+        const flow = await launchFlow(app, (await connect(app)).json());
         const connected = await app.inject({
           method: "GET",
-          url: `/v1/oauth/joystick/callback?code=a&state=${encodeURIComponent(stateToken)}`,
+          url: `/v1/oauth/joystick/callback?code=a&state=${encodeURIComponent(flow.state)}`,
+          headers: { cookie: flow.cookie },
         });
         const accountId = connected.json().account.id as string;
         const before = await store.findStoredLinkedIdentityForAccount(accountId, "joystick");
@@ -1519,14 +1627,15 @@ describe("Heimdall service", () => {
           apps.push(app);
           const keys = createRuntimeKeyMaterial({ ...config, bootstrapSigningPrivateKeyOnMissing: false });
           const calls = stubJoystick({ channel_id: "chan-forged", username: "deru" });
-          const stateToken = (await connect(app)).json().stateToken as string;
-          const verified = verifyJwt(stateToken, keys.publicKey);
+          const flow = await launchFlow(app, (await connect(app)).json());
+          const verified = verifyJwt(flow.state, keys.publicKey);
           expect(verified.valid).toBe(true);
           const forged = signJwt({ ...(verified as { payload: Record<string, unknown> }).payload, mode }, keys);
 
           const callback = await app.inject({
             method: "GET",
             url: `/v1/oauth/joystick/callback?code=c&state=${encodeURIComponent(forged)}`,
+            headers: { cookie: flow.cookie },
           });
           expect(callback.statusCode).toBeGreaterThanOrEqual(400);
           expect(callback.body).not.toContain("viewer_access");
@@ -1543,11 +1652,12 @@ describe("Heimdall service", () => {
       const app = await buildApp({ config: createTestConfig(), store });
       apps.push(app);
       const calls = stubJoystick({ channel_id: "chan-9", username: "deru", nickname: "Deru!", photo_url: "https://img/x.png" });
-      const stateToken = (await connect(app)).json().stateToken as string;
+      const flow = await launchFlow(app, (await connect(app)).json());
 
       const callback = await app.inject({
         method: "GET",
-        url: `/v1/oauth/joystick/callback?code=the-code&state=${encodeURIComponent(stateToken)}`,
+        url: `/v1/oauth/joystick/callback?code=the-code&state=${encodeURIComponent(flow.state)}`,
+        headers: { cookie: flow.cookie },
       });
       expect(callback.statusCode).toBeLessThan(300);
 
@@ -1576,10 +1686,11 @@ describe("Heimdall service", () => {
       const app = await buildApp({ config: createTestConfig(), store });
       apps.push(app);
       stubJoystick({ channel_id: "chan-9", username: "deru" });
-      const stateToken = (await connect(app)).json().stateToken as string;
+      const flow = await launchFlow(app, (await connect(app)).json());
       const callback = await app.inject({
         method: "GET",
-        url: `/v1/oauth/joystick/callback?code=c&state=${encodeURIComponent(stateToken)}`,
+        url: `/v1/oauth/joystick/callback?code=c&state=${encodeURIComponent(flow.state)}`,
+        headers: { cookie: flow.cookie },
       });
       const row = await store.findStoredLinkedIdentityForAccount(callback.json().account.id as string, "joystick");
       expect(row?.displayName).toBe("deru");
@@ -1590,10 +1701,11 @@ describe("Heimdall service", () => {
       const app = await buildApp({ config: createTestConfig(), store });
       apps.push(app);
       stubJoystick({ username: "deru" });
-      const stateToken = (await connect(app)).json().stateToken as string;
+      const flow = await launchFlow(app, (await connect(app)).json());
       const callback = await app.inject({
         method: "GET",
-        url: `/v1/oauth/joystick/callback?code=c&state=${encodeURIComponent(stateToken)}`,
+        url: `/v1/oauth/joystick/callback?code=c&state=${encodeURIComponent(flow.state)}`,
+        headers: { cookie: flow.cookie },
       });
       expect(callback.statusCode).toBeGreaterThanOrEqual(400);
       expect(await store.findStoredLinkedIdentity("joystick", "undefined")).toBeNull();
@@ -1788,11 +1900,11 @@ describe("error answers never echo an input", () => {
     const app = await buildApp({ config: createTestConfig(), oauthRuntimes: { discord: failingDiscordRuntime() } });
     apps.push(app);
 
-    const stateToken = await startDiscordSignIn(app);
+    const flow = await startDiscordSignIn(app);
     const response = await app.inject({
       method: "GET",
-      url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(stateToken)}`,
-      headers: { accept: "text/html" },
+      url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(flow.state)}`,
+      headers: { cookie: flow.cookie, accept: "text/html" },
     });
 
     expect(response.headers["content-type"]).toContain("text/html");
@@ -1824,9 +1936,11 @@ describe("error answers never echo an input", () => {
       },
     });
     expect(start.statusCode).toBe(201);
+    const flow = await launchFlow(app, start.json());
     const response = await app.inject({
       method: "GET",
-      url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(start.json().stateToken as string)}`,
+      url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(flow.state)}`,
+      headers: { cookie: flow.cookie },
     });
 
     expect(response.statusCode).toBe(502);
@@ -1844,16 +1958,16 @@ describe("the relayed provider error", () => {
   const injected = `<script>alert(1)</script>"\\\u0007é${"x".repeat(300)}`;
   const allowed = /^[\x20-\x21\x23-\x5b\x5d-\x7e]*$/;
 
-  function providerErrorUrl(stateToken: string): string {
-    const query = new URLSearchParams({ state: stateToken, error: `${"e".repeat(100)}\u0000`, error_description: injected });
-    return `/v1/oauth/discord/callback?${query.toString()}`;
+  function providerErrorRequest(flow: LaunchedFlow) {
+    const query = new URLSearchParams({ state: flow.state, error: `${"e".repeat(100)}\u0000`, error_description: injected });
+    return { method: "GET" as const, url: `/v1/oauth/discord/callback?${query.toString()}`, headers: { cookie: flow.cookie } };
   }
 
   it("is printable and bounded in the JSON answer", async () => {
     const app = await buildApp({ config: createTestConfig() });
     apps.push(app);
 
-    const response = await app.inject({ method: "GET", url: providerErrorUrl(await startDiscordSignIn(app)) });
+    const response = await app.inject(providerErrorRequest(await startDiscordSignIn(app)));
 
     expect(response.statusCode).toBe(400);
     const { providerError, providerErrorDescription } = response.json() as Record<string, string>;
@@ -1867,11 +1981,8 @@ describe("the relayed provider error", () => {
     const app = await buildApp({ config: createTestConfig() });
     apps.push(app);
 
-    const response = await app.inject({
-      method: "GET",
-      url: providerErrorUrl(await startDiscordSignIn(app)),
-      headers: { accept: "text/html" },
-    });
+    const request = providerErrorRequest(await startDiscordSignIn(app));
+    const response = await app.inject({ ...request, headers: { ...request.headers, accept: "text/html" } });
 
     expect(response.headers["content-type"]).toContain("text/html");
     expect(response.body.match(/<script/gi)).toHaveLength(1);
@@ -1903,7 +2014,7 @@ describe("the relayed provider error", () => {
     });
     expect(start.statusCode).toBe(201);
 
-    await app.inject({ method: "GET", url: providerErrorUrl(start.json().stateToken as string) });
+    await app.inject(providerErrorRequest(await launchFlow(app, start.json())));
 
     expect(deliveries).toHaveLength(1);
     const description = String(deliveries[0]!.errorDescription);
@@ -1929,10 +2040,11 @@ describe("the failed-callback audit event", () => {
     });
     apps.push(app);
 
-    const stateToken = await startDiscordSignIn(app);
+    const flow = await startDiscordSignIn(app);
     const response = await app.inject({
       method: "GET",
-      url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(stateToken)}`,
+      url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(flow.state)}`,
+      headers: { cookie: flow.cookie },
     });
     expect(response.statusCode).toBe(502);
 
@@ -1956,10 +2068,11 @@ describe("the failed-callback audit event for a provider's HTTP refusal", () => 
     const store = new InMemoryStore();
     const app = await buildApp({ config: createTestConfig(), store, oauthRuntimes: createOAuthRuntimeRegistry() });
     apps.push(app);
-    const stateToken = await startDiscordSignIn(app);
+    const flow = await startDiscordSignIn(app);
     const callback = await app.inject({
       method: "GET",
-      url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(stateToken)}`,
+      url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(flow.state)}`,
+      headers: { cookie: flow.cookie },
     });
     expect(callback.statusCode).toBe(502);
     const events = [...(store as unknown as { auditEvents: Map<string, { eventType: string; eventPayloadJson: unknown }> }).auditEvents.values()];
@@ -2013,8 +2126,12 @@ describe("the failed-callback audit event for a provider's HTTP refusal", () => 
       },
     });
     apps.push(app);
-    const stateToken = await startDiscordSignIn(app);
-    await app.inject({ method: "GET", url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(stateToken)}` });
+    const flow = await startDiscordSignIn(app);
+    await app.inject({
+      method: "GET",
+      url: `/v1/oauth/discord/callback?code=test-code&state=${encodeURIComponent(flow.state)}`,
+      headers: { cookie: flow.cookie },
+    });
 
     const events = [...(store as unknown as { auditEvents: Map<string, { eventType: string; eventPayloadJson: Record<string, unknown> }> }).auditEvents.values()];
     const failed = events.find((event) => event.eventType === "oauth_callback_failed");

@@ -6,6 +6,7 @@ import { loadConfig, type HeimdallConfig } from "../src/config.js";
 import { resetGoogleJwksCache } from "../src/google-oidc.js";
 import { type OAuthProviderRuntime } from "../src/oauth.js";
 import { InMemoryStore } from "../src/store/index.js";
+import { launchFlow, launchWithRedirect, stateOf, type LaunchedFlow } from "./oauth-flow.js";
 
 const CLIENT_ID = "google-client";
 const REDIRECT = "https://heimdall.gamecult.org/v1/oauth/google/callback";
@@ -47,6 +48,9 @@ function discordRuntime(providerUserId: string, name: string): OAuthProviderRunt
     },
   };
 }
+
+// Bifrost refuses an unauthenticated start: its backend holds the app secret.
+const BIFROST_APP = { "x-heimdall-app-secret": "bifrost-secret" };
 
 function b64(value: unknown): string {
   return Buffer.from(JSON.stringify(value)).toString("base64url");
@@ -110,12 +114,15 @@ async function signInWithDiscord(app: FastifyInstance, providerUserId = "discord
   const start = await app.inject({
     method: "POST",
     url: "/v1/oauth/discord/start",
+    headers: BIFROST_APP,
     payload: { appSlug: "bifrost", mode: "sign_in", returnTo: "https://bifrost.gamecult.org/auth/heimdall/complete" },
   });
   expect(start.statusCode).toBe(201);
+  const flow = await launchFlow(app, start.json());
   const callback = await app.inject({
     method: "GET",
-    url: `/v1/oauth/discord/callback?code=c&state=${encodeURIComponent(start.json().stateToken)}`,
+    url: `/v1/oauth/discord/callback?code=c&state=${encodeURIComponent(flow.state)}`,
+    headers: { cookie: flow.cookie },
   });
   expect(callback.statusCode).toBe(201);
   const body = callback.json();
@@ -132,13 +139,17 @@ function startGoogle(app: FastifyInstance, accessToken?: string, mode: "link" | 
   return app.inject({
     method: "POST",
     url: "/v1/oauth/google/start",
-    headers: accessToken ? { authorization: `Bearer ${accessToken}` } : {},
+    headers: { ...BIFROST_APP, ...(accessToken ? { authorization: `Bearer ${accessToken}` } : {}) },
     payload: { appSlug: "bifrost", mode, returnTo: "https://bifrost.gamecult.org/auth/heimdall/complete" },
   });
 }
 
-function callbackGoogle(app: FastifyInstance, stateToken: string) {
-  return app.inject({ method: "GET", url: `/v1/oauth/google/callback?code=g-code&state=${encodeURIComponent(stateToken)}` });
+function callbackGoogle(app: FastifyInstance, flow: LaunchedFlow) {
+  return app.inject({
+    method: "GET",
+    url: `/v1/oauth/google/callback?code=g-code&state=${encodeURIComponent(flow.state)}`,
+    headers: { cookie: flow.cookie },
+  });
 }
 
 const DISCORD_POLICY = { kind: "discord_role_access", guildId: "g", allowedRoleIds: ["member"] } as const;
@@ -147,9 +158,10 @@ const DISCORD_POLICY = { kind: "discord_role_access", guildId: "g", allowedRoleI
 async function linkGoogleCallback(app: FastifyInstance, token: string, claims?: Record<string, unknown>) {
   const start = await startGoogle(app, token);
   expect(start.statusCode).toBe(201);
-  const url = new URL(start.json().authorizationUrl);
+  const startFlow = await launchWithRedirect(app, start.json());
+  const url = startFlow.url;
   fakeGoogle({ nonceFrom: () => url.searchParams.get("nonce") ?? undefined, ...(claims ? { claims } : {}) });
-  return callbackGoogle(app, start.json().stateToken);
+  return callbackGoogle(app, startFlow);
 }
 
 function confirmLink(app: FastifyInstance, token: string | undefined, pendingLinkId: string) {
@@ -184,13 +196,14 @@ describe("Google as a Heimdall OIDC provider", () => {
 
     expect(start.statusCode).toBe(201);
     expect(start.json().callbackUrl).toBe(REDIRECT);
-    const url = new URL(start.json().authorizationUrl);
+    const startFlow = await launchWithRedirect(app, start.json());
+    const url = startFlow.url;
     expect(`${url.origin}${url.pathname}`).toBe("https://accounts.google.com/o/oauth2/v2/auth");
     expect(url.searchParams.get("client_id")).toBe(CLIENT_ID);
     expect(url.searchParams.get("redirect_uri")).toBe(REDIRECT);
     expect(url.searchParams.get("response_type")).toBe("code");
     expect(url.searchParams.get("scope")).toBe("openid email profile");
-    expect(url.searchParams.get("state")).toBe(start.json().stateToken);
+    expect(url.searchParams.get("state")).toBe(stateOf(start.json()));
     expect(url.searchParams.get("nonce")).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(url.searchParams.get("code_challenge")).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(url.searchParams.get("code_challenge_method")).toBe("S256");
@@ -200,10 +213,11 @@ describe("Google as a Heimdall OIDC provider", () => {
     const { app, store } = await build();
     const { accessToken, accountId } = await signInWithDiscord(app);
     const start = await startGoogle(app, accessToken);
-    const url = new URL(start.json().authorizationUrl);
+    const startFlow = await launchWithRedirect(app, start.json());
+    const url = startFlow.url;
     const leg = fakeGoogle({ nonceFrom: () => url.searchParams.get("nonce") ?? undefined });
 
-    const done = await callbackGoogle(app, start.json().stateToken);
+    const done = await callbackGoogle(app, startFlow);
 
     // Phase one verified the identity and recorded it; it linked nothing and issued no session.
     expect(done.statusCode).toBe(201);
@@ -233,9 +247,10 @@ describe("Google as a Heimdall OIDC provider", () => {
 
     const signIn = await startGoogle(app, undefined, "sign_in");
     expect(signIn.statusCode).toBe(201);
-    const signInUrl = new URL(signIn.json().authorizationUrl);
+    const signInFlow = await launchWithRedirect(app, signIn.json());
+    const signInUrl = signInFlow.url;
     fakeGoogle({ nonceFrom: () => signInUrl.searchParams.get("nonce") ?? undefined });
-    const done = await callbackGoogle(app, signIn.json().stateToken);
+    const done = await callbackGoogle(app, signInFlow);
 
     expect(done.statusCode).toBe(201);
     expect(done.json().account.id).toBe(accountId);
@@ -248,7 +263,7 @@ describe("Google as a Heimdall OIDC provider", () => {
     const start = await app.inject({
       method: "POST",
       url: "/v1/oauth/google/start",
-      headers: { authorization: `Bearer ${a.accessToken}` },
+      headers: { ...BIFROST_APP, authorization: `Bearer ${a.accessToken}` },
       payload: {
         appSlug: "bifrost",
         mode: "link",
@@ -276,7 +291,8 @@ describe("Google as a Heimdall OIDC provider", () => {
         url: "/v1/oauth/discord/start",
         payload: { appSlug: "repixelizer", mode: "sign_in", returnTo: "https://repixelizer.gamecult.org/app/" },
       });
-      const cb = await app.inject({ method: "GET", url: `/v1/oauth/discord/callback?code=c&state=${encodeURIComponent(start.json().stateToken)}` });
+      const flow = await launchFlow(app, start.json());
+      const cb = await app.inject({ method: "GET", url: `/v1/oauth/discord/callback?code=c&state=${encodeURIComponent(flow.state)}`, headers: { cookie: flow.cookie } });
       return cb.json().accessToken as string;
     }],
   ])("refuses a link start carrying %s", async (_name, token) => {
@@ -295,11 +311,12 @@ describe("Google as a Heimdall OIDC provider", () => {
     await signInWithDiscord(app);
     const start = await startGoogle(app, undefined, "sign_in");
     expect(start.statusCode).toBe(201);
-    const url = new URL(start.json().authorizationUrl);
+    const startFlow = await launchWithRedirect(app, start.json());
+    const url = startFlow.url;
     fakeGoogle({ nonceFrom: () => url.searchParams.get("nonce") ?? undefined });
 
     const before = accountCount(store);
-    const done = await callbackGoogle(app, start.json().stateToken);
+    const done = await callbackGoogle(app, startFlow);
 
     expect(done.statusCode).toBe(403);
     expect(done.json().error).toBe("identity_not_linked");
@@ -318,9 +335,10 @@ describe("Google as a Heimdall OIDC provider", () => {
     const b = await signInWithDiscord(second.app, "discord-2");
     expect(b.accountId).not.toBe(a.accountId);
     const startB = await startGoogle(second.app, b.accessToken);
-    const urlB = new URL(startB.json().authorizationUrl);
+    const startBFlow = await launchWithRedirect(second.app, startB.json());
+    const urlB = startBFlow.url;
     fakeGoogle({ nonceFrom: () => urlB.searchParams.get("nonce") ?? undefined });
-    const done = await callbackGoogle(second.app, startB.json().stateToken);
+    const done = await callbackGoogle(second.app, startBFlow);
 
     expect(done.statusCode).toBe(403);
     expect((await store.findStoredLinkedIdentity("google", "g-sub-1"))?.accountId).toBe(a.accountId);
@@ -335,10 +353,11 @@ describe("Google as a Heimdall OIDC provider", () => {
     const { app, store } = await build();
     const { accessToken } = await signInWithDiscord(app);
     const start = await startGoogle(app, accessToken);
-    const url = new URL(start.json().authorizationUrl);
+    const startFlow = await launchWithRedirect(app, start.json());
+    const url = startFlow.url;
     fakeGoogle({ nonceFrom: () => url.searchParams.get("nonce") ?? undefined, claims });
 
-    const done = await callbackGoogle(app, start.json().stateToken);
+    const done = await callbackGoogle(app, startFlow);
 
     expect(done.statusCode).toBe(502);
     expect(await store.findStoredLinkedIdentity("google", "g-sub-1")).toBeNull();
@@ -386,9 +405,10 @@ describe("Google as a Heimdall OIDC provider", () => {
       await linkGoogleCallback(app, a.accessToken, { sub: "victim-google-sub" });
 
       const signIn = await startGoogle(app, undefined, "sign_in");
-      const url = new URL(signIn.json().authorizationUrl);
+      const signInFlow = await launchWithRedirect(app, signIn.json());
+      const url = signInFlow.url;
       fakeGoogle({ nonceFrom: () => url.searchParams.get("nonce") ?? undefined, claims: { sub: "victim-google-sub" } });
-      expect((await callbackGoogle(app, signIn.json().stateToken)).statusCode).toBe(403);
+      expect((await callbackGoogle(app, signInFlow)).statusCode).toBe(403);
     });
 
     it("a pending link is single-use", async () => {
@@ -425,7 +445,8 @@ describe("Google as a Heimdall OIDC provider", () => {
         url: "/v1/oauth/discord/start",
         payload: { appSlug: "repixelizer", mode: "sign_in", returnTo: "https://repixelizer.gamecult.org/app/" },
       });
-      const cb = await app.inject({ method: "GET", url: `/v1/oauth/discord/callback?code=c&state=${encodeURIComponent(other.json().stateToken)}` });
+      const flow = await launchFlow(app, other.json());
+      const cb = await app.inject({ method: "GET", url: `/v1/oauth/discord/callback?code=c&state=${encodeURIComponent(flow.state)}`, headers: { cookie: flow.cookie } });
       const res = await app.inject({
         method: "POST",
         url: "/v1/apps/repixelizer/links/confirm",
@@ -471,9 +492,10 @@ describe("Google as a Heimdall OIDC provider", () => {
         },
       });
       expect(start.statusCode).toBe(201);
-      const url = new URL(start.json().authorizationUrl);
+      const startFlow = await launchWithRedirect(app, start.json());
+      const url = startFlow.url;
       fakeGoogle({ nonceFrom: () => url.searchParams.get("nonce") ?? undefined });
-      const done = await callbackGoogle(app, start.json().stateToken);
+      const done = await callbackGoogle(app, startFlow);
 
       expect(done.statusCode).toBe(201);
       expect(done.json().claimSet.facts).toContain("entitlement.app_access");
@@ -485,9 +507,10 @@ describe("Google as a Heimdall OIDC provider", () => {
       await linkGoogle(app, member.accessToken);
 
       const start = await startGoogle(app, undefined, "sign_in");
-      const url = new URL(start.json().authorizationUrl);
+      const startFlow = await launchWithRedirect(app, start.json());
+      const url = startFlow.url;
       fakeGoogle({ nonceFrom: () => url.searchParams.get("nonce") ?? undefined });
-      const done = await callbackGoogle(app, start.json().stateToken);
+      const done = await callbackGoogle(app, startFlow);
 
       expect(done.statusCode).toBe(201);
       expect(done.json().claimSet.facts).not.toContain("entitlement.app_access");

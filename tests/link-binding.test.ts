@@ -7,6 +7,7 @@ import { type HeimdallConfig } from "../src/config.js";
 import { type OAuthProviderRuntime } from "../src/oauth.js";
 import { createRuntimeKeyMaterial, signJwt, verifyJwt } from "../src/signing.js";
 import { InMemoryStore } from "../src/store/index.js";
+import { launchFlow } from "./oauth-flow.js";
 
 function createTestConfig(): HeimdallConfig {
   return {
@@ -98,8 +99,15 @@ function start(r: Rig, payload: Record<string, unknown>, headers: Record<string,
   return r.app.inject({ method: "POST", url: "/v1/oauth/discord/start", headers, payload: { appSlug: "repixelizer", returnTo, ...payload } });
 }
 
-function callback(r: Rig, stateToken: string) {
-  return r.app.inject({ method: "GET", url: `/v1/oauth/discord/callback?code=c&state=${encodeURIComponent(stateToken)}` });
+/** The browser follows authorizationUrl through the launch hop, then returns with the state, or with `forged` in its place, and the cookie it was handed. */
+async function callback(r: Rig, started: { authorizationUrl: string }, forged?: (state: string) => string) {
+  const flow = await launchFlow(r.app, started);
+  const state = forged ? forged(flow.state) : flow.state;
+  return r.app.inject({
+    method: "GET",
+    url: `/v1/oauth/discord/callback?code=c&state=${encodeURIComponent(state)}`,
+    headers: { cookie: flow.cookie },
+  });
 }
 
 function redeem(r: Rig, payload: Record<string, unknown>, headers: Record<string, string> = {}) {
@@ -138,7 +146,7 @@ describe("link callback holds the provider identity to the initiator", () => {
     const r = await rig("d-new");
     const started = await start(r, { mode: "link", initiatingAccountId: r.initiator.id });
     expect(started.statusCode).toBe(201);
-    const done = await callback(r, started.json().stateToken);
+    const done = await callback(r, started.json());
     expect(done.statusCode).toBe(201);
     expect(done.json().account.id).toBe(r.initiator.id);
     expect((await r.store.findAccountByLinkedIdentity("discord", "d-new"))?.id).toBe(r.initiator.id);
@@ -150,7 +158,7 @@ describe("link callback holds the provider identity to the initiator", () => {
     const other = await r.store.createAccount({ createdAt: now, lastSeenAt: now });
     await r.store.upsertLinkedIdentity({ accountId: other.id, provider: "discord", providerUserId: "d-held", scopes: [], profileJson: {}, createdAt: now, updatedAt: now });
     const started = await start(r, { mode: "link", initiatingAccountId: r.initiator.id });
-    const done = await callback(r, started.json().stateToken);
+    const done = await callback(r, started.json());
     expect(done.statusCode).toBe(403);
     expect(done.json().error).toBe("link_initiator_mismatch");
     expect(done.json().completion).toBeUndefined();
@@ -165,10 +173,11 @@ describe("link callback holds the provider identity to the initiator", () => {
       const r = await rig("d-forged", config);
       const keys = createRuntimeKeyMaterial({ ...config, bootstrapSigningPrivateKeyOnMissing: false });
       const started = await start(r, { mode: "link", initiatingAccountId: r.initiator.id });
-      const verified = verifyJwt(started.json().stateToken, keys.publicKey) as { valid: boolean; payload: Record<string, unknown> };
-      expect(verified.valid).toBe(true);
-      const stripped = signJwt({ ...verified.payload, initiator_account_id: null }, keys);
-      const done = await callback(r, stripped);
+      const done = await callback(r, started.json(), (state) => {
+        const verified = verifyJwt(state, keys.publicKey) as { valid: boolean; payload: Record<string, unknown> };
+        expect(verified.valid).toBe(true);
+        return signJwt({ ...verified.payload, initiator_account_id: null }, keys);
+      });
       expect([done.statusCode, done.json().error]).toEqual([403, "link_initiator_missing"]);
       expect(await r.store.findAccountByLinkedIdentity("discord", "d-forged")).toBeNull();
     } finally {
@@ -184,7 +193,7 @@ describe("redeem binds caller, target and replay", () => {
       initiatingAccountId: r.initiator.id,
       ...(targetId ? { connection: { kind: "account", targetId } } : {}),
     });
-    const done = await callback(r, started.json().stateToken);
+    const done = await callback(r, started.json());
     expect(done.statusCode).toBe(201);
     return done.json().completion.code as string;
   }

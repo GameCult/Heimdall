@@ -3,6 +3,7 @@ import { type AppSlug, type LinkedIdentityInput, type Provider } from "../contra
 import {
   type CreateAccountInput,
   type CreateAuthAttemptInput,
+  type ClaimOAuthStateUseInput,
   type CreateAuthCompletionInput,
   type CreatePendingLinkInput,
   type StoredPendingLink,
@@ -51,6 +52,8 @@ export class InMemoryStore implements HeimdallStore {
   private readonly authCompletions = new Map<string, StoredAuthCompletion>();
   private readonly pendingLinks = new Map<string, StoredPendingLink>();
   private readonly authCompletionsByAttempt = new Map<string, string>();
+  /** `${jti}:${phase}` -> the state's expiresAt. */
+  private readonly oauthStateUses = new Map<string, string>();
   private readonly entitlementSnapshots = new Map<string, CreateEntitlementSnapshotInput>();
   private readonly auditEvents = new Map<string, CreateAuditEventInput>();
 
@@ -446,6 +449,20 @@ export class InMemoryStore implements HeimdallStore {
     }
     link.consumedAt = at;
     return clone(link);
+  }
+
+  async claimOAuthStateUse(input: ClaimOAuthStateUseInput): Promise<boolean> {
+    for (const [key, expiresAt] of this.oauthStateUses) {
+      if (expiresAt <= input.usedAt) {
+        this.oauthStateUses.delete(key);
+      }
+    }
+    const key = `${input.jti}:${input.phase}`;
+    if (this.oauthStateUses.has(key)) {
+      return false;
+    }
+    this.oauthStateUses.set(key, input.expiresAt);
+    return true;
   }
 
   async upsertEntitlementSnapshot(input: CreateEntitlementSnapshotInput): Promise<void> {
