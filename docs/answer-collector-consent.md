@@ -50,7 +50,10 @@ Key: `(experiment_id, member_id, notice_version)`. Written once, never updated.
 
 Joining Heimdall is gated by terms. Acceptance is the terms version recorded by
 the Matrix `m.login.terms` stage at registration: member field `terms_version`
-(string) and `terms_accepted_at` (UTC timestamp). This applies to newcomers
+(string) and `terms_accepted_at` (UTC timestamp). These fields belong to the
+Heimdall member record. A typed `MemberTerms` record keyed by `member_id` is the
+shape of that pair in a typed library; it is not a second store, and the
+collector does not hold it. This applies to newcomers
 only. Members who joined before the terms stage existed, and Minds, are not
 re-asked and have no `terms_version`; the collector does not read it and does not
 gate on it. The notice above is the only consent the collector itself checks.
@@ -68,6 +71,7 @@ One record per answer. Fields:
 | `scope` | `show` \| `study` \| `train` | copied from that notice version at answer time. Never edited afterwards. |
 | `text` | string, or absent | the answer as given. Absent once exited. |
 | `exited` | boolean, default false | one-way: set by redaction, never cleared. A new answer is a new record. |
+| `text_hash` | 32 bytes, or absent | the tombstone hash of `text` (see "Tombstone"). Present only once exited, and only when the collector held `text` before the redaction. |
 | `received_at` | UTC timestamp | `origin_server_ts` of the reply. |
 | `event_id` | Matrix event id | the reply; the receipt. |
 
@@ -75,9 +79,25 @@ Key: `(experiment_id, sample_id, member_id)`. A member's later answer to the
 same key replaces the earlier one (latest `received_at` wins); the earlier text
 is not retained.
 
-A record whose `notice_version` or `scope` is missing, unparseable or has no
-matching acceptance record is not collected. It is excluded from every use, and
-from training in particular.
+A reply whose `notice_version` or `scope` is missing, unparseable or has no
+matching acceptance record is stored, with those fields absent. It is excluded
+from every use: no tally, no display, and from training in particular. It
+writes no acceptance record. The reply is kept so the member can still exit it
+and the collector can show what it refused, but no scope was declared, so none
+is inferred. The notice version of a reply is the one pinned at the reply's
+`origin_server_ts`; if the collector cannot establish what was pinned then, the
+reply has no notice version.
+
+### Representation
+
+- Timestamps are Unix milliseconds in UTC, stored as a signed 64-bit integer,
+  the unit of Matrix `origin_server_ts`. Every "UTC timestamp" above means this.
+- `member_id`, `experiment_id`, `event_id` and `terms_version` are non-empty
+  strings; `member_id` is opaque and `event_id` is the Matrix event id verbatim.
+  `notice_version` and the `<version>` of `sample_id` are positive integers
+  (unsigned 32-bit).
+- A composite key is its parts joined with U+001F. A part that is empty or
+  contains U+001F is refused, not escaped.
 
 ## Versions
 
@@ -92,13 +112,39 @@ A record is training or evaluation data only if all hold:
 
 1. `scope = train`, copied from a notice version that declared `train`;
 2. an acceptance record exists for `(experiment_id, member_id, notice_version)`
-   with `accepted_at <= received_at`, i.e. the author had accepted that notice
+   of the answer, its own `scope` is `train` and equals the answer's `scope`,
+   and `accepted_at <= received_at`, i.e. the author had accepted that notice
    version when they answered;
 3. `exited = false` at export time.
 
 No recorded scope, or no recorded acceptance, means excluded. Records wider than
-`show` are kept apart from `show` records: separate store or partition, so a read
-for one level cannot return another.
+`show` are kept apart from `show` records: one store per scope (`show`, `study`,
+`train`) plus a store for scopeless replies that no read path serves. A record
+lives in the store its `scope` names, so a read for one level cannot return
+another. A typed-record library need not model the partition; the collector's
+store layout owns it.
+
+## Tombstone
+
+- Function: HMAC-SHA-256 (RFC 2104 with SHA-256, FIPS 180-4), output the raw 32
+  bytes stored in `text_hash`. No truncation.
+- Message: the ASCII string `heimdall.tombstone.v1`, U+001F, `event_id`
+  (UTF-8), U+001F, `text` (UTF-8, as received, no normalisation). The `event_id`
+  makes the hash specific to the reply, so equal texts hash differently.
+- Key (the salt): 32 bytes from a cryptographically secure random source,
+  generated once per member by the member-side service, which is the service that
+  already maps Matrix sender to `member_id`. It is held there, beside the member
+  record, and is never given to the collector, a researcher, an export or a log.
+  The collector cannot compute or check a tombstone hash on its own.
+- Redaction: when the collector sees a redaction of a reply whose text it holds,
+  it sends `event_id` and `text` to the member-side service, which returns the
+  hash; the collector writes `text_hash`, sets `exited`, and erases `text`. If the
+  service does not answer, `text` is kept, the record is not yet exited, and the
+  run retries. A reply the collector never collected has no text and gets no
+  tombstone.
+- Verification: only the member-side service can check a claimed text against a
+  tombstone. If a member's salt is destroyed, their tombstones can no longer be
+  tied to any text, and that is the member's erasure.
 
 ## Identity: count once, reward without exposure
 
@@ -137,6 +183,8 @@ not stored under a placeholder.
   and a salted hash of `text`. Hash only, never text, and no `member_id`
   beyond what the record's key already holds. The count and the exit are
   provable without the content. The record is marked `exited`; `text` is erased.
+  The tombstone is the exited `Answer` record itself, with `text_hash` set; it is
+  not a separate record.
 - **Edits.** An edit is a new event, not the receipt. Only the original event
   counts; edits are ignored, so what was accepted is what was received. To
   change an answer, redact and reply again.
