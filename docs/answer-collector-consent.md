@@ -69,15 +69,20 @@ One record per answer. Fields:
 | `member_id` | Heimdall member id | the respondent. Never a Matrix id, never a display name. |
 | `notice_version` | integer | the notice version in force when the answer was received; matches an acceptance record by the key above. |
 | `scope` | `show` \| `study` \| `train` | copied from that notice version at answer time. Never edited afterwards. |
-| `text` | string, or absent | the answer as given. Absent once exited. |
+| `text` | string, or absent | the answer as given. Non-empty while the answer is live; absent once exited. |
 | `exited` | boolean, default false | one-way: set by redaction, never cleared. A new answer is a new record. |
 | `text_hash` | 32 bytes, or absent | the tombstone hash of `text` (see "Tombstone"). Present only once exited, and only when the collector held `text` before the redaction. |
-| `received_at` | UTC timestamp | `origin_server_ts` of the reply. |
+| `received_at` | UTC timestamp | assigned by the collector when it receives the reply. Not copied from the reply. |
 | `event_id` | Matrix event id | the reply; the receipt. |
 
 Key: `(experiment_id, sample_id, member_id)`. A member's later answer to the
 same key replaces the earlier one (latest `received_at` wins); the earlier text
-is not retained.
+is not retained. Two replies to one key with equal `received_at` tie-break on
+`event_id` compared bytewise: the greater `event_id` wins as the later reply.
+
+Empty text: a live (non-exited) answer must have non-empty `text`, and the
+collector rejects a reply whose text is empty. Empty text is valid only on an
+exited answer, where redaction clears `text` and leaves the hash-only tombstone.
 
 A reply whose `notice_version` or `scope` is missing, unparseable or has no
 matching acceptance record is stored, with those fields absent. It is excluded
@@ -167,7 +172,8 @@ not stored under a placeholder.
   is a thread reply to the sample, the answer text being the body. There is no
   per-reply scope syntax.
 - The reply event is the receipt: its event id and timestamp are the proof the
-  answer was received, and `received_at` comes from it.
+  answer was received. `received_at` is the collector's own clock at receipt,
+  not the reply's `origin_server_ts`.
 - Redaction is exit (see below): redacting the reply event sets `exited`.
 - The collector is on demand (it reads the room when run, it is not a standing
   listener). It drops:
