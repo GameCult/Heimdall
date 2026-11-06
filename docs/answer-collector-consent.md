@@ -15,9 +15,26 @@ path.
 ## Notice
 
 Consent is declared once per room, not per reply. Each experiment room carries
-one notice line, pinned with the sample, that names the scope the room's answers
-may be used for and the way out. A notice has a `notice_version`; any change to
-its wording or scope is a new version.
+one notice that names the scope the room's answers may be used for and the way
+out. A notice has a `notice_version`; any change to its wording or scope is a new
+version.
+
+### Where the notice lives
+
+A room's notice is a Matrix room state event: type `org.gamecult.notice`, empty
+`state_key`, content `{version, scope}`.
+
+- `version` is a positive integer written in decimal with no leading zeros.
+- `scope` is `show`, `study` or `train`.
+- The event is set under the room's power levels. A pinned message is not
+  accepted as a notice: anyone who can pin could forge it.
+- Absent or malformed (a missing or unknown field, a `version` that is not a
+  positive integer or has leading zeros, an unknown `scope`) means no `train`
+  line and the narrowest scope, `show`. Malformed content is never repaired.
+
+The wording shown to respondents is the room's own business; the collector reads
+only `version` and `scope`. A change to either is a new state event and so a
+new `version`.
 
 | scope | what the notice allows |
 |---|---|
@@ -30,7 +47,7 @@ its wording or scope is a new version.
 reply.
 
 The first reply a member posts in the room is their acceptance of the notice
-version then pinned. No separate click, command or form. A later notice version
+version then in force. No separate click, command or form. A later notice version
 needs a new acceptance: the member's first reply under it.
 
 ### Notice acceptance record
@@ -39,7 +56,7 @@ needs a new acceptance: the member's first reply under it.
 |---|---|---|
 | `member_id` | Heimdall member id | the accepting member. |
 | `experiment_id` | string | the room. |
-| `notice_version` | integer | the version pinned when the reply was received. |
+| `notice_version` | integer | the `version` of the room's notice state event when the reply was received. |
 | `scope` | `show` \| `study` \| `train` | the scope that version declared. |
 | `accepted_at` | UTC timestamp | `origin_server_ts` of the first reply. |
 | `event_id` | Matrix event id | that reply, as proof. |
@@ -64,7 +81,7 @@ One record per answer. Fields:
 
 | field | type | rule |
 |---|---|---|
-| `sample_id` | string `<sample>@<version>` | names the thing answered about; `<version>` is a positive integer. A changed sample is a new version. |
+| `sample_id` | string `<sample>@<version>` | names the thing answered about; `<version>` is a positive integer in decimal with no leading zeros. A changed sample is a new version. |
 | `experiment_id` | string | the experiment that asked. |
 | `member_id` | Heimdall member id | the respondent. Never a Matrix id, never a display name. |
 | `notice_version` | integer | the notice version in force when the answer was received; matches an acceptance record by the key above. |
@@ -89,9 +106,9 @@ matching acceptance record is stored, with those fields absent. It is excluded
 from every use: no tally, no display, and from training in particular. It
 writes no acceptance record. The reply is kept so the member can still exit it
 and the collector can show what it refused, but no scope was declared, so none
-is inferred. The notice version of a reply is the one pinned at the reply's
-`origin_server_ts`; if the collector cannot establish what was pinned then, the
-reply has no notice version.
+is inferred. The notice version of a reply is the one the room's notice state
+event held at the reply's `origin_server_ts`; if the collector cannot establish
+what it held then, the reply has no notice version.
 
 ### Representation
 
@@ -101,6 +118,9 @@ reply has no notice version.
   strings; `member_id` is opaque and `event_id` is the Matrix event id verbatim.
   `notice_version` and the `<version>` of `sample_id` are positive integers
   (unsigned 32-bit).
+- A `<version>` with leading zeros (`s@01`) is refused, not normalised: `s@1` is
+  the only spelling of version 1, so one version has exactly one key. The same
+  holds for `notice_version`. Nothing is silently rewritten to fit.
 - A composite key is its parts joined with U+001F. A part that is empty or
   contains U+001F is refused, not escaped.
 
@@ -168,7 +188,7 @@ not stored under a placeholder.
 ## Eureka's shape (Matrix)
 
 - One room per experiment. The room is `experiment_id`.
-- The sample is posted as a message, with the notice pinned beside it. An answer
+- The sample is posted as a message; the room's notice is its `org.gamecult.notice` state event. An answer
   is a thread reply to the sample, the answer text being the body. There is no
   per-reply scope syntax.
 - The reply event is the receipt: its event id and timestamp are the proof the
@@ -197,7 +217,7 @@ not stored under a placeholder.
 - **Bridge spoofing.** A bridge can post as any ghost user. Only senders whose
   Matrix id resolves through Heimdall's linked identity to a member count;
   bridged ghost ids are not linked identities. A bridge cannot raise scope: scope
-  comes only from the pinned notice version.
+  comes only from the room's notice state event.
 - **Bridged origin.** Events that arrive through a bridge are dropped by origin,
   not by judging their text.
 
