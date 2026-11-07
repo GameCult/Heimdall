@@ -24,12 +24,12 @@ version.
 A room's notice is a Matrix room state event: type `org.gamecult.notice`, empty
 `state_key`, content `{version, scope}`.
 
-- `version` is a positive integer written in decimal with no leading zeros.
+- `version` follows the version rule under Representation.
 - `scope` is `show`, `study` or `train`.
 - The event is set under the room's power levels. A pinned message is not
   accepted as a notice: anyone who can pin could forge it.
-- Absent or malformed (a missing or unknown field, a `version` that is not a
-  positive integer or has leading zeros, an unknown `scope`) means no `train`
+- Absent or malformed (a missing or unknown field, a `version` the version rule
+  does not accept, an unknown `scope`) means no `train`
   line and the narrowest scope, `show`. Malformed content is never repaired.
 
 The wording shown to respondents is the room's own business; the collector reads
@@ -81,7 +81,7 @@ One record per answer. Fields:
 
 | field | type | rule |
 |---|---|---|
-| `sample_id` | string `<sample>@<version>` | names the thing answered about; `<version>` is a positive integer in decimal with no leading zeros. A changed sample is a new version. |
+| `sample_id` | string `<sample>@<version>` | names the thing answered about; `<version>` follows the version rule under Representation. A changed sample is a new version. |
 | `experiment_id` | string | the experiment that asked. |
 | `member_id` | Heimdall member id | the respondent. Never a Matrix id, never a display name. |
 | `notice_version` | integer | the notice version in force when the answer was received; matches an acceptance record by the key above. |
@@ -114,13 +114,18 @@ what it held then, the reply has no notice version.
 
 - Timestamps are Unix milliseconds in UTC, stored as a signed 64-bit integer,
   the unit of Matrix `origin_server_ts`. Every "UTC timestamp" above means this.
-- `member_id`, `experiment_id`, `event_id` and `terms_version` are non-empty
-  strings; `member_id` is opaque and `event_id` is the Matrix event id verbatim.
-  `notice_version` and the `<version>` of `sample_id` are positive integers
-  (unsigned 32-bit).
-- A `<version>` with leading zeros (`s@01`) is refused, not normalised: `s@1` is
-  the only spelling of version 1, so one version has exactly one key. The same
-  holds for `notice_version`. Nothing is silently rewritten to fit.
+- `member_id`, `experiment_id` and `event_id` are non-empty strings;
+  `member_id` is opaque and `event_id` is the Matrix event id verbatim.
+- Version rule. Every version field in the consent system is a positive integer
+  written in decimal with no leading zeros and at most 4294967295 (u32 max):
+  the `<version>` of `sample_id` (`s@<version>`), `notice_version`, the
+  `version` of the room notice `org.gamecult.notice`, and the notice acceptance
+  and terms records (`terms_version`, carried as that decimal string). Anything
+  else (zero, a sign, whitespace, a non-digit, a leading zero such as `s@01`, a
+  value above the maximum) is refused, not normalised: `s@1` is the only
+  spelling of version 1, so one version has exactly one key. A room notice
+  whose `version` fails the rule is malformed: no `train` line, narrowest scope
+  `show`. Nothing is silently rewritten to fit.
 - A composite key is its parts joined with U+001F. A part that is empty or
   contains U+001F is refused, not escaped.
 
