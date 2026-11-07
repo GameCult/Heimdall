@@ -75,6 +75,9 @@ only. Members who joined before the terms stage existed, and Minds, are not
 re-asked and have no `terms_version`; the collector does not read it and does not
 gate on it. The notice above is the only consent the collector itself checks.
 
+Open gap: the registration checkbox records no version. Void is raising this;
+nothing here rules it.
+
 ## Answer record
 
 One record per answer. Fields:
@@ -126,6 +129,11 @@ what it held then, the reply has no notice version.
   spelling of version 1, so one version has exactly one key. A room notice
   whose `version` fails the rule is malformed: no `train` line, narrowest scope
   `show`. Nothing is silently rewritten to fit.
+- Two encodings of the one version rule. In the `org.gamecult.notice` room state
+  event, `version` is a JSON number; a string (including `"01"`) is malformed.
+  In the answer key (`s@<version>`, and the composite keys), the version stays
+  its encoded decimal text, held to the leading-zero refusal. The rule is the
+  same in both: a positive integer, no leading zeros, at most 4294967295.
 - A composite key is its parts joined with U+001F. A part that is empty or
   contains U+001F is refused, not escaped.
 
