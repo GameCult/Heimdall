@@ -180,6 +180,34 @@ CREATE TABLE IF NOT EXISTS entitlement_snapshots (
   UNIQUE(account_id, provider, scope)
 );
 
+-- Consent receipts are append-only (the store role has INSERT and SELECT
+-- only): a revocation is a row that names the grant it takes back.
+CREATE TABLE IF NOT EXISTS consent_receipts (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  app_slug TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL,
+  scopes_asked TEXT,
+  scopes_granted TEXT,
+  consent_page_digest TEXT,
+  consent_text TEXT,
+  revokes_receipt_id TEXT,
+  UNIQUE(id, account_id),
+  FOREIGN KEY (revokes_receipt_id, account_id) REFERENCES consent_receipts(id, account_id)
+);
+
+-- A revocation names a receipt of its own account (the composite foreign key;
+-- NULL skips it for grants). A grant is taken back once: the second
+-- revocation naming it conflicts.
+CREATE UNIQUE INDEX IF NOT EXISTS consent_receipts_revokes_unique_idx
+  ON consent_receipts(revokes_receipt_id)
+  WHERE revokes_receipt_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS consent_receipts_account_idx
+  ON consent_receipts(account_id, created_at);
+
 CREATE TABLE IF NOT EXISTS audit_events (
   id TEXT PRIMARY KEY,
   account_id TEXT,
@@ -241,7 +269,7 @@ export const REQUIRED_TABLES = createdTables.map(({ table }) => table);
 export const REQUIRED_COLUMNS = [
   ...createdTables.flatMap(({ table, lines }) =>
     lines
-      .filter((line) => !/^(?:PRIMARY KEY|UNIQUE)\b/.test(line))
+      .filter((line) => !/^(?:PRIMARY KEY|UNIQUE|FOREIGN KEY)\b/.test(line))
       .map((line) => {
         const [, column, type] = /^(\w+) (\w+)/.exec(line)!;
         return { table, column: column!, type: type!, nullable: !/\b(?:NOT NULL|PRIMARY KEY)\b/.test(line) };

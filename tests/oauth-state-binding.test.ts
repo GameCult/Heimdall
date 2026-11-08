@@ -299,16 +299,49 @@ describe("OAuth state binding", () => {
     expect(await claim("a", 1_000_000 + 30_000)).toBe(true);
   });
 
-  it("a provider error from the launching browser still denies the attempt, once", async () => {
+  it("a provider refusal from the launching browser still denies the attempt, once", async () => {
     const app = await newApp();
     const start = await bifrostStart(app);
     const victim = await launchFlow(app, start);
 
     const denied = await callback(app, victim.state, victim.cookie, "error=access_denied");
     expect(denied.statusCode).toBe(400);
-    expect(denied.json().error).toBe("provider_error");
+    expect(denied.json().error).toBe("consent_refused");
+    expect(denied.json().by).toBe("provider");
     const replay = await callback(app, victim.state, victim.cookie, "error=access_denied");
     expect(replay.json()).toEqual({ error: "state_already_used" });
+  });
+
+  // The private command plane's completeAuth answers a denied attempt with
+  // attempt.denialCode as its error (private-command-plane.ts, completeAuth), so
+  // these two codes are what Bifrost, Repixelizer and Ghostlight poll for.
+  it.each([
+    ["bifrost", "https://bifrost.gamecult.org/auth/heimdall/complete?attempt=a1", "access_denied", "consent_refused"],
+    ["repixelizer", "https://repixelizer.gamecult.org/app/", "access_denied", "consent_refused"],
+    ["repixelizer", "https://repixelizer.gamecult.org/app/", "server_error", "provider_error"],
+  ] as const)("a %s attempt whose provider answers %s is denied with %s", async (appSlug, returnTo, providerError, denialCode) => {
+    const app = await newApp();
+    const ctx = getHeimdallRuntimeContext(app);
+    const attempt = await ctx.store.createAuthAttempt({
+      handle: `attempt-${providerError}`,
+      appSlug,
+      provider: "discord",
+      mode: "sign_in",
+      returnTo,
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 600_000).toISOString(),
+    });
+    const caller = resolveAppCaller(ctx.config, appSlug, { "x-heimdall-app-secret": `${appSlug}-secret` });
+    const started = await startOAuthFlow(
+      ctx,
+      "discord",
+      caller,
+      { appSlug, mode: "sign_in", returnTo, handoff: { kind: "browser_completion" } },
+      { trustedBrowserAttemptId: attempt.handle }
+    );
+    const flow = await launchFlow(app, started.body as unknown as { authorizationUrl: string });
+    await callback(app, flow.state, flow.cookie, `error=${providerError}`);
+    expect(await ctx.store.findAuthAttempt(appSlug, attempt.handle)).toMatchObject({ status: "denied", denialCode });
   });
 
   describe("a state that is expired, foreign or tampered is refused at launch and at callback", () => {

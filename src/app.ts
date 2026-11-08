@@ -1,4 +1,5 @@
 import { createHmac, randomUUID } from "node:crypto";
+import { deflateRawSync, inflateRawSync } from "node:zlib";
 import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
 import Fastify, { type FastifyError, type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
@@ -26,6 +27,7 @@ import {
 import { issueAccessClaim, type IssueAccessClaimInput } from "./claims.js";
 import { builtInAppProfiles, getAppProfile, isAllowedReturnOrigin, serializeAppProfile, admitsProviderForMode, callbackMint } from "./app-profiles.js";
 import { renderBrowserHandoffPage } from "./browser-handoff.js";
+import { consentText, digestOfText, grantViews, GRANTS_PATH, renderConsentPage, renderGrantsPage, type ConsentAsk } from "./consent.js";
 import { type HeimdallConfig, loadConfig } from "./config.js";
 import { createTokenCustody, type TokenCustody } from "./custody.js";
 import { grantFact } from "./facts.js";
@@ -37,7 +39,7 @@ import {
   type OAuthRuntimeRegistry,
 } from "./oauth.js";
 import { ManagedCredentialRefreshFailed, refreshManagedCredential } from "./managed-credential.js";
-import { buildAuthorizationUrl, providerCatalog, providerExpectedEnv } from "./providers.js";
+import { authorizationScopes, buildAuthorizationUrl, providerCatalog, providerExpectedEnv } from "./providers.js";
 import { createRuntimeKeyMaterial, signJwt, verifyJwt } from "./signing.js";
 import { createStore, type HeimdallStore } from "./store/index.js";
 import {
@@ -251,12 +253,80 @@ function oauthBindingCookieName(jti: string): string {
 function signOAuthBinding(
   config: HeimdallConfig,
   keys: ReturnType<typeof createRuntimeKeyMaterial>,
-  state: OAuthStatePayload
+  state: OAuthStatePayload,
+  shownText?: string
 ): string {
   return signJwt(
-    { typ: oauthBindingType, iss: config.issuer, jti: state.jti, iat: nowEpochSeconds(), exp: state.exp },
+    {
+      typ: oauthBindingType,
+      iss: config.issuer,
+      jti: state.jti,
+      iat: nowEpochSeconds(),
+      exp: state.exp,
+      // The wording the person agreed to, carried from the ask to the receipt.
+      ...(shownText === undefined ? {} : { ct: deflateRawSync(shownText).toString("base64url") }),
+    },
     keys
   );
+}
+
+const consentAskType = "heimdall_consent_ask";
+
+/** The most wording a cookie may carry, before and after compression. The ask refuses what exceeds it; the readers never inflate past it. */
+const maxConsentTextBytes = 16 * 1024;
+/** Browsers drop a cookie above 4096 bytes; the ask refuses one it could not keep. */
+const maxConsentCookieChars = 3800;
+/** What an app may request: more is not a scope list a person can read. */
+const maxRequestedScopes = 32;
+const maxRequestedScopeChars = 512;
+
+function consentAskCookieName(jti: string): string {
+  return `__Host-heimdall-ask-${jti}`;
+}
+
+/**
+ * The ask's own cookie. It proves a browser was shown the ask and carries the
+ * exact text shown; only Continue and No accept it. It is not the launch
+ * binding: that is set when Continue claims the launch, so that merely opening
+ * the launch URL never makes a browser the state's owner.
+ */
+function signConsentAsk(config: HeimdallConfig, keys: ReturnType<typeof createRuntimeKeyMaterial>, state: OAuthStatePayload, shownText: string): string {
+  return signJwt(
+    { typ: consentAskType, iss: config.issuer, jti: state.jti, iat: nowEpochSeconds(), exp: state.exp, ct: deflateRawSync(shownText).toString("base64url") },
+    keys
+  );
+}
+
+/** The text a held cookie of the given type carries, or null when the cookie is absent, foreign, expired or carries none. */
+function cookieConsentText(
+  config: HeimdallConfig,
+  keys: ReturnType<typeof createRuntimeKeyMaterial>,
+  token: string | undefined,
+  type: string,
+  state: OAuthStatePayload
+): string | null {
+  if (!token) return null;
+  const verification = verifyJwt(token, keys.publicKey);
+  if (!verification.valid) return null;
+  const { typ, iss, jti, exp, ct } = verification.payload;
+  if (typ !== type || iss !== config.issuer || jti !== state.jti || typeof exp !== "number" || exp <= nowEpochSeconds() || typeof ct !== "string") {
+    return null;
+  }
+  try {
+    return inflateRawSync(Buffer.from(ct, "base64url"), { maxOutputLength: maxConsentTextBytes }).toString("utf8");
+  } catch {
+    return null;
+  }
+}
+
+function setConsentAskCookie(reply: FastifyReply, state: OAuthStatePayload, value: string, maxAgeSeconds: number): void {
+  reply.setCookie(consentAskCookieName(state.jti), value, {
+    path: "/",
+    secure: true,
+    httpOnly: true,
+    sameSite: "lax",
+    maxAge: Math.max(0, maxAgeSeconds),
+  });
 }
 
 function oauthBindingHolds(
@@ -684,6 +754,16 @@ export async function startOAuthFlow(
     return { statusCode: 400, body: { error: "initiator_only_in_link_mode" } };
   }
 
+  if (
+    input.requestedScopes !== undefined &&
+    (input.requestedScopes.length > maxRequestedScopes || input.requestedScopes.some((scope) => scope.length > maxRequestedScopeChars))
+  ) {
+    return {
+      statusCode: 400,
+      body: { error: "requested_scopes_too_large", detail: `At most ${maxRequestedScopes} scopes of ${maxRequestedScopeChars} characters each.` },
+    };
+  }
+
   if (!isAllowedReturnOrigin(profile, input.returnTo)) {
     return {
       statusCode: 400,
@@ -807,6 +887,56 @@ async function resolveLinkAccount(
     return null;
   }
   return claims.account_id;
+}
+
+/** The account a Heimdall access token for any app names, when the token and its session are live. */
+async function resolveAccessAccount(
+  ctx: Pick<HeimdallRuntimeContext, "config" | "keys" | "store">,
+  authorization: string | undefined
+): Promise<string | null> {
+  const token = /^Bearer\s+(\S+)$/i.exec(authorization ?? "")?.[1];
+  if (!token) return null;
+  const verification = verifyJwt(token, ctx.keys.publicKey);
+  if (!verification.valid) return null;
+  const audience = verification.payload.aud;
+  return isAppSlug(audience) ? resolveLinkAccount(ctx, audience, authorization) : null;
+}
+
+const grantsPageTokenType = "heimdall_grants_page";
+const grantsPageTokenTtlSeconds = 600;
+
+/** A short, purpose-bound proof of a signed-in account, so the grants page can be opened and its forms posted by a browser that holds no session. */
+function signGrantsPageToken(
+  config: HeimdallConfig,
+  keys: ReturnType<typeof createRuntimeKeyMaterial>,
+  accountId: string,
+  exp: number = nowEpochSeconds() + grantsPageTokenTtlSeconds
+): string {
+  return signJwt({ typ: grantsPageTokenType, iss: config.issuer, account_id: accountId, iat: nowEpochSeconds(), exp }, keys);
+}
+
+/** The account and expiry a page token proves. A page's own forms are signed to this same expiry, so a link is never renewed by being used. */
+function grantsPageTokenAccount(
+  config: HeimdallConfig,
+  keys: ReturnType<typeof createRuntimeKeyMaterial>,
+  token: unknown
+): { accountId: string; exp: number } | null {
+  if (typeof token !== "string") return null;
+  const verification = verifyJwt(token, keys.publicKey);
+  if (!verification.valid) return null;
+  const { typ, iss, account_id: accountId, exp } = verification.payload;
+  return typ === grantsPageTokenType && iss === config.issuer && typeof accountId === "string" && typeof exp === "number" && exp > nowEpochSeconds()
+    ? { accountId, exp }
+    : null;
+}
+
+function consentAskFor(state: OAuthStatePayload): ConsentAsk {
+  return {
+    appSlug: state.app_slug,
+    provider: state.provider,
+    scopes: authorizationScopes(state.provider, state.requested_scopes ?? undefined),
+    returnOrigin: new URL(state.return_to).origin,
+  };
 }
 
 /**
@@ -948,6 +1078,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     credentials: true,
   });
   await app.register(cookie);
+  // The consent and grants pages are plain HTML forms.
+  app.addContentTypeParser("application/x-www-form-urlencoded", { parseAs: "string" }, (_request, body, done) => {
+    done(null, Object.fromEntries(new URLSearchParams(body as string)));
+  });
 
   app.get("/healthz", async () => ({
     ok: true,
@@ -1105,7 +1239,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     request: FastifyRequest,
     reply: FastifyReply,
     state: OAuthStatePayload,
-    error: "state_not_bound" | "state_already_launched" | "state_already_used"
+    error: "state_not_bound" | "state_already_launched" | "state_already_used" | "consent_text_missing"
   ) => {
     reply.code(400);
     const profile = getAppProfile(state.app_slug);
@@ -1124,6 +1258,106 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       );
     }
     return { error };
+  };
+
+  const denyAttempt = async (state: OAuthStatePayload, denialCode: string): Promise<void> => {
+    const handoff = state.handoff ?? { kind: "browser_completion" };
+    if (handoff.kind !== "browser_completion" || !handoff.attemptId) return;
+    await store.updateAuthAttempt(state.app_slug, handoff.attemptId, {
+      status: "denied",
+      at: new Date().toISOString(),
+      denialCode,
+    });
+  };
+
+  /**
+   * The person said no, at Heimdall's ask (`viewer`) or at the provider
+   * (`provider`, a returned access_denied). It is its own result, never a
+   * provider_error: the app and the audit log can tell a refusal from a fault.
+   * Nothing is stored beyond an audit row that names no one.
+   */
+  const refuseConsent = async (request: FastifyRequest, reply: FastifyReply, state: OAuthStatePayload, by: "viewer" | "provider") => {
+    const handoff = state.handoff ?? { kind: "browser_completion" };
+    await denyAttempt(state, "consent_refused");
+    await store.createAuditEvent({
+      appSlug: state.app_slug,
+      eventType: "consent_refused",
+      eventPayloadJson: { provider: state.provider, mode: state.mode, by },
+      createdAt: new Date().toISOString(),
+    });
+    if (handoff.kind === "backend_callback") {
+      await maybeDeliverBackendHandoff(handoff, {
+        source: "heimdall",
+        kind: "oauth_result",
+        handoffKind: "backend_callback",
+        attemptId: handoff.attemptId,
+        status: "error",
+        provider: state.provider,
+        appSlug: state.app_slug,
+        mode: state.mode,
+        returnTo: state.return_to,
+        connection: state.connection,
+        error: "consent_refused",
+        by,
+      });
+    }
+    if (prefersHtml(request.headers.accept)) {
+      reply.type("text/html; charset=utf-8");
+      return reply.send(
+        renderBrowserHandoffPage({
+          handoffKind: handoff.kind,
+          status: "error",
+          provider: state.provider,
+          appSlug: state.app_slug,
+          mode: state.mode,
+          returnTo: state.return_to,
+          ...(handoff.kind === "backend_callback" ? { attemptId: handoff.attemptId } : {}),
+          error: "consent_refused",
+          by,
+        })
+      );
+    }
+    reply.code(400);
+    return { error: "consent_refused", by, provider: state.provider, returnTo: state.return_to };
+  };
+
+  const providerNotConfigured = (reply: FastifyReply, state: OAuthStatePayload) => {
+    reply.code(503);
+    return { error: "provider_not_configured", provider: state.provider, expectedEnv: providerExpectedEnv(state.provider) };
+  };
+
+  /** Claim the launch use, bind the browser, and send it to the provider. */
+  const beginProviderRedirect = async (request: FastifyRequest, reply: FastifyReply, state: OAuthStatePayload, rawState: string, shownText?: string) => {
+    const clientId = config.providers[state.provider].clientId;
+    if (!clientId) {
+      return providerNotConfigured(reply, state);
+    }
+    const first = await store.claimOAuthStateUse({
+      jti: state.jti,
+      phase: "launch",
+      appSlug: state.app_slug,
+      usedAt: new Date().toISOString(),
+      expiresAt: new Date(state.exp * 1000).toISOString(),
+    });
+    if (!first) {
+      return refuseVerifiedState(request, reply, state, "state_already_launched");
+    }
+
+    const oidc = providerCatalog[state.provider].oidc ? deriveOidcSecrets(state.jti, keys.privateKey) : undefined;
+    setOAuthBindingCookie(reply, state, signOAuthBinding(config, keys, state, shownText), state.exp - nowEpochSeconds());
+    reply.header("Cache-Control", "no-store");
+    reply.header("Referrer-Policy", "no-referrer");
+    return reply.redirect(
+      buildAuthorizationUrl({
+        provider: state.provider,
+        clientId,
+        redirectUri: oauthCallbackUrl(config, state.provider),
+        state: rawState,
+        requestedScopes: state.requested_scopes ?? undefined,
+        ...(oidc ? { oidc: { nonce: oidc.nonce, codeChallenge: oidc.codeChallenge } } : {}),
+      }),
+      302
+    );
   };
 
   app.get<{
@@ -1158,38 +1392,94 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         return { error: verified.error };
       }
       const state = verified.payload;
-      const clientId = config.providers[state.provider].clientId;
-      if (!clientId) {
-        reply.code(503);
-        return { error: "provider_not_configured", provider: state.provider, expectedEnv: providerExpectedEnv(state.provider) };
+      const askProfile = getAppProfile(state.app_slug);
+      if (askProfile && callbackMint(askProfile, state.provider, state.mode, state.connection) === "custody_only") {
+        if (!config.providers[state.provider].clientId) {
+          return providerNotConfigured(reply, state);
+        }
+        // Heimdall is about to hold a credential for the app: ask first. Viewing
+        // the ask claims nothing and binds nothing; only Continue spends the
+        // launch use and sets the launch binding. The ask's own cookie rides on
+        // the page so that the form's answer can only come from the browser
+        // that was shown it, and carries the text it was shown.
+        const ask = consentAskFor(state);
+        const shown = consentText(ask);
+        const askCookie = signConsentAsk(config, keys, state, shown);
+        // An ask the cookies cannot carry is refused, not shown: the person
+        // could press Continue and nothing would bind.
+        if (Buffer.byteLength(shown, "utf8") > maxConsentTextBytes || askCookie.length > maxConsentCookieChars) {
+          reply.code(400);
+          return { error: "consent_ask_too_large" };
+        }
+        setConsentAskCookie(reply, state, askCookie, state.exp - nowEpochSeconds());
+        reply.header("Cache-Control", "no-store");
+        reply.header("Referrer-Policy", "no-referrer");
+        reply.header("X-Frame-Options", "DENY");
+        reply.header(
+          "Content-Security-Policy",
+          `default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self' ${new URL(providerCatalog[state.provider].authorizationEndpoint).origin}`
+        );
+        reply.type("text/html; charset=utf-8");
+        return reply.send(renderConsentPage(ask, request.query.state));
       }
+      return beginProviderRedirect(request, reply, state, request.query.state);
+    }
+  );
 
-      const first = await store.claimOAuthStateUse({
-        jti: state.jti,
-        phase: "launch",
-        appSlug: state.app_slug,
-        usedAt: new Date().toISOString(),
-        expiresAt: new Date(state.exp * 1000).toISOString(),
-      });
-      if (!first) {
+  app.post<{
+    Params: { provider: Provider };
+    Body: { state: string; decision: "continue" | "decline" };
+  }>(
+    "/v1/oauth/:provider/consent",
+    {
+      schema: {
+        params: {
+          type: "object",
+          required: ["provider"],
+          additionalProperties: false,
+          properties: { provider: { type: "string", enum: [...providers] } },
+        },
+        body: {
+          type: "object",
+          required: ["state", "decision"],
+          additionalProperties: false,
+          properties: {
+            state: { type: "string", minLength: 1 },
+            decision: { type: "string", enum: ["continue", "decline"] },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const verified = verifyOAuthState(config, keys, request.body.state, request.params.provider);
+      if (!verified.ok) {
+        reply.code(400);
+        return { error: verified.error };
+      }
+      const state = verified.payload;
+      const profile = getAppProfile(state.app_slug);
+      if (!profile || callbackMint(profile, state.provider, state.mode, state.connection) !== "custody_only") {
+        reply.code(400);
+        return { error: "consent_not_required" };
+      }
+      // Either answer must come from the browser the ask was shown to.
+      const shownText = cookieConsentText(config, keys, request.cookies[consentAskCookieName(state.jti)], consentAskType, state);
+      if (shownText === null) {
+        return refuseVerifiedState(request, reply, state, "state_not_bound");
+      }
+      setConsentAskCookie(reply, state, "", 0);
+      if (request.body.decision === "continue") {
+        return beginProviderRedirect(request, reply, state, request.body.state, shownText);
+      }
+      // A decline spends both uses of the state: it can neither launch nor complete afterwards.
+      const usedAt = new Date().toISOString();
+      const expiresAt = new Date(state.exp * 1000).toISOString();
+      if (!(await store.claimOAuthStateUse({ jti: state.jti, phase: "launch", appSlug: state.app_slug, usedAt, expiresAt }))) {
         return refuseVerifiedState(request, reply, state, "state_already_launched");
       }
-
-      const oidc = providerCatalog[state.provider].oidc ? deriveOidcSecrets(state.jti, keys.privateKey) : undefined;
-      setOAuthBindingCookie(reply, state, signOAuthBinding(config, keys, state), state.exp - nowEpochSeconds());
-      reply.header("Cache-Control", "no-store");
-      reply.header("Referrer-Policy", "no-referrer");
-      return reply.redirect(
-        buildAuthorizationUrl({
-          provider: state.provider,
-          clientId,
-          redirectUri: oauthCallbackUrl(config, state.provider),
-          state: request.query.state,
-          requestedScopes: state.requested_scopes ?? undefined,
-          ...(oidc ? { oidc: { nonce: oidc.nonce, codeChallenge: oidc.codeChallenge } } : {}),
-        }),
-        302
-      );
+      await store.claimOAuthStateUse({ jti: state.jti, phase: "callback", appSlug: state.app_slug, usedAt, expiresAt });
+      setOAuthBindingCookie(reply, state, "", 0);
+      return refuseConsent(request, reply, state, "viewer");
     }
   );
 
@@ -1233,14 +1523,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       }
       const statePayload = verified.payload;
       const handoff = statePayload.handoff ?? { kind: "browser_completion" };
-      const denyBrowserAttempt = async (denialCode: string): Promise<void> => {
-        if (handoff.kind !== "browser_completion" || !handoff.attemptId) return;
-        await store.updateAuthAttempt(statePayload.app_slug, handoff.attemptId, {
-          status: "denied",
-          at: new Date().toISOString(),
-          denialCode,
-        });
-      };
+      const denyBrowserAttempt = (denialCode: string): Promise<void> => denyAttempt(statePayload, denialCode);
       // The cookie is checked before the claim: a stranger without it must not be
       // able to burn the state that the browser that launched it still needs.
       // The attempt is denied, though: a launcher whose cookie lapsed can never
@@ -1249,6 +1532,17 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       if (!oauthBindingHolds(config, keys, request.cookies[oauthBindingCookieName(statePayload.jti)], statePayload)) {
         await denyBrowserAttempt("state_not_bound");
         return refuseVerifiedState(request, reply, statePayload, "state_not_bound");
+      }
+      // A custody flow carries the wording its person was shown in the launch
+      // binding. A binding without it did not pass through the ask (a launch
+      // from before it existed): refuse here, before the state is spent and
+      // before any code is exchanged, so nothing is kept and nothing is burned.
+      const shownText = cookieConsentText(config, keys, request.cookies[oauthBindingCookieName(statePayload.jti)], oauthBindingType, statePayload);
+      const callbackProfile = getAppProfile(statePayload.app_slug);
+      const mint = callbackProfile ? callbackMint(callbackProfile, request.params.provider, statePayload.mode, statePayload.connection) : "refused";
+      if (mint === "custody_only" && shownText === null) {
+        await denyBrowserAttempt("consent_text_missing");
+        return refuseVerifiedState(request, reply, statePayload, "consent_text_missing");
       }
       setOAuthBindingCookie(reply, statePayload, "", 0);
       const firstCallback = await store.claimOAuthStateUse({
@@ -1262,6 +1556,9 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         return refuseVerifiedState(request, reply, statePayload, "state_already_used");
       }
 
+      if (request.query.error === "access_denied") {
+        return refuseConsent(request, reply, statePayload, "provider");
+      }
       if (request.query.error) {
         const providerError = relayedProviderText(request.query.error, 64);
         const providerErrorDescription = relayedProviderText(request.query.error_description, 256);
@@ -1354,8 +1651,6 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       const runtime = oauthRuntimes[request.params.provider];
 
       try {
-        const callbackProfile = getAppProfile(statePayload.app_slug);
-        const mint = callbackProfile ? callbackMint(callbackProfile, request.params.provider, statePayload.mode, statePayload.connection) : "refused";
         if (mint === "refused") {
           throw new Error("The signed state names a mode the provider has no role for in this app.");
         }
@@ -1519,6 +1814,25 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
         await store.upsertLinkedIdentity(buildLinkedIdentityInput(account.id));
 
+        // Heimdall now holds a credential the person was asked about: the
+        // receipt is the record of that agreement, written with the credential.
+        let consentReceiptId: string | undefined;
+        if (mint === "custody_only" && shownText !== null) {
+          const ask = consentAskFor(statePayload);
+          const { receipt } = await store.createConsentReceipt({
+            kind: "grant",
+            accountId: account.id,
+            appSlug: statePayload.app_slug,
+            provider: identity.provider,
+            createdAt: nowIso,
+            scopesAsked: [...ask.scopes],
+            scopesGranted: tokenSet.scope,
+            consentPageDigest: digestOfText(shownText),
+            consentText: shownText,
+          });
+          consentReceiptId = receipt.id;
+        }
+
         const entitlementEvaluation = await runtime.evaluateEntitlements({
           config,
           callback: {
@@ -1613,6 +1927,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           entitlements: entitlementEvaluation,
           returnTo: statePayload.return_to,
           connection: statePayload.connection,
+          ...(consentReceiptId ? { consentReceiptId } : {}),
           ...delivered,
         };
         if (handoff.kind === "backend_callback") {
@@ -1629,6 +1944,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
             connection: statePayload.connection,
             account: accountSummary,
             entitlements: entitlementEvaluation,
+            ...(consentReceiptId ? { consentReceiptId } : {}),
             ...delivered,
           });
 
@@ -1658,6 +1974,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
                 mode: statePayload.mode,
                 returnTo: statePayload.return_to,
                 attemptId: handoff.attemptId,
+                ...(consentReceiptId ? { consentReceiptId } : {}),
               })
             );
           }
@@ -1731,6 +2048,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
               mode: statePayload.mode,
               returnTo: statePayload.return_to,
               completionCode: completion.code,
+              ...(consentReceiptId ? { consentReceiptId } : {}),
               ...(handoff.kind === "browser_completion" && handoff.attemptId
                 ? { attemptId: handoff.attemptId }
                 : {}),
@@ -2293,6 +2611,116 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       }
 
       return response;
+    }
+  );
+
+  /** The signed-in account, and the expiry the page's own forms get: a bearer starts a fresh window, a page link only passes on the one it has. */
+  const grantsAccount = async (request: FastifyRequest, pageToken?: unknown): Promise<{ accountId: string; exp: number } | null> => {
+    const bearerAccount = await resolveAccessAccount({ config, keys, store }, request.headers.authorization);
+    if (bearerAccount) return { accountId: bearerAccount, exp: nowEpochSeconds() + grantsPageTokenTtlSeconds };
+    return grantsPageTokenAccount(config, keys, pageToken);
+  };
+
+  const grantsReply = (reply: FastifyReply) => {
+    reply.header("Cache-Control", "no-store");
+    reply.header("Referrer-Policy", "no-referrer");
+    reply.header("X-Frame-Options", "DENY");
+    reply.header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+  };
+
+  const signInRequired = (reply: FastifyReply) => {
+    reply.code(401);
+    return { error: "sign_in_required", detail: "Send a Heimdall access token as a Bearer token, or open a link from POST /v1/me/grants/link." };
+  };
+
+  // The signed-in surface for consent: every grant and receipt the account
+  // holds, and the one-click way to take each back.
+  app.get<{ Querystring: { t?: string } }>(
+    GRANTS_PATH,
+    { schema: { querystring: { type: "object", additionalProperties: false, properties: { t: { type: "string" } } } } },
+    async (request, reply) => {
+      const caller = await grantsAccount(request, request.query.t);
+      if (!caller) return signInRequired(reply);
+      const { accountId } = caller;
+      grantsReply(reply);
+      const receipts = await store.listConsentReceipts(accountId);
+      if (prefersHtml(request.headers.accept)) {
+        reply.type("text/html; charset=utf-8");
+        return reply.send(renderGrantsPage(grantViews(receipts), signGrantsPageToken(config, keys, accountId, caller.exp)));
+      }
+      return { grants: grantViews(receipts), receipts };
+    }
+  );
+
+  // A link a browser can open: short-lived, opens the grants page and nothing else.
+  app.post(`${GRANTS_PATH}/link`, async (request, reply) => {
+    const accountId = await resolveAccessAccount({ config, keys, store }, request.headers.authorization);
+    if (!accountId) return signInRequired(reply);
+    grantsReply(reply);
+    reply.code(201);
+    return {
+      url: `${config.publicBaseUrl}${GRANTS_PATH}?t=${encodeURIComponent(signGrantsPageToken(config, keys, accountId))}`,
+      expiresInSeconds: grantsPageTokenTtlSeconds,
+    };
+  });
+
+  app.post<{ Params: { grantId: string }; Body?: { t?: string } }>(
+    `${GRANTS_PATH}/:grantId/revoke`,
+    {
+      schema: {
+        params: { type: "object", required: ["grantId"], additionalProperties: false, properties: { grantId: { type: "string", minLength: 1 } } },
+        body: { type: ["object", "null"], additionalProperties: false, properties: { t: { type: "string" } } },
+      },
+    },
+    async (request, reply) => {
+      const caller = await grantsAccount(request, request.body?.t);
+      if (!caller) return signInRequired(reply);
+      const { accountId } = caller;
+      grantsReply(reply);
+      const receipts = await store.listConsentReceipts(accountId);
+      const grant = grantViews(receipts).find((view) => view.id === request.params.grantId);
+      if (!grant) {
+        reply.code(404);
+        return { error: "grant_not_found" };
+      }
+      const revoked: string[] = [];
+      if (grant.status === "active") {
+        // The credential is one row per account and provider, whichever app
+        // asked, so taking it back ends every live grant that rests on it.
+        // It is stripped first: a failure after that leaves a receipt that
+        // still reads active over a credential that is gone, never the reverse.
+        const identity = await store.findStoredLinkedIdentityForAccount(accountId, grant.provider);
+        const at = new Date().toISOString();
+        if (identity) {
+          await store.updateLinkedIdentityCredential(identity.id, async () => ({ kind: "revoke", updatedAt: at }));
+        }
+        for (const live of grantViews(receipts).filter((view) => view.provider === grant.provider && view.status === "active")) {
+          const { created } = await store.createConsentReceipt({
+            kind: "revocation",
+            accountId,
+            appSlug: live.appSlug,
+            provider: live.provider,
+            createdAt: at,
+            revokesReceiptId: live.id,
+          });
+          // A concurrent revoke may have written it first; only the writer reports it.
+          if (created) revoked.push(live.id);
+        }
+        if (revoked.length) {
+          await store.createAuditEvent({
+            accountId,
+            eventType: "consent_revoked",
+            eventPayloadJson: { provider: grant.provider, grantIds: revoked },
+            createdAt: at,
+          });
+        }
+      }
+      if (prefersHtml(request.headers.accept) || request.headers["content-type"]?.startsWith("application/x-www-form-urlencoded")) {
+        reply.type("text/html; charset=utf-8");
+        const views = grantViews(await store.listConsentReceipts(accountId));
+        return reply.send(renderGrantsPage(views, signGrantsPageToken(config, keys, accountId, caller.exp), revoked.length ? "Taken back." : "Already taken back."));
+      }
+      return { revoked, grants: grantViews(await store.listConsentReceipts(accountId)) };
     }
   );
 

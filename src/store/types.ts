@@ -252,6 +252,33 @@ export interface StoredPrivateCommandReceipt {
 
 export type CreatePrivateCommandReceiptInput = StoredPrivateCommandReceipt;
 
+/**
+ * What a person agreed to, or took back. Append-only: a grant row is never
+ * edited, and a revocation is a second row naming it, so a grant is live
+ * exactly when no revocation names it. `scopesAsked` is what Heimdall sent the
+ * provider, `scopesGranted` what the provider returned, `consentPageDigest`
+ * the hash of the wording the person was shown and `consentText` that wording
+ * itself. A grant is revoked at most once: a second revocation naming the same
+ * grant is not written, and the store answers with the first.
+ */
+export type StoredConsentReceipt = {
+  id: string;
+  accountId: string;
+  appSlug: AppSlug;
+  provider: Provider;
+  createdAt: string;
+} & (
+  | { kind: "grant"; scopesAsked: string[]; scopesGranted: string[]; consentPageDigest: string; consentText: string }
+  | { kind: "revocation"; revokesReceiptId: string }
+);
+
+/** The store mints `id`; a caller cannot choose it. */
+export type CreateConsentReceiptInput = StoredConsentReceipt extends infer R
+  ? R extends StoredConsentReceipt
+    ? Omit<R, "id">
+    : never
+  : never;
+
 export interface HeimdallStore {
   ensureSchema(): Promise<void>;
   close(): Promise<void>;
@@ -325,4 +352,8 @@ export interface HeimdallStore {
    */
   claimOAuthStateUse(input: ClaimOAuthStateUseInput): Promise<boolean>;
   createAuditEvent(input: CreateAuditEventInput): Promise<void>;
+  /** `created` is false when a revocation for that grant already existed and is what comes back. */
+  createConsentReceipt(input: CreateConsentReceiptInput): Promise<{ receipt: StoredConsentReceipt; created: boolean }>;
+  /** Every receipt the account holds, oldest first. */
+  listConsentReceipts(accountId: string): Promise<StoredConsentReceipt[]>;
 }

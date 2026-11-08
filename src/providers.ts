@@ -167,6 +167,11 @@ export const providerCatalog: Record<Provider, ProviderDescriptor> = {
   },
 };
 
+/** The scopes an authorization request carries: the caller's, or the provider's defaults. */
+export function authorizationScopes(provider: Provider, requested: readonly string[] | undefined): string[] {
+  return requested?.length ? [...requested] : [...providerCatalog[provider].defaultScopes];
+}
+
 export function buildAuthorizationUrl(options: {
   provider: Provider;
   clientId: string;
@@ -178,7 +183,7 @@ export function buildAuthorizationUrl(options: {
 }): string {
   const descriptor = providerCatalog[options.provider];
   const url = new URL(descriptor.authorizationEndpoint);
-  const scopes = options.requestedScopes?.length ? options.requestedScopes : descriptor.defaultScopes;
+  const scopes = authorizationScopes(options.provider, options.requestedScopes);
 
   url.searchParams.set("client_id", options.clientId);
   url.searchParams.set("redirect_uri", options.redirectUri);
