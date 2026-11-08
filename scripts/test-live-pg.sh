@@ -10,14 +10,14 @@ set -euo pipefail
 #   2. its npm dependencies installed (the vendor packages build with its tsc),
 #   3. dist/ built for cultcache-ts, cultnet-ts and cultmesh-ts (package.json
 #      points main at dist/index.js),
-#   4. this repo's pnpm install.
+#   4. this repo's pnpm install (npm install if pnpm fails with EACCES).
 cd "$(dirname "$0")/.."
 [ -f vendor/CultLib/package.json ] || git submodule update --init vendor/CultLib
 [ -d vendor/CultLib/node_modules/typescript ] || (cd vendor/CultLib && npm ci)
 for pkg in cultcache-ts cultnet-ts cultmesh-ts; do
   [ -f "vendor/CultLib/packages/$pkg/dist/index.js" ] || (cd "vendor/CultLib/packages/$pkg" && npm run build)
 done
-[ -d node_modules/vitest ] || pnpm install --frozen-lockfile
+[ -d node_modules/vitest ] || pnpm install --frozen-lockfile || npm install  # pnpm can fail with EACCES on its store; npm does not need it
 export PATH="${PG_BIN:-/usr/lib/postgresql/16/bin}:$PATH"
 dir="$(mktemp -d)"
 port="${PG_PORT:-54329}"

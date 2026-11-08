@@ -210,6 +210,41 @@ describe("consent_receipts foreign key", () => {
   });
 });
 
+describe("PostgresStore.createConsentReceipt revocation conflict", () => {
+  async function granted() {
+    const adapter = newDb().adapters.createPg();
+    const store = new PostgresStore(new adapter.Pool());
+    await store.ensureSchema();
+    const now = "2026-11-08T00:00:00.000Z";
+    const account = await store.createAccount({ createdAt: now, lastSeenAt: now, displayName: "Probe" });
+    const base = { accountId: account.id, appSlug: "streampixels" as const, provider: "joystick" as const };
+    const { receipt: grant } = await store.createConsentReceipt({ ...base, kind: "grant", createdAt: now, scopesAsked: ["a"], scopesGranted: ["a"], consentPageDigest: "d", consentText: "t" });
+    return { store, base, grant };
+  }
+
+  it("a second revocation of one grant inserts nothing: created:false, the first row's id", async () => {
+    const { store, base, grant } = await granted();
+    const first = await store.createConsentReceipt({ ...base, kind: "revocation", createdAt: "2026-11-08T01:00:00.000Z", revokesReceiptId: grant.id });
+    const second = await store.createConsentReceipt({ ...base, kind: "revocation", createdAt: "2026-11-08T02:00:00.000Z", revokesReceiptId: grant.id });
+    expect(first.created).toBe(true);
+    expect(second.created).toBe(false);
+    expect(second.receipt.id).toBe(first.receipt.id);
+    expect(second.receipt.createdAt).toBe("2026-11-08T01:00:00.000Z");
+    expect((await store.listConsentReceipts(base.accountId)).filter((r) => r.kind === "revocation")).toHaveLength(1);
+  });
+
+  it("the read-back returns the revocation of this grant, not another's or the grant", async () => {
+    const { store, base, grant } = await granted();
+    const other = (await store.createConsentReceipt({ ...base, kind: "grant", createdAt: "2026-11-08T00:30:00.000Z", scopesAsked: [], scopesGranted: [], consentPageDigest: "d2", consentText: "t2" })).receipt;
+    const otherRevocation = await store.createConsentReceipt({ ...base, kind: "revocation", createdAt: "2026-11-08T01:00:00.000Z", revokesReceiptId: other.id });
+    const first = await store.createConsentReceipt({ ...base, kind: "revocation", createdAt: "2026-11-08T01:10:00.000Z", revokesReceiptId: grant.id });
+    const second = await store.createConsentReceipt({ ...base, kind: "revocation", createdAt: "2026-11-08T02:00:00.000Z", revokesReceiptId: grant.id });
+    expect(second.receipt.id).toBe(first.receipt.id);
+    expect(second.receipt.id).not.toBe(otherRevocation.receipt.id);
+    expect(second.receipt.revokesReceiptId).toBe(grant.id);
+  });
+});
+
 describe("InMemoryStore.createConsentReceipt", () => {
   it("writes one revocation per grant: the second names the first and is not created", async () => {
     const store = new InMemoryStore();

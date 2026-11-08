@@ -164,7 +164,9 @@ the least stored.
    holds ids, scopes and a digest: no IP address, no user agent, no page text. A revocation names a
    receipt of its own account: a composite foreign key `(revokes_receipt_id,
    account_id)` to `(id, account_id)`, which is why `(id, account_id)` is also a
-   unique key (`checkSchema` counts it). The in-memory store refuses the same.
+   unique key (`checkSchema` counts it). The in-memory store refuses the same. The table is created
+   whole and first-created: no deployed database had an earlier shape, so there
+   is no `ALTER` step.
    Refusals leave no receipt, only the anonymous audit row.
 3. **Viewer identity: sign-in, not the cookie.** The binding cookie dies with
    the state and proves only that a browser launched a flow; it is not an
