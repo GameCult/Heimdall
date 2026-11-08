@@ -447,7 +447,13 @@ async function exerciseStore(store: PostgresStore): Promise<Set<string>> {
   expect(await s.claimOAuthStateUse(stateUse)).toBe(false);
   expect(await s.claimOAuthStateUse({ ...stateUse, phase: "callback" })).toBe(true);
   const { receipt: grant } = await s.createConsentReceipt({ kind: "grant", accountId: account.id, appSlug: "streampixels", provider: "joystick", createdAt: now, scopesAsked: ["a", "b"], scopesGranted: ["a"], consentPageDigest: "d", consentText: "t" });
-  await s.createConsentReceipt({ kind: "revocation", accountId: account.id, appSlug: "streampixels", provider: "joystick", createdAt: later, revokesReceiptId: grant.id });
+  const revocation = { kind: "revocation" as const, accountId: account.id, appSlug: "streampixels" as const, provider: "joystick" as const, createdAt: later, revokesReceiptId: grant.id };
+  const first = await s.createConsentReceipt(revocation);
+  // The second revocation of one grant hits ON CONFLICT DO NOTHING and reads the first back.
+  const second = await s.createConsentReceipt(revocation);
+  expect(first.created).toBe(true);
+  expect(second.created).toBe(false);
+  expect(second.receipt.id).toBe(first.receipt.id);
   expect((await s.listConsentReceipts(account.id)).map((r) => r.kind)).toEqual(["grant", "revocation"]);
   await s.createAuditEvent({ eventType: "probe", eventPayloadJson: {}, createdAt: now });
   return called;
@@ -608,12 +614,28 @@ describe.skipIf(!adminUrl)("startup against a live Postgres (HEIMDALL_TEST_PG_AD
   it("prints each declared predicate exactly as Postgres prints the applied index's", async () => {
     const { owner } = await appliedDatabase();
     const printed = await printedDeclaredPredicates(owner, HEIMDALL_SCHEMA_REQUIREMENTS);
-    const applied = await owner.query<{ predicate: string }>(
-      "SELECT pg_get_expr(indpred, indrelid) AS predicate FROM pg_index WHERE indexrelid = 'auth_completions_attempt_unconsumed_unique_idx'::regclass"
-    );
-    const attemptKey = REQUIRED_KEYS.findIndex((key) => key.predicate !== "");
-    expect(printed[attemptKey]).toBe(applied.rows[0]!.predicate);
-    expect(printed.filter((predicate) => predicate !== "")).toHaveLength(1);
+    const appliedByIndex = {
+      auth_completions_attempt_unconsumed_unique_idx: "auth_completions",
+      consent_receipts_revokes_unique_idx: "consent_receipts",
+    };
+    const partialKeys = REQUIRED_KEYS.flatMap((key, index) => (key.predicate === "" ? [] : [{ key, index }]));
+    expect(partialKeys.map(({ key }) => key.table).sort()).toEqual(Object.values(appliedByIndex).sort());
+    for (const [indexName, table] of Object.entries(appliedByIndex)) {
+      const applied = await owner.query<{ predicate: string }>(
+        "SELECT pg_get_expr(indpred, indrelid) AS predicate FROM pg_index WHERE indexrelid = $1::regclass",
+        [indexName]
+      );
+      const { index } = partialKeys.find(({ key }) => key.table === table)!;
+      expect(printed[index], indexName).toBe(applied.rows[0]!.predicate);
+    }
+    expect(printed.filter((predicate) => predicate !== "")).toHaveLength(partialKeys.length);
+  });
+
+  it("refuses to boot with consent_receipts missing when the schema is not applied on startup", async () => {
+    const { name, owner } = await appliedDatabase();
+    await owner.query("DROP TABLE consent_receipts");
+
+    expect(await start(urlFor(name), false)).toBe(refusal("SCHEMA_MISSING"));
   });
 
   it("refuses a table whose primary key was dropped, even after applying the schema", async () => {
