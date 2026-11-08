@@ -5,7 +5,9 @@ import {
   type CreateAuthAttemptInput,
   type ClaimOAuthStateUseInput,
   type CreateAuthCompletionInput,
+  type CreateConsentReceiptInput,
   type CreatePendingLinkInput,
+  type StoredConsentReceipt,
   type StoredPendingLink,
   type CreateAuditEventInput,
   type CreateCapabilityGrantInput,
@@ -59,6 +61,7 @@ export class InMemoryStore implements HeimdallStore {
   private readonly oauthStateUses = new Map<string, string>();
   private readonly entitlementSnapshots = new Map<string, CreateEntitlementSnapshotInput>();
   private readonly auditEvents = new Map<string, CreateAuditEventInput>();
+  private readonly consentReceipts: StoredConsentReceipt[] = [];
 
   async ensureSchema(): Promise<void> {
     return;
@@ -481,5 +484,15 @@ export class InMemoryStore implements HeimdallStore {
       id: input.id ?? randomUUID(),
     });
     this.auditEvents.set(event.id ?? randomUUID(), event);
+  }
+
+  async createConsentReceipt(input: CreateConsentReceiptInput): Promise<StoredConsentReceipt> {
+    const receipt = { id: randomUUID(), ...clone(input) } as StoredConsentReceipt;
+    this.consentReceipts.push(clone(receipt));
+    return clone(receipt);
+  }
+
+  async listConsentReceipts(accountId: string): Promise<StoredConsentReceipt[]> {
+    return this.consentReceipts.filter((receipt) => receipt.accountId === accountId).map(clone);
   }
 }

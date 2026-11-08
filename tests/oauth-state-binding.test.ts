@@ -299,14 +299,15 @@ describe("OAuth state binding", () => {
     expect(await claim("a", 1_000_000 + 30_000)).toBe(true);
   });
 
-  it("a provider error from the launching browser still denies the attempt, once", async () => {
+  it("a provider refusal from the launching browser still denies the attempt, once", async () => {
     const app = await newApp();
     const start = await bifrostStart(app);
     const victim = await launchFlow(app, start);
 
     const denied = await callback(app, victim.state, victim.cookie, "error=access_denied");
     expect(denied.statusCode).toBe(400);
-    expect(denied.json().error).toBe("provider_error");
+    expect(denied.json().error).toBe("consent_refused");
+    expect(denied.json().by).toBe("provider");
     const replay = await callback(app, victim.state, victim.cookie, "error=access_denied");
     expect(replay.json()).toEqual({ error: "state_already_used" });
   });

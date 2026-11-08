@@ -180,6 +180,24 @@ CREATE TABLE IF NOT EXISTS entitlement_snapshots (
   UNIQUE(account_id, provider, scope)
 );
 
+-- Consent receipts are append-only (the store role has INSERT and SELECT
+-- only): a revocation is a row that names the grant it takes back.
+CREATE TABLE IF NOT EXISTS consent_receipts (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  app_slug TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL,
+  scopes_asked TEXT,
+  scopes_granted TEXT,
+  consent_page_digest TEXT,
+  revokes_receipt_id TEXT
+);
+
+CREATE INDEX IF NOT EXISTS consent_receipts_account_idx
+  ON consent_receipts(account_id, created_at);
+
 CREATE TABLE IF NOT EXISTS audit_events (
   id TEXT PRIMARY KEY,
   account_id TEXT,

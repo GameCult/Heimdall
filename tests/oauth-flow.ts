@@ -117,7 +117,18 @@ export function setCookieOf(response: { headers: Record<string, unknown> }): str
 
 async function followLaunch(app: FastifyInstance, state: string): Promise<LaunchedFlow & { providerUrl: URL }> {
   const provider = decodeJwt(state).payload.provider as string;
-  const response = await app.inject({ method: "GET", url: `/v1/oauth/${provider}/launch?state=${encodeURIComponent(state)}` });
+  let response = await app.inject({ method: "GET", url: `/v1/oauth/${provider}/launch?state=${encodeURIComponent(state)}` });
+  if (response.statusCode === 200) {
+    // Heimdall's ask (managed custody): the person says Continue, with the cookie the ask set.
+    const asked = setCookieOf(response).find((value) => value.startsWith("__Host-heimdall-oauth-"));
+    expect(asked, "the ask sets the binding cookie").toBeDefined();
+    response = await app.inject({
+      method: "POST",
+      url: `/v1/oauth/${provider}/consent`,
+      headers: { "content-type": "application/x-www-form-urlencoded", cookie: (asked as string).split(";")[0] as string },
+      payload: new URLSearchParams({ state, decision: "continue" }).toString(),
+    });
+  }
   expect(response.statusCode, "launch").toBe(302);
   const set = setCookieOf(response).find((value) => value.startsWith("__Host-heimdall-oauth-"));
   expect(set, "launch sets the binding cookie").toBeDefined();
@@ -143,8 +154,5 @@ export async function launchWithRedirect(app: FastifyInstance, start: StartBody)
 
 /** The provider URL a browser is redirected to once it has followed authorizationUrl through the launch hop. */
 export async function providerRedirect(app: FastifyInstance, start: StartBody): Promise<URL> {
-  const url = new URL(start.authorizationUrl);
-  const response = await app.inject({ method: "GET", url: `${url.pathname}${url.search}` });
-  expect(response.statusCode, "launch").toBe(302);
-  return new URL(response.headers.location as string);
+  return (await followLaunch(app, stateOf(start))).providerUrl;
 }

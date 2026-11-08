@@ -15,6 +15,8 @@ export interface BrowserHandoffSuccess extends BrowserHandoffBase {
   /** A verified link waiting for its initiator's confirm; carries no session. */
   pendingLinkId?: string;
   attemptId?: string;
+  /** The receipt of the consent a managed connection rests on. */
+  consentReceiptId?: string;
 }
 
 export interface BrowserHandoffError extends BrowserHandoffBase {
@@ -22,6 +24,8 @@ export interface BrowserHandoffError extends BrowserHandoffBase {
   error: string;
   errorDescription?: string;
   attemptId?: string;
+  /** Who said no, when `error` is consent_refused. */
+  by?: "viewer" | "provider";
 }
 
 export type BrowserHandoffPayload = BrowserHandoffSuccess | BrowserHandoffError;
@@ -47,6 +51,9 @@ function buildBrowserFallbackUrl(payload: BrowserHandoffPayload): string {
     fragment.set("heimdall_attempt_id", payload.attemptId);
   }
 
+  if (payload.status === "success" && payload.consentReceiptId) {
+    fragment.set("heimdall_consent_receipt_id", payload.consentReceiptId);
+  }
   if (payload.status === "success" && payload.completionCode) {
     fragment.set("heimdall_completion_code", payload.completionCode);
   } else if (payload.status === "success" && payload.pendingLinkId) {
@@ -54,6 +61,9 @@ function buildBrowserFallbackUrl(payload: BrowserHandoffPayload): string {
   } else {
     if (payload.status === "error") {
       fragment.set("heimdall_error", payload.error);
+      if (payload.by) {
+        fragment.set("heimdall_refused_by", payload.by);
+      }
       if (payload.errorDescription) {
         fragment.set("heimdall_error_description", payload.errorDescription);
       }
@@ -77,14 +87,19 @@ export function renderBrowserHandoffPage(payload: BrowserHandoffPayload): string
   });
   const scriptOrigin = serializeForScript(targetOrigin);
   const scriptFallbackUrl = serializeForScript(fallbackUrl);
-  const scriptTitle = serializeForScript(
-    payload.status === "success" ? "Authentication Complete" : "Authentication Failed"
-  );
+  const refused = payload.status === "error" && payload.error === "consent_refused";
+  const pageTitle = refused ? "Not Connected" : payload.status === "success" ? "Authentication Complete" : "Authentication Failed";
+  const scriptTitle = serializeForScript(pageTitle);
   const scriptBody = serializeForScript(
-    payload.status === "success"
-      ? payload.handoffKind === "backend_callback"
-        ? "The app backend has the auth result already. You can return to the app now."
-        : "You can return to the app now."
+    refused
+      ? "Nothing was connected and nothing was kept. You can return to the app."
+      : payload.status === "success"
+      ? (payload.handoffKind === "backend_callback"
+          ? "The app backend has the auth result already. You can return to the app now."
+          : "You can return to the app now.") +
+        (payload.consentReceiptId
+          ? ` Your consent is recorded as receipt ${payload.consentReceiptId}; you can review it and take it back from your Heimdall connections page.`
+          : "")
       : "The authentication flow failed. Return to the app to continue."
   );
 
@@ -93,7 +108,7 @@ export function renderBrowserHandoffPage(payload: BrowserHandoffPayload): string
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>${payload.status === "success" ? "Authentication Complete" : "Authentication Failed"}</title>
+    <title>${pageTitle}</title>
     <style>
       :root {
         color-scheme: light dark;

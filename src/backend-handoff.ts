@@ -30,6 +30,8 @@ export interface BackendHandoffSuccessPayload
   mode: OAuthMode;
   account: AccountSummary;
   entitlements: EntitlementEvaluation;
+  /** The receipt of the consent a managed connection rests on. */
+  consentReceiptId?: string;
 }
 
 export interface BackendHandoffErrorPayload extends BackendHandoffBase {
@@ -37,6 +39,8 @@ export interface BackendHandoffErrorPayload extends BackendHandoffBase {
   mode?: OAuthMode;
   error: string;
   errorDescription?: string;
+  /** Who said no, when `error` is consent_refused. */
+  by?: "viewer" | "provider";
 }
 
 /** A verified link that waits for the initiating account's confirm: no session, no tokens. */

@@ -7,7 +7,9 @@ import {
   type CreateAuthAttemptInput,
   type ClaimOAuthStateUseInput,
   type CreateAuthCompletionInput,
+  type CreateConsentReceiptInput,
   type CreatePendingLinkInput,
+  type StoredConsentReceipt,
   type StoredPendingLink,
   type CreateAuditEventInput,
   type CreateCapabilityGrantInput,
@@ -248,6 +250,39 @@ function mapSessionRow(row: SessionRow): StoredSession {
   };
 }
 
+interface ConsentReceiptRow {
+  id: string;
+  kind: "grant" | "revocation";
+  account_id: string;
+  app_slug: AppSlug;
+  provider: Provider;
+  created_at: Date | string;
+  scopes_asked: string | null;
+  scopes_granted: string | null;
+  consent_page_digest: string | null;
+  revokes_receipt_id: string | null;
+}
+
+function mapConsentReceiptRow(row: ConsentReceiptRow): StoredConsentReceipt {
+  const base = {
+    id: row.id,
+    accountId: row.account_id,
+    appSlug: row.app_slug,
+    provider: row.provider,
+    createdAt: normalizeTimestamp(row.created_at),
+  };
+  if (row.kind === "revocation") {
+    return { ...base, kind: "revocation", revokesReceiptId: row.revokes_receipt_id ?? "" };
+  }
+  return {
+    ...base,
+    kind: "grant",
+    scopesAsked: parseScopes(row.scopes_asked ?? ""),
+    scopesGranted: parseScopes(row.scopes_granted ?? ""),
+    consentPageDigest: row.consent_page_digest ?? "",
+  };
+}
+
 function mapPendingLinkRow(row: PendingLinkRow): StoredPendingLink {
   const link: StoredPendingLink = {
     id: row.id,
@@ -421,6 +456,7 @@ export const STORE_TABLE_PRIVILEGES: Readonly<Record<string, readonly ("SELECT" 
   oauth_state_uses: ["INSERT"],
   capability_grants: ["SELECT", "INSERT"],
   entitlement_snapshots: ["SELECT", "INSERT", "UPDATE"],
+  consent_receipts: ["SELECT", "INSERT"],
   audit_events: ["INSERT"],
 };
 
@@ -1194,6 +1230,41 @@ export class PostgresStore implements HeimdallStore {
         JSON.stringify(input.rawSummaryJson),
       ]
     );
+  }
+
+  async createConsentReceipt(input: CreateConsentReceiptInput): Promise<StoredConsentReceipt> {
+    const grant = input.kind === "grant" ? input : null;
+    const result = await this.pool.query<ConsentReceiptRow>(
+      `
+      INSERT INTO consent_receipts (
+        id, kind, account_id, app_slug, provider, created_at,
+        scopes_asked, scopes_granted, consent_page_digest, revokes_receipt_id
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      RETURNING *
+      `,
+      [
+        randomUUID(),
+        input.kind,
+        input.accountId,
+        input.appSlug,
+        input.provider,
+        input.createdAt,
+        grant ? grant.scopesAsked.join(" ") : null,
+        grant ? grant.scopesGranted.join(" ") : null,
+        grant ? grant.consentPageDigest : null,
+        input.kind === "revocation" ? input.revokesReceiptId : null,
+      ]
+    );
+    return mapConsentReceiptRow(expectRow(result.rows[0], "createConsentReceipt"));
+  }
+
+  async listConsentReceipts(accountId: string): Promise<StoredConsentReceipt[]> {
+    const result = await this.pool.query<ConsentReceiptRow>(
+      `SELECT * FROM consent_receipts WHERE account_id = $1 ORDER BY created_at, id`,
+      [accountId]
+    );
+    return result.rows.map(mapConsentReceiptRow);
   }
 
   async createAuditEvent(input: CreateAuditEventInput): Promise<void> {
