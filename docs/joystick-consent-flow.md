@@ -78,10 +78,14 @@ same function that builds the authorization URL), what Heimdall keeps (an
 encrypted refresh token and access token, until the person takes it back or the
 provider ends it), what the app receives, and how to take it back. It carries
 two POST forms to `/v1/oauth/:provider/consent`, **Continue to Joystick** and
-**No, return to the app**, and runs no script. It sets the binding cookie, so
-either answer can only come from the browser that was shown the ask; an answer
-without the cookie is `state_not_bound` and spends nothing. Viewing the ask
-claims nothing. Continue claims the launch use and answers `302`.
+**No, return to the app**, and runs no script. It sets the ask's own
+cookie (`__Host-heimdall-ask-<jti>`), which carries the exact text shown and is
+accepted only by Continue and No; an answer without it is `state_not_bound` and
+spends nothing. Viewing the ask claims nothing and binds nothing: the launch
+binding cookie, which decides who may complete the state, is set only when
+Continue claims the launch, and it carries the text shown on to the callback.
+(An earlier cut set the binding on the ask, so anyone holding the launch URL
+could become the state's owner; review of 2026-11-08 found it.)
 
 What the app receives, stated as the code does it: not a claim. The app
 backend can call `managed-credentials/resolve` and receive the current access
@@ -104,14 +108,19 @@ including Bifrost's and Repixelizer's sign-in; see the PR for the contract note.
 
 On a granted `custody_only` completion Heimdall writes one `consent_receipts`
 row of kind `grant`: id (random), account, app, provider, scopes asked, scopes
-granted (as the provider returned them), `consentPageDigest` (sha-256 of the
-lines the page showed, so a wording change is visible), `createdAt`. The id
+granted (as the provider returned them), `consentText` (the lines and
+button labels shown, taken from the ask and never rebuilt, so a deploy between
+ask and callback cannot change what the receipt says), `consentPageDigest`
+(sha-256 of that text), `createdAt`. A custody callback with no shown text
+exchanges no code and stores no credential. The id
 reaches the app (`consentReceiptId` in the completion and backend payloads) and
 the person (the handoff page).
 
 Receipts are append-only: the store role has `SELECT` and `INSERT` on the table
 and nothing else. A revocation is a second row of kind `revocation` naming the
-grant it takes back; a grant is live exactly when no revocation names it. The
+grant it takes back, unique per grant (a partial unique index); a grant is live
+exactly when no revocation names it, and a concurrent second revoke reports
+nothing and writes nothing. The
 draft's `revokedAt` slot is gone for that reason.
 
 ### 3.4 My grants
@@ -124,7 +133,8 @@ Bearer`), or a page link minted from one.
   else gets `{grants, receipts}`.
 - `POST /v1/me/grants/link` (bearer): `{url}` to the page, valid ten minutes.
   The token is signed, purpose-bound (`heimdall_grants_page`), stateless, and
-  opens only this page and its revoke forms. This is how a browser that holds no
+  opens only this page and its revoke forms. The forms on a page opened by a link
+  carry the link's own expiry, so using a link never renews it. This is how a browser that holds no
   session gets in; Heimdall sets no new cookie and stores nothing for it.
 - `POST /v1/me/grants/:id/revoke` (bearer, or the page token in the form):
   strips the stored tokens from the credential, then writes a revocation row
