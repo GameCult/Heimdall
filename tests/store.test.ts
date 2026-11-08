@@ -241,7 +241,7 @@ describe("PostgresStore.createConsentReceipt revocation conflict", () => {
     const second = await store.createConsentReceipt({ ...base, kind: "revocation", createdAt: "2026-11-08T02:00:00.000Z", revokesReceiptId: grant.id });
     expect(second.receipt.id).toBe(first.receipt.id);
     expect(second.receipt.id).not.toBe(otherRevocation.receipt.id);
-    expect(second.receipt.revokesReceiptId).toBe(grant.id);
+    expect(second.receipt).toMatchObject({ kind: "revocation", revokesReceiptId: grant.id });
   });
 });
 

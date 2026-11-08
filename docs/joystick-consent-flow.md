@@ -192,6 +192,34 @@ the least stored.
    at the ask). A custody callback whose binding carries no wording is refused
    with `consent_text_missing` before the state is claimed, so nothing is burned.
 
+### Refusal return contract (for app authors)
+
+A person's No at the ask, or a provider `access_denied`, is `consent_refused`.
+No completion code is minted and the state is spent. What each side gets:
+
+- **Browser.** A 200 HTML page titled "Not Connected" (a non-HTML caller gets a 400
+  JSON `{error, by, provider, returnTo}`). The page does not redirect: by ruling
+  it never navigates on its own. It posts the payload to `window.opener`
+  (target origin = the origin of `returnTo`), tries `window.close()` after 50 ms,
+  and offers a "Return to the app" link. In a plain tab the person clicks it.
+- **The link** is `returnTo` with a fragment (read `location.hash`; it never
+  reaches a server): `heimdall_status=error`, `heimdall_error=consent_refused`,
+  `heimdall_refused_by=viewer|provider`, `heimdall_provider`,
+  `heimdall_handoff_kind`, `heimdall_app_slug`, `heimdall_mode`, and
+  `heimdall_attempt_id` when the flow carries an attempt. There is no
+  `heimdall_completion_code`; a page with none, and `heimdall_error`, is a refusal.
+  A fault is a different `heimdall_error` (`provider_error` and others).
+- **postMessage** carries `{source: "heimdall", kind: "oauth_result",
+  status: "error", error: "consent_refused", by, provider, appSlug, mode,
+  returnTo, handoffKind, attemptId?}`.
+- **Backend callback apps** get the same result POSTed to their callback URL
+  (`status: "error"`, `error: "consent_refused"`, `by`, `attemptId`). An auth
+  attempt is marked `denied` with `denialCode: "consent_refused"`, which
+  `completeAuth` returns as `denied`.
+
+`tests/joystick-consent.test.ts` ("the refusal return contract") pins the
+fragment for both refusals and the attempt id.
+
 ## 5. Out of scope
 
 Enabling Joystick in `identityProviders`; fixing

@@ -1311,7 +1311,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           appSlug: state.app_slug,
           mode: state.mode,
           returnTo: state.return_to,
-          ...(handoff.kind === "backend_callback" ? { attemptId: handoff.attemptId } : {}),
+          ...(handoff.attemptId ? { attemptId: handoff.attemptId } : {}),
           error: "consent_refused",
           by,
         })

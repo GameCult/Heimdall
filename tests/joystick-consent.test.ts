@@ -2,7 +2,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { deflateRawSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type FastifyInstance } from "fastify";
-import { buildApp, getHeimdallRuntimeContext } from "../src/app.js";
+import { buildApp, getHeimdallRuntimeContext, startOAuthFlow } from "../src/app.js";
+import { resolveAppCaller } from "../src/app-caller.js";
 import { consentDigest, consentText, digestOfText, type ConsentAsk } from "../src/consent.js";
 import { decodeJwt, signJwt } from "../src/signing.js";
 import { type OAuthProviderRuntime } from "../src/oauth.js";
@@ -365,6 +366,77 @@ describe("refusal", () => {
       ["error", "consent_refused", "viewer"],
       ["error", "consent_refused", "provider"],
     ]);
+  });
+});
+
+/** What an app's landing page can read: the fragment on the page's "Return to the app" link. */
+function returnFragment(page: { body: string }): URLSearchParams {
+  const href = /id="return-link" href="([^"]+)"/.exec(page.body)?.[1];
+  expect(href, "the page carries a return link").toBeDefined();
+  const url = new URL(href!);
+  expect(url.origin + url.pathname).toBe("https://streampixels.gamecult.org/settings");
+  return new URLSearchParams(url.hash.slice(1));
+}
+
+describe("the refusal return contract", () => {
+  const refusedFragment = (by: "viewer" | "provider") => ({
+    heimdall_status: "error",
+    heimdall_provider: "joystick",
+    heimdall_handoff_kind: "browser_completion",
+    heimdall_app_slug: "streampixels",
+    heimdall_mode: "connect",
+    heimdall_error: "consent_refused",
+    heimdall_refused_by: by,
+  });
+
+  it("a decline returns a fragment that says the viewer refused, with no completion code", async () => {
+    const { app } = await newApp();
+    const state = await startConnect(app);
+    const { cookie } = await seeAsk(app, state);
+    const fragment = returnFragment(await answer(app, state, "decline", cookie));
+    expect(Object.fromEntries(fragment)).toEqual(refusedFragment("viewer"));
+    expect(fragment.has("heimdall_completion_code")).toBe(false);
+  });
+
+  it("a provider access_denied returns a fragment that says the provider refused, with no completion code", async () => {
+    const { app } = await newApp();
+    const flow = await newFlow(app);
+    const fragment = returnFragment(await callback(app, flow.state, flow.cookie, "error=access_denied", "text/html"));
+    expect(Object.fromEntries(fragment)).toEqual(refusedFragment("provider"));
+    expect(fragment.has("heimdall_completion_code")).toBe(false);
+  });
+
+  it.each(["viewer", "provider"] as const)("a browser_completion attempt refused by the %s is named in the fragment", async (by) => {
+    const { app, store } = await newApp();
+    const ctx = getHeimdallRuntimeContext(app);
+    const attempt = await store.createAuthAttempt({
+      handle: "attempt-refused",
+      appSlug: "streampixels",
+      provider: "joystick",
+      mode: "connect",
+      returnTo: "https://streampixels.gamecult.org/settings",
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 600_000).toISOString(),
+    });
+    const caller = resolveAppCaller(ctx.config, "streampixels", secret);
+    const started = await startOAuthFlow(
+      ctx,
+      "joystick",
+      caller,
+      { appSlug: "streampixels", mode: "connect", connection: { kind: "creator", targetId: "creator-1" }, returnTo: "https://streampixels.gamecult.org/settings", handoff: { kind: "browser_completion" } },
+      { trustedBrowserAttemptId: attempt.handle }
+    );
+    expect(started.statusCode).toBe(201);
+    const state = stateOf(started.body as Parameters<typeof stateOf>[0]);
+    const { cookie } = await seeAsk(app, state);
+    let page;
+    if (by === "viewer") {
+      page = await answer(app, state, "decline", cookie);
+    } else {
+      const go = await answer(app, state, "continue", cookie);
+      page = await callback(app, state, bindingCookieOf(go)!, "error=access_denied", "text/html");
+    }
+    expect(Object.fromEntries(returnFragment(page))).toEqual({ ...refusedFragment(by), heimdall_attempt_id: "attempt-refused" });
   });
 });
 
