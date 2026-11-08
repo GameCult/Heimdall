@@ -574,6 +574,14 @@ Important behavior:
   that takes the lock inside the backoff answers the same
   `managed_credential_refresh_failed` without calling the provider. A rotation,
   a revocation or a re-link clears the marker.
+  Residual risk: if a Heimdall process dies between the provider's token
+  answer and the commit of the marker or the rotation, nothing is recorded, and
+  the next caller can present the refresh token the provider already consumed;
+  for a provider that rotates (Joystick) that reads as token theft. Closing it
+  needs a write-ahead record of the attempt, written before the provider call on
+  a connection that does not wait on the row lock (a separate table). That is
+  deferred by steward ruling and tracked as
+  `joystick:follow_up:write-ahead-refresh-attempt-record`
   The provider call is bounded at 10 seconds
 - a provider whose refresh tokens rotate (Joystick) fails closed: a refresh
   response without a new refresh token revokes the credential instead of
