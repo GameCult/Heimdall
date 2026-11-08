@@ -193,10 +193,14 @@ CREATE TABLE IF NOT EXISTS consent_receipts (
   scopes_granted TEXT,
   consent_page_digest TEXT,
   consent_text TEXT,
-  revokes_receipt_id TEXT
+  revokes_receipt_id TEXT,
+  UNIQUE(id, account_id),
+  FOREIGN KEY (revokes_receipt_id, account_id) REFERENCES consent_receipts(id, account_id)
 );
 
--- A grant is taken back once: the second revocation naming it conflicts.
+-- A revocation names a receipt of its own account (the composite foreign key;
+-- NULL skips it for grants). A grant is taken back once: the second
+-- revocation naming it conflicts.
 CREATE UNIQUE INDEX IF NOT EXISTS consent_receipts_revokes_unique_idx
   ON consent_receipts(revokes_receipt_id)
   WHERE revokes_receipt_id IS NOT NULL;
@@ -265,7 +269,7 @@ export const REQUIRED_TABLES = createdTables.map(({ table }) => table);
 export const REQUIRED_COLUMNS = [
   ...createdTables.flatMap(({ table, lines }) =>
     lines
-      .filter((line) => !/^(?:PRIMARY KEY|UNIQUE)\b/.test(line))
+      .filter((line) => !/^(?:PRIMARY KEY|UNIQUE|FOREIGN KEY)\b/.test(line))
       .map((line) => {
         const [, column, type] = /^(\w+) (\w+)/.exec(line)!;
         return { table, column: column!, type: type!, nullable: !/\b(?:NOT NULL|PRIMARY KEY)\b/.test(line) };

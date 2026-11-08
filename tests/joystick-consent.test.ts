@@ -1,4 +1,5 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { deflateRawSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type FastifyInstance } from "fastify";
 import { buildApp, getHeimdallRuntimeContext } from "../src/app.js";
@@ -197,17 +198,72 @@ describe("the ask", () => {
     expect(bindingCookieOf(go)!.length).toBeLessThan(3500);
   });
 
-  it("a managed connection that never passed through the ask completes nothing and leaves no receipt", async () => {
+  it("a binding without the shown wording is refused with consent_text_missing before the state is spent", async () => {
     const { app, store } = await newApp();
     const ctx = getHeimdallRuntimeContext(app);
     const state = await startConnect(app);
     const { jti, exp } = decodeJwt(state).payload as { jti: string; exp: number };
-    // A binding that names this state but carries no wording: what any launch outside the ask would leave.
+    // A binding that names this state but carries no wording: what a launch from before the ask would leave.
     const bare = signJwt({ typ: "heimdall_oauth_binding", iss: ctx.config.issuer, jti, iat: exp - 600, exp }, ctx.keys);
     const done = await callback(app, state, `__Host-heimdall-oauth-${jti}=${bare}`, "code=code-a");
-    expect(done.statusCode).not.toBe(201);
-    expect(done.json()).not.toHaveProperty("consentReceiptId");
+    expect(done.statusCode).toBe(400);
+    expect(done.json()).toEqual({ error: "consent_text_missing" });
     expect(await store.findStoredLinkedIdentity("joystick", "joy-a"), "no credential is kept").toBeNull();
+    // Neither use of the state was spent by the refusal.
+    const usedAt = new Date().toISOString();
+    const expiresAt = new Date(exp * 1000).toISOString();
+    expect(await store.claimOAuthStateUse({ jti, phase: "callback", appSlug: "streampixels", usedAt, expiresAt })).toBe(true);
+  });
+
+  describe("the wording a cookie may carry", () => {
+    const signedAsk = (ctx: ReturnType<typeof getHeimdallRuntimeContext>, jti: string, exp: number, text: Buffer) =>
+      signJwt({ typ: "heimdall_consent_ask", iss: ctx.config.issuer, jti, iat: exp - 600, exp, ct: deflateRawSync(text).toString("base64url") }, ctx.keys);
+
+    it("is read up to 16 KB and no further: one byte over is refused, and a bomb is refused quickly", async () => {
+      const { app } = await newApp();
+      const ctx = getHeimdallRuntimeContext(app);
+      const state = await startConnect(app);
+      const { jti, exp } = decodeJwt(state).payload as { jti: string; exp: number };
+      const answerWith = (text: Buffer, decision: "decline" | "continue" = "decline") =>
+        answer(app, state, decision, `__Host-heimdall-ask-${jti}=${signedAsk(ctx, jti, exp, text)}`, "application/json");
+      expect((await answerWith(Buffer.alloc(16 * 1024 + 1, 97))).json()).toEqual({ error: "state_not_bound" });
+      const t0 = Date.now();
+      expect((await answerWith(Buffer.alloc(300 * 1024 * 1024))).json()).toEqual({ error: "state_not_bound" });
+      expect(Date.now() - t0).toBeLessThan(1500);
+      // At the cap it is read.
+      expect((await answerWith(Buffer.alloc(16 * 1024, 97))).json()).toMatchObject({ error: "consent_refused" });
+    });
+
+    it("requested scopes are capped at 32 of 512 characters, at start", async () => {
+      const { app } = await newApp();
+      const startWith = (requestedScopes: string[]) =>
+        app.inject({
+          method: "POST",
+          url: "/v1/oauth/joystick/start",
+          headers: secret,
+          payload: { appSlug: "streampixels", mode: "connect", connection: { kind: "creator", targetId: "c" }, returnTo: "https://streampixels.gamecult.org/s", handoff: { kind: "browser_completion" }, requestedScopes },
+        });
+      const scopes = (n: number, len: number) => Array.from({ length: n }, (_, i) => `${i}`.padEnd(len, "x"));
+      expect((await startWith(scopes(33, 10))).json()).toMatchObject({ error: "requested_scopes_too_large" });
+      expect((await startWith(scopes(1, 513))).json()).toMatchObject({ error: "requested_scopes_too_large" });
+      expect((await startWith(scopes(32, 512))).statusCode).toBe(201);
+    });
+
+    it("an ask the cookies could not carry is refused, not shown", async () => {
+      const { app } = await newApp();
+      const noise = Array.from({ length: 32 }, () => randomBytes(256).toString("hex")); // 32 x 512 incompressible
+      const start = await app.inject({
+        method: "POST",
+        url: "/v1/oauth/joystick/start",
+        headers: secret,
+        payload: { appSlug: "streampixels", mode: "connect", connection: { kind: "creator", targetId: "c" }, returnTo: "https://streampixels.gamecult.org/s", handoff: { kind: "browser_completion" }, requestedScopes: noise },
+      });
+      expect(start.statusCode).toBe(201);
+      const page = await app.inject({ method: "GET", url: launchUrl(stateOf(start.json())), headers: { accept: "text/html" } });
+      expect(page.statusCode).toBe(400);
+      expect(page.json()).toEqual({ error: "consent_ask_too_large" });
+      expect(askCookieOf(page)).toBeUndefined();
+    });
   });
 
   it("the consent route refuses a flow that has no ask", async () => {

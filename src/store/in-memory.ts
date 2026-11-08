@@ -488,6 +488,10 @@ export class InMemoryStore implements HeimdallStore {
 
   async createConsentReceipt(input: CreateConsentReceiptInput): Promise<{ receipt: StoredConsentReceipt; created: boolean }> {
     if (input.kind === "revocation") {
+      // The table's foreign key: a revocation names a receipt of the same account.
+      if (!this.consentReceipts.some((r) => r.id === input.revokesReceiptId && r.accountId === input.accountId)) {
+        throw new Error("A revocation must name a receipt of its own account.");
+      }
       const existing = this.consentReceipts.find((r) => r.kind === "revocation" && r.revokesReceiptId === input.revokesReceiptId);
       if (existing) return { receipt: clone(existing), created: false };
     }

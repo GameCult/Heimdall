@@ -272,6 +272,14 @@ function signOAuthBinding(
 
 const consentAskType = "heimdall_consent_ask";
 
+/** The most wording a cookie may carry, before and after compression. The ask refuses what exceeds it; the readers never inflate past it. */
+const maxConsentTextBytes = 16 * 1024;
+/** Browsers drop a cookie above 4096 bytes; the ask refuses one it could not keep. */
+const maxConsentCookieChars = 3800;
+/** What an app may request: more is not a scope list a person can read. */
+const maxRequestedScopes = 32;
+const maxRequestedScopeChars = 512;
+
 function consentAskCookieName(jti: string): string {
   return `__Host-heimdall-ask-${jti}`;
 }
@@ -305,7 +313,7 @@ function cookieConsentText(
     return null;
   }
   try {
-    return inflateRawSync(Buffer.from(ct, "base64url")).toString("utf8");
+    return inflateRawSync(Buffer.from(ct, "base64url"), { maxOutputLength: maxConsentTextBytes }).toString("utf8");
   } catch {
     return null;
   }
@@ -744,6 +752,16 @@ export async function startOAuthFlow(
     }
   } else if (input.initiatingAccountId !== undefined) {
     return { statusCode: 400, body: { error: "initiator_only_in_link_mode" } };
+  }
+
+  if (
+    input.requestedScopes !== undefined &&
+    (input.requestedScopes.length > maxRequestedScopes || input.requestedScopes.some((scope) => scope.length > maxRequestedScopeChars))
+  ) {
+    return {
+      statusCode: 400,
+      body: { error: "requested_scopes_too_large", detail: `At most ${maxRequestedScopes} scopes of ${maxRequestedScopeChars} characters each.` },
+    };
   }
 
   if (!isAllowedReturnOrigin(profile, input.returnTo)) {
@@ -1221,7 +1239,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     request: FastifyRequest,
     reply: FastifyReply,
     state: OAuthStatePayload,
-    error: "state_not_bound" | "state_already_launched" | "state_already_used"
+    error: "state_not_bound" | "state_already_launched" | "state_already_used" | "consent_text_missing"
   ) => {
     reply.code(400);
     const profile = getAppProfile(state.app_slug);
@@ -1385,7 +1403,15 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         // the page so that the form's answer can only come from the browser
         // that was shown it, and carries the text it was shown.
         const ask = consentAskFor(state);
-        setConsentAskCookie(reply, state, signConsentAsk(config, keys, state, consentText(ask)), state.exp - nowEpochSeconds());
+        const shown = consentText(ask);
+        const askCookie = signConsentAsk(config, keys, state, shown);
+        // An ask the cookies cannot carry is refused, not shown: the person
+        // could press Continue and nothing would bind.
+        if (Buffer.byteLength(shown, "utf8") > maxConsentTextBytes || askCookie.length > maxConsentCookieChars) {
+          reply.code(400);
+          return { error: "consent_ask_too_large" };
+        }
+        setConsentAskCookie(reply, state, askCookie, state.exp - nowEpochSeconds());
         reply.header("Cache-Control", "no-store");
         reply.header("Referrer-Policy", "no-referrer");
         reply.header("X-Frame-Options", "DENY");
@@ -1507,6 +1533,17 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         await denyBrowserAttempt("state_not_bound");
         return refuseVerifiedState(request, reply, statePayload, "state_not_bound");
       }
+      // A custody flow carries the wording its person was shown in the launch
+      // binding. A binding without it did not pass through the ask (a launch
+      // from before it existed): refuse here, before the state is spent and
+      // before any code is exchanged, so nothing is kept and nothing is burned.
+      const shownText = cookieConsentText(config, keys, request.cookies[oauthBindingCookieName(statePayload.jti)], oauthBindingType, statePayload);
+      const callbackProfile = getAppProfile(statePayload.app_slug);
+      const mint = callbackProfile ? callbackMint(callbackProfile, request.params.provider, statePayload.mode, statePayload.connection) : "refused";
+      if (mint === "custody_only" && shownText === null) {
+        await denyBrowserAttempt("consent_text_missing");
+        return refuseVerifiedState(request, reply, statePayload, "consent_text_missing");
+      }
       setOAuthBindingCookie(reply, statePayload, "", 0);
       const firstCallback = await store.claimOAuthStateUse({
         jti: statePayload.jti,
@@ -1614,20 +1651,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       const runtime = oauthRuntimes[request.params.provider];
 
       try {
-        const callbackProfile = getAppProfile(statePayload.app_slug);
-        const mint = callbackProfile ? callbackMint(callbackProfile, request.params.provider, statePayload.mode, statePayload.connection) : "refused";
         if (mint === "refused") {
           throw new Error("The signed state names a mode the provider has no role for in this app.");
-        }
-        // The text the person was shown rode in the launch binding. A custody
-        // flow that did not pass through the ask has none: it exchanges no code
-        // and stores no credential.
-        const shownText =
-          mint === "custody_only"
-            ? cookieConsentText(config, keys, request.cookies[oauthBindingCookieName(statePayload.jti)], oauthBindingType, statePayload)
-            : null;
-        if (mint === "custody_only" && shownText === null) {
-          throw new Error("A managed connection completed without the consent text the person was shown.");
         }
         const callbackDescriptor = providerCatalog[request.params.provider];
         const oidc = callbackDescriptor.oidc ? deriveOidcSecrets(statePayload.jti, keys.privateKey) : undefined;

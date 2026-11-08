@@ -14,7 +14,7 @@ import {
   samePredicate,
   STORE_TABLE_PRIVILEGES,
 } from "../src/store/postgres.js";
-import { REQUIRED_COLUMNS, REQUIRED_KEYS, REQUIRED_TABLES } from "../src/store/schema.js";
+import { CREATE_SCHEMA_SQL, REQUIRED_COLUMNS, REQUIRED_KEYS, REQUIRED_TABLES } from "../src/store/schema.js";
 
 describe("PostgresStore", () => {
   it("round-trips core auth records through postgres", async () => {
@@ -198,6 +198,18 @@ describe("PostgresStore", () => {
   });
 });
 
+describe("consent_receipts foreign key", () => {
+  it("a revocation names a receipt of its own account: the schema says so and the memory store enforces it", async () => {
+    expect(CREATE_SCHEMA_SQL).toContain("FOREIGN KEY (revokes_receipt_id, account_id) REFERENCES consent_receipts(id, account_id)");
+    const store = new InMemoryStore();
+    const base = { appSlug: "streampixels" as const, provider: "joystick" as const, createdAt: "2026-11-08T00:00:00.000Z" };
+    const { receipt: grant } = await store.createConsentReceipt({ ...base, accountId: "a", kind: "grant", scopesAsked: [], scopesGranted: [], consentPageDigest: "d", consentText: "t" });
+    await expect(store.createConsentReceipt({ ...base, accountId: "b", kind: "revocation", revokesReceiptId: grant.id })).rejects.toThrow(/own account/);
+    await expect(store.createConsentReceipt({ ...base, accountId: "a", kind: "revocation", revokesReceiptId: "no-such" })).rejects.toThrow(/own account/);
+    expect(await store.listConsentReceipts("a")).toHaveLength(1);
+  });
+});
+
 describe("InMemoryStore.createConsentReceipt", () => {
   it("writes one revocation per grant: the second names the first and is not created", async () => {
     const store = new InMemoryStore();
@@ -297,13 +309,14 @@ describe("PostgresStore.checkSchema", () => {
         { table: "auth_completions", column: "attempt_id", type: "TEXT", nullable: true },
       ])
     );
-    expect(REQUIRED_KEYS).toHaveLength(16);
+    expect(REQUIRED_KEYS).toHaveLength(17);
     expect(REQUIRED_KEYS).toEqual(
       expect.arrayContaining([
         { table: "linked_identities", columns: "provider,provider_user_id", predicate: "" },
         { table: "private_command_receipts", columns: "app_slug,idempotency_key", predicate: "" },
         { table: "oauth_state_uses", columns: "jti,phase", predicate: "" },
         { table: "consent_receipts", columns: "revokes_receipt_id", predicate: "revokes_receipt_id IS NOT NULL" },
+        { table: "consent_receipts", columns: "account_id,id", predicate: "" },
         { table: "entitlement_snapshots", columns: "account_id,provider,scope", predicate: "" },
         { table: "auth_completions", columns: "app_slug,attempt_id", predicate: "attempt_id IS NOT NULL AND consumed_at IS NULL" },
       ])
