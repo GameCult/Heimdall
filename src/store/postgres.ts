@@ -260,6 +260,7 @@ interface ConsentReceiptRow {
   scopes_asked: string | null;
   scopes_granted: string | null;
   consent_page_digest: string | null;
+  consent_text: string | null;
   revokes_receipt_id: string | null;
 }
 
@@ -280,6 +281,7 @@ function mapConsentReceiptRow(row: ConsentReceiptRow): StoredConsentReceipt {
     scopesAsked: parseScopes(row.scopes_asked ?? ""),
     scopesGranted: parseScopes(row.scopes_granted ?? ""),
     consentPageDigest: row.consent_page_digest ?? "",
+    consentText: row.consent_text ?? "",
   };
 }
 
@@ -1232,15 +1234,18 @@ export class PostgresStore implements HeimdallStore {
     );
   }
 
-  async createConsentReceipt(input: CreateConsentReceiptInput): Promise<StoredConsentReceipt> {
+  async createConsentReceipt(input: CreateConsentReceiptInput): Promise<{ receipt: StoredConsentReceipt; created: boolean }> {
     const grant = input.kind === "grant" ? input : null;
+    // No conflict target and the partial unique index decides: a second
+    // revocation of one grant inserts nothing and the first is read back.
     const result = await this.pool.query<ConsentReceiptRow>(
       `
       INSERT INTO consent_receipts (
         id, kind, account_id, app_slug, provider, created_at,
-        scopes_asked, scopes_granted, consent_page_digest, revokes_receipt_id
+        scopes_asked, scopes_granted, consent_page_digest, consent_text, revokes_receipt_id
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      ON CONFLICT DO NOTHING
       RETURNING *
       `,
       [
@@ -1253,10 +1258,18 @@ export class PostgresStore implements HeimdallStore {
         grant ? grant.scopesAsked.join(" ") : null,
         grant ? grant.scopesGranted.join(" ") : null,
         grant ? grant.consentPageDigest : null,
+        grant ? grant.consentText : null,
         input.kind === "revocation" ? input.revokesReceiptId : null,
       ]
     );
-    return mapConsentReceiptRow(expectRow(result.rows[0], "createConsentReceipt"));
+    if (result.rowCount) {
+      return { receipt: mapConsentReceiptRow(expectRow(result.rows[0], "createConsentReceipt")), created: true };
+    }
+    const existing = await this.pool.query<ConsentReceiptRow>(
+      `SELECT * FROM consent_receipts WHERE revokes_receipt_id = $1`,
+      [input.kind === "revocation" ? input.revokesReceiptId : null]
+    );
+    return { receipt: mapConsentReceiptRow(expectRow(existing.rows[0], "createConsentReceipt")), created: false };
   }
 
   async listConsentReceipts(accountId: string): Promise<StoredConsentReceipt[]> {

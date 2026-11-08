@@ -120,8 +120,8 @@ async function followLaunch(app: FastifyInstance, state: string): Promise<Launch
   let response = await app.inject({ method: "GET", url: `/v1/oauth/${provider}/launch?state=${encodeURIComponent(state)}` });
   if (response.statusCode === 200) {
     // Heimdall's ask (managed custody): the person says Continue, with the cookie the ask set.
-    const asked = setCookieOf(response).find((value) => value.startsWith("__Host-heimdall-oauth-"));
-    expect(asked, "the ask sets the binding cookie").toBeDefined();
+    const asked = setCookieOf(response).find((value) => value.startsWith("__Host-heimdall-ask-"));
+    expect(asked, "the ask sets its own cookie").toBeDefined();
     response = await app.inject({
       method: "POST",
       url: `/v1/oauth/${provider}/consent`,

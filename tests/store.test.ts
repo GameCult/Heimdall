@@ -198,6 +198,19 @@ describe("PostgresStore", () => {
   });
 });
 
+describe("InMemoryStore.createConsentReceipt", () => {
+  it("writes one revocation per grant: the second names the first and is not created", async () => {
+    const store = new InMemoryStore();
+    const base = { accountId: "a", appSlug: "streampixels" as const, provider: "joystick" as const, createdAt: "2026-11-08T00:00:00.000Z" };
+    const { receipt: grant } = await store.createConsentReceipt({ ...base, kind: "grant", scopesAsked: [], scopesGranted: [], consentPageDigest: "d", consentText: "t" });
+    const first = await store.createConsentReceipt({ ...base, kind: "revocation", revokesReceiptId: grant.id });
+    const second = await store.createConsentReceipt({ ...base, createdAt: "2026-11-09T00:00:00.000Z", kind: "revocation", revokesReceiptId: grant.id });
+    expect([first.created, second.created]).toEqual([true, false]);
+    expect(second.receipt).toEqual(first.receipt);
+    expect(await store.listConsentReceipts("a")).toHaveLength(2);
+  });
+});
+
 describe("InMemoryStore.claimOAuthStateUse", () => {
   const use = {
     jti: "state-1",
@@ -273,7 +286,7 @@ describe("PostgresStore.checkSchema", () => {
       "consent_receipts",
       "audit_events",
     ]);
-    expect(REQUIRED_COLUMNS).toHaveLength(111);
+    expect(REQUIRED_COLUMNS).toHaveLength(112);
     expect(REQUIRED_COLUMNS).toEqual(
       expect.arrayContaining([
         { table: "auth_completions", column: "code", type: "TEXT", nullable: false },
@@ -284,12 +297,13 @@ describe("PostgresStore.checkSchema", () => {
         { table: "auth_completions", column: "attempt_id", type: "TEXT", nullable: true },
       ])
     );
-    expect(REQUIRED_KEYS).toHaveLength(15);
+    expect(REQUIRED_KEYS).toHaveLength(16);
     expect(REQUIRED_KEYS).toEqual(
       expect.arrayContaining([
         { table: "linked_identities", columns: "provider,provider_user_id", predicate: "" },
         { table: "private_command_receipts", columns: "app_slug,idempotency_key", predicate: "" },
         { table: "oauth_state_uses", columns: "jti,phase", predicate: "" },
+        { table: "consent_receipts", columns: "revokes_receipt_id", predicate: "revokes_receipt_id IS NOT NULL" },
         { table: "entitlement_snapshots", columns: "account_id,provider,scope", predicate: "" },
         { table: "auth_completions", columns: "app_slug,attempt_id", predicate: "attempt_id IS NOT NULL AND consumed_at IS NULL" },
       ])
@@ -419,7 +433,7 @@ async function exerciseStore(store: PostgresStore): Promise<Set<string>> {
   expect(await s.claimOAuthStateUse(stateUse)).toBe(true);
   expect(await s.claimOAuthStateUse(stateUse)).toBe(false);
   expect(await s.claimOAuthStateUse({ ...stateUse, phase: "callback" })).toBe(true);
-  const grant = await s.createConsentReceipt({ kind: "grant", accountId: account.id, appSlug: "streampixels", provider: "joystick", createdAt: now, scopesAsked: ["a", "b"], scopesGranted: ["a"], consentPageDigest: "d" });
+  const { receipt: grant } = await s.createConsentReceipt({ kind: "grant", accountId: account.id, appSlug: "streampixels", provider: "joystick", createdAt: now, scopesAsked: ["a", "b"], scopesGranted: ["a"], consentPageDigest: "d", consentText: "t" });
   await s.createConsentReceipt({ kind: "revocation", accountId: account.id, appSlug: "streampixels", provider: "joystick", createdAt: later, revokesReceiptId: grant.id });
   expect((await s.listConsentReceipts(account.id)).map((r) => r.kind)).toEqual(["grant", "revocation"]);
   await s.createAuditEvent({ eventType: "probe", eventPayloadJson: {}, createdAt: now });

@@ -43,8 +43,27 @@ export function consentLines(ask: ConsentAsk): string[] {
   ];
 }
 
+/** The labels on the two buttons. They are wording the person agrees to, so they are part of the text. */
+export function consentButtons(ask: ConsentAsk): { go: string; no: string } {
+  return { go: `Continue to ${providerCatalog[ask.provider].displayName}`, no: "No, return to the app" };
+}
+
+/**
+ * Everything the person reads before answering, as one text: the lines and the
+ * button labels. It is built once, when the ask is rendered, and that exact
+ * text travels with the flow to the receipt; nothing rebuilds it later.
+ */
+export function consentText(ask: ConsentAsk): string {
+  const { go, no } = consentButtons(ask);
+  return [...consentLines(ask), go, no].join("\n");
+}
+
+export function digestOfText(text: string): string {
+  return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
 export function consentDigest(ask: ConsentAsk): string {
-  return createHash("sha256").update(consentLines(ask).join("\n"), "utf8").digest("hex");
+  return digestOfText(consentText(ask));
 }
 
 export function escapeHtml(value: string): string {
@@ -98,13 +117,14 @@ ${rest.map((line) => `        <li>${escapeHtml(line)}</li>`).join("\n")}
       </ul>
       <form method="post" action="/v1/oauth/${ask.provider}/consent">
         <input type="hidden" name="state" value="${escapeHtml(state)}">
-        ${form("continue", `Continue to ${provider}`)}
-        ${form("decline", "No, return to the app")}
+        ${form("continue", consentButtons(ask).go)}
+        ${form("decline", consentButtons(ask).no)}
       </form>`
   );
 }
 
 export interface GrantView {
+  consentText: string;
   id: string;
   appSlug: AppSlug;
   provider: Provider;
@@ -135,6 +155,7 @@ export function grantViews(receipts: readonly StoredConsentReceipt[]): GrantView
       scopesGranted: receipt.scopesGranted,
       grantedAt: receipt.createdAt,
       consentPageDigest: receipt.consentPageDigest,
+      consentText: receipt.consentText,
       status: revocation ? "revoked" : "active",
       ...(revocation ? { revokedAt: revocation.createdAt, revocationReceiptId: revocation.id } : {}),
     });

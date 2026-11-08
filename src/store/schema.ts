@@ -192,8 +192,14 @@ CREATE TABLE IF NOT EXISTS consent_receipts (
   scopes_asked TEXT,
   scopes_granted TEXT,
   consent_page_digest TEXT,
+  consent_text TEXT,
   revokes_receipt_id TEXT
 );
+
+-- A grant is taken back once: the second revocation naming it conflicts.
+CREATE UNIQUE INDEX IF NOT EXISTS consent_receipts_revokes_unique_idx
+  ON consent_receipts(revokes_receipt_id)
+  WHERE revokes_receipt_id IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS consent_receipts_account_idx
   ON consent_receipts(account_id, created_at);

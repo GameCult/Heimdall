@@ -1,4 +1,5 @@
 import { createHmac, randomUUID } from "node:crypto";
+import { deflateRawSync, inflateRawSync } from "node:zlib";
 import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
 import Fastify, { type FastifyError, type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
@@ -26,7 +27,7 @@ import {
 import { issueAccessClaim, type IssueAccessClaimInput } from "./claims.js";
 import { builtInAppProfiles, getAppProfile, isAllowedReturnOrigin, serializeAppProfile, admitsProviderForMode, callbackMint } from "./app-profiles.js";
 import { renderBrowserHandoffPage } from "./browser-handoff.js";
-import { consentDigest, grantViews, GRANTS_PATH, renderConsentPage, renderGrantsPage, type ConsentAsk } from "./consent.js";
+import { consentText, digestOfText, grantViews, GRANTS_PATH, renderConsentPage, renderGrantsPage, type ConsentAsk } from "./consent.js";
 import { type HeimdallConfig, loadConfig } from "./config.js";
 import { createTokenCustody, type TokenCustody } from "./custody.js";
 import { grantFact } from "./facts.js";
@@ -252,12 +253,72 @@ function oauthBindingCookieName(jti: string): string {
 function signOAuthBinding(
   config: HeimdallConfig,
   keys: ReturnType<typeof createRuntimeKeyMaterial>,
-  state: OAuthStatePayload
+  state: OAuthStatePayload,
+  shownText?: string
 ): string {
   return signJwt(
-    { typ: oauthBindingType, iss: config.issuer, jti: state.jti, iat: nowEpochSeconds(), exp: state.exp },
+    {
+      typ: oauthBindingType,
+      iss: config.issuer,
+      jti: state.jti,
+      iat: nowEpochSeconds(),
+      exp: state.exp,
+      // The wording the person agreed to, carried from the ask to the receipt.
+      ...(shownText === undefined ? {} : { ct: deflateRawSync(shownText).toString("base64url") }),
+    },
     keys
   );
+}
+
+const consentAskType = "heimdall_consent_ask";
+
+function consentAskCookieName(jti: string): string {
+  return `__Host-heimdall-ask-${jti}`;
+}
+
+/**
+ * The ask's own cookie. It proves a browser was shown the ask and carries the
+ * exact text shown; only Continue and No accept it. It is not the launch
+ * binding: that is set when Continue claims the launch, so that merely opening
+ * the launch URL never makes a browser the state's owner.
+ */
+function signConsentAsk(config: HeimdallConfig, keys: ReturnType<typeof createRuntimeKeyMaterial>, state: OAuthStatePayload, shownText: string): string {
+  return signJwt(
+    { typ: consentAskType, iss: config.issuer, jti: state.jti, iat: nowEpochSeconds(), exp: state.exp, ct: deflateRawSync(shownText).toString("base64url") },
+    keys
+  );
+}
+
+/** The text a held cookie of the given type carries, or null when the cookie is absent, foreign, expired or carries none. */
+function cookieConsentText(
+  config: HeimdallConfig,
+  keys: ReturnType<typeof createRuntimeKeyMaterial>,
+  token: string | undefined,
+  type: string,
+  state: OAuthStatePayload
+): string | null {
+  if (!token) return null;
+  const verification = verifyJwt(token, keys.publicKey);
+  if (!verification.valid) return null;
+  const { typ, iss, jti, exp, ct } = verification.payload;
+  if (typ !== type || iss !== config.issuer || jti !== state.jti || typeof exp !== "number" || exp <= nowEpochSeconds() || typeof ct !== "string") {
+    return null;
+  }
+  try {
+    return inflateRawSync(Buffer.from(ct, "base64url")).toString("utf8");
+  } catch {
+    return null;
+  }
+}
+
+function setConsentAskCookie(reply: FastifyReply, state: OAuthStatePayload, value: string, maxAgeSeconds: number): void {
+  reply.setCookie(consentAskCookieName(state.jti), value, {
+    path: "/",
+    secure: true,
+    httpOnly: true,
+    sameSite: "lax",
+    maxAge: Math.max(0, maxAgeSeconds),
+  });
 }
 
 function oauthBindingHolds(
@@ -827,18 +888,27 @@ const grantsPageTokenType = "heimdall_grants_page";
 const grantsPageTokenTtlSeconds = 600;
 
 /** A short, purpose-bound proof of a signed-in account, so the grants page can be opened and its forms posted by a browser that holds no session. */
-function signGrantsPageToken(config: HeimdallConfig, keys: ReturnType<typeof createRuntimeKeyMaterial>, accountId: string): string {
-  const iat = nowEpochSeconds();
-  return signJwt({ typ: grantsPageTokenType, iss: config.issuer, account_id: accountId, iat, exp: iat + grantsPageTokenTtlSeconds }, keys);
+function signGrantsPageToken(
+  config: HeimdallConfig,
+  keys: ReturnType<typeof createRuntimeKeyMaterial>,
+  accountId: string,
+  exp: number = nowEpochSeconds() + grantsPageTokenTtlSeconds
+): string {
+  return signJwt({ typ: grantsPageTokenType, iss: config.issuer, account_id: accountId, iat: nowEpochSeconds(), exp }, keys);
 }
 
-function grantsPageTokenAccount(config: HeimdallConfig, keys: ReturnType<typeof createRuntimeKeyMaterial>, token: unknown): string | null {
+/** The account and expiry a page token proves. A page's own forms are signed to this same expiry, so a link is never renewed by being used. */
+function grantsPageTokenAccount(
+  config: HeimdallConfig,
+  keys: ReturnType<typeof createRuntimeKeyMaterial>,
+  token: unknown
+): { accountId: string; exp: number } | null {
   if (typeof token !== "string") return null;
   const verification = verifyJwt(token, keys.publicKey);
   if (!verification.valid) return null;
   const { typ, iss, account_id: accountId, exp } = verification.payload;
   return typ === grantsPageTokenType && iss === config.issuer && typeof accountId === "string" && typeof exp === "number" && exp > nowEpochSeconds()
-    ? accountId
+    ? { accountId, exp }
     : null;
 }
 
@@ -1239,7 +1309,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   };
 
   /** Claim the launch use, bind the browser, and send it to the provider. */
-  const beginProviderRedirect = async (request: FastifyRequest, reply: FastifyReply, state: OAuthStatePayload, rawState: string) => {
+  const beginProviderRedirect = async (request: FastifyRequest, reply: FastifyReply, state: OAuthStatePayload, rawState: string, shownText?: string) => {
     const clientId = config.providers[state.provider].clientId;
     if (!clientId) {
       return providerNotConfigured(reply, state);
@@ -1256,7 +1326,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     }
 
     const oidc = providerCatalog[state.provider].oidc ? deriveOidcSecrets(state.jti, keys.privateKey) : undefined;
-    setOAuthBindingCookie(reply, state, signOAuthBinding(config, keys, state), state.exp - nowEpochSeconds());
+    setOAuthBindingCookie(reply, state, signOAuthBinding(config, keys, state, shownText), state.exp - nowEpochSeconds());
     reply.header("Cache-Control", "no-store");
     reply.header("Referrer-Policy", "no-referrer");
     return reply.redirect(
@@ -1310,10 +1380,12 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           return providerNotConfigured(reply, state);
         }
         // Heimdall is about to hold a credential for the app: ask first. Viewing
-        // the ask claims nothing; only Continue spends the launch use. The
-        // binding cookie rides on the page so that the form's answer can only
-        // come from the browser that was shown it.
-        setOAuthBindingCookie(reply, state, signOAuthBinding(config, keys, state), state.exp - nowEpochSeconds());
+        // the ask claims nothing and binds nothing; only Continue spends the
+        // launch use and sets the launch binding. The ask's own cookie rides on
+        // the page so that the form's answer can only come from the browser
+        // that was shown it, and carries the text it was shown.
+        const ask = consentAskFor(state);
+        setConsentAskCookie(reply, state, signConsentAsk(config, keys, state, consentText(ask)), state.exp - nowEpochSeconds());
         reply.header("Cache-Control", "no-store");
         reply.header("Referrer-Policy", "no-referrer");
         reply.header("X-Frame-Options", "DENY");
@@ -1322,7 +1394,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           `default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self' ${new URL(providerCatalog[state.provider].authorizationEndpoint).origin}`
         );
         reply.type("text/html; charset=utf-8");
-        return reply.send(renderConsentPage(consentAskFor(state), request.query.state));
+        return reply.send(renderConsentPage(ask, request.query.state));
       }
       return beginProviderRedirect(request, reply, state, request.query.state);
     }
@@ -1365,11 +1437,13 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         return { error: "consent_not_required" };
       }
       // Either answer must come from the browser the ask was shown to.
-      if (!oauthBindingHolds(config, keys, request.cookies[oauthBindingCookieName(state.jti)], state)) {
+      const shownText = cookieConsentText(config, keys, request.cookies[consentAskCookieName(state.jti)], consentAskType, state);
+      if (shownText === null) {
         return refuseVerifiedState(request, reply, state, "state_not_bound");
       }
+      setConsentAskCookie(reply, state, "", 0);
       if (request.body.decision === "continue") {
-        return beginProviderRedirect(request, reply, state, request.body.state);
+        return beginProviderRedirect(request, reply, state, request.body.state, shownText);
       }
       // A decline spends both uses of the state: it can neither launch nor complete afterwards.
       const usedAt = new Date().toISOString();
@@ -1710,7 +1784,13 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         let consentReceiptId: string | undefined;
         if (mint === "custody_only") {
           const ask = consentAskFor(statePayload);
-          const receipt = await store.createConsentReceipt({
+          // The text the person was shown rode in the launch binding. A custody
+          // flow that did not pass through the ask has none and completes nothing.
+          const shownText = cookieConsentText(config, keys, request.cookies[oauthBindingCookieName(statePayload.jti)], oauthBindingType, statePayload);
+          if (shownText === null) {
+            throw new Error("A managed connection completed without the consent text the person was shown.");
+          }
+          const { receipt } = await store.createConsentReceipt({
             kind: "grant",
             accountId: account.id,
             appSlug: statePayload.app_slug,
@@ -1718,7 +1798,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
             createdAt: nowIso,
             scopesAsked: [...ask.scopes],
             scopesGranted: tokenSet.scope,
-            consentPageDigest: consentDigest(ask),
+            consentPageDigest: digestOfText(shownText),
+            consentText: shownText,
           });
           consentReceiptId = receipt.id;
         }
@@ -2504,9 +2585,12 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     }
   );
 
-  const grantsAccount = async (request: FastifyRequest, pageToken?: unknown): Promise<string | null> =>
-    (await resolveAccessAccount({ config, keys, store }, request.headers.authorization)) ??
-    grantsPageTokenAccount(config, keys, pageToken);
+  /** The signed-in account, and the expiry the page's own forms get: a bearer starts a fresh window, a page link only passes on the one it has. */
+  const grantsAccount = async (request: FastifyRequest, pageToken?: unknown): Promise<{ accountId: string; exp: number } | null> => {
+    const bearerAccount = await resolveAccessAccount({ config, keys, store }, request.headers.authorization);
+    if (bearerAccount) return { accountId: bearerAccount, exp: nowEpochSeconds() + grantsPageTokenTtlSeconds };
+    return grantsPageTokenAccount(config, keys, pageToken);
+  };
 
   const grantsReply = (reply: FastifyReply) => {
     reply.header("Cache-Control", "no-store");
@@ -2526,13 +2610,14 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     GRANTS_PATH,
     { schema: { querystring: { type: "object", additionalProperties: false, properties: { t: { type: "string" } } } } },
     async (request, reply) => {
-      const accountId = await grantsAccount(request, request.query.t);
-      if (!accountId) return signInRequired(reply);
+      const caller = await grantsAccount(request, request.query.t);
+      if (!caller) return signInRequired(reply);
+      const { accountId } = caller;
       grantsReply(reply);
       const receipts = await store.listConsentReceipts(accountId);
       if (prefersHtml(request.headers.accept)) {
         reply.type("text/html; charset=utf-8");
-        return reply.send(renderGrantsPage(grantViews(receipts), signGrantsPageToken(config, keys, accountId)));
+        return reply.send(renderGrantsPage(grantViews(receipts), signGrantsPageToken(config, keys, accountId, caller.exp)));
       }
       return { grants: grantViews(receipts), receipts };
     }
@@ -2559,8 +2644,9 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       },
     },
     async (request, reply) => {
-      const accountId = await grantsAccount(request, request.body?.t);
-      if (!accountId) return signInRequired(reply);
+      const caller = await grantsAccount(request, request.body?.t);
+      if (!caller) return signInRequired(reply);
+      const { accountId } = caller;
       grantsReply(reply);
       const receipts = await store.listConsentReceipts(accountId);
       const grant = grantViews(receipts).find((view) => view.id === request.params.grantId);
@@ -2580,7 +2666,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           await store.updateLinkedIdentityCredential(identity.id, async () => ({ kind: "revoke", updatedAt: at }));
         }
         for (const live of grantViews(receipts).filter((view) => view.provider === grant.provider && view.status === "active")) {
-          await store.createConsentReceipt({
+          const { created } = await store.createConsentReceipt({
             kind: "revocation",
             accountId,
             appSlug: live.appSlug,
@@ -2588,19 +2674,22 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
             createdAt: at,
             revokesReceiptId: live.id,
           });
-          revoked.push(live.id);
+          // A concurrent revoke may have written it first; only the writer reports it.
+          if (created) revoked.push(live.id);
         }
-        await store.createAuditEvent({
-          accountId,
-          eventType: "consent_revoked",
-          eventPayloadJson: { provider: grant.provider, grantIds: revoked },
-          createdAt: at,
-        });
+        if (revoked.length) {
+          await store.createAuditEvent({
+            accountId,
+            eventType: "consent_revoked",
+            eventPayloadJson: { provider: grant.provider, grantIds: revoked },
+            createdAt: at,
+          });
+        }
       }
       if (prefersHtml(request.headers.accept) || request.headers["content-type"]?.startsWith("application/x-www-form-urlencoded")) {
         reply.type("text/html; charset=utf-8");
         const views = grantViews(await store.listConsentReceipts(accountId));
-        return reply.send(renderGrantsPage(views, signGrantsPageToken(config, keys, accountId), revoked.length ? "Taken back." : "Already taken back."));
+        return reply.send(renderGrantsPage(views, signGrantsPageToken(config, keys, accountId, caller.exp), revoked.length ? "Taken back." : "Already taken back."));
       }
       return { revoked, grants: grantViews(await store.listConsentReceipts(accountId)) };
     }

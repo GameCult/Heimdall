@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type FastifyInstance } from "fastify";
-import { buildApp } from "../src/app.js";
-import { consentDigest, consentLines, type ConsentAsk } from "../src/consent.js";
+import { buildApp, getHeimdallRuntimeContext } from "../src/app.js";
+import { consentDigest, consentText, digestOfText, type ConsentAsk } from "../src/consent.js";
+import { decodeJwt, signJwt } from "../src/signing.js";
 import { type OAuthProviderRuntime } from "../src/oauth.js";
 import { providerCatalog } from "../src/providers.js";
 import { InMemoryStore } from "../src/store/index.js";
@@ -64,14 +65,17 @@ async function startConnect(app: FastifyInstance, handoff: Record<string, unknow
 }
 
 const launchUrl = (state: string) => `/v1/oauth/joystick/launch?state=${encodeURIComponent(state)}`;
-const cookieOf = (response: { headers: Record<string, unknown> }) =>
-  setCookieOf(response).find((value) => value.startsWith("__Host-heimdall-oauth-"))!.split(";")[0]!;
+const cookieNamed = (prefix: string) => (response: { headers: Record<string, unknown> }) =>
+  setCookieOf(response).find((value) => value.startsWith(prefix))?.split(";")[0];
+const askCookieOf = cookieNamed("__Host-heimdall-ask-");
+const bindingCookieOf = cookieNamed("__Host-heimdall-oauth-");
 
-/** The browser is shown the ask. */
+/** The browser is shown the ask. The cookie it keeps is the ask's, which binds nothing. */
 async function seeAsk(app: FastifyInstance, state: string) {
   const response = await app.inject({ method: "GET", url: launchUrl(state), headers: { accept: "text/html" } });
   expect(response.statusCode).toBe(200);
-  return { page: response, cookie: cookieOf(response) };
+  expect(bindingCookieOf(response), "the ask must not set the launch binding").toBeUndefined();
+  return { page: response, cookie: askCookieOf(response)! };
 }
 
 function answer(app: FastifyInstance, state: string, decision: "continue" | "decline", cookie?: string, accept = "text/html") {
@@ -94,10 +98,10 @@ function callback(app: FastifyInstance, state: string, cookie: string, query: st
 /** Ask, accept, and complete as Joystick user `user`; returns the callback's JSON. */
 async function grantAs(app: FastifyInstance, user: string) {
   const state = await startConnect(app);
-  const { cookie } = await seeAsk(app, state);
-  const go = await answer(app, state, "continue", cookie);
+  const asked = await seeAsk(app, state);
+  const go = await answer(app, state, "continue", asked.cookie);
   expect(go.statusCode).toBe(302);
-  const done = await callback(app, state, cookie, `code=code-${user}`);
+  const done = await callback(app, state, bindingCookieOf(go)!, `code=code-${user}`);
   expect(done.statusCode).toBe(201);
   return done.json() as { accessToken: string; consentReceiptId: string; account: { id: string }; session: { accountId: string } };
 }
@@ -167,6 +171,44 @@ describe("the ask", () => {
     expect((await answer(app, state, "continue", cookie)).statusCode).toBe(302);
   });
 
+  it("a stranger who only opens the launch URL is not bound to the state and cannot complete it", async () => {
+    const { app } = await newApp();
+    const state = await startConnect(app);
+    const victim = await seeAsk(app, state);
+    await answer(app, state, "continue", victim.cookie);
+    // A fresh browser that holds the URL loads the ask and calls back with its own provider code.
+    const stranger = await seeAsk(app, state);
+    for (const cookie of [stranger.cookie, ""]) {
+      const done = await callback(app, state, cookie, "code=code-attacker");
+      expect(done.statusCode).toBe(400);
+      expect(done.json()).toEqual({ error: "state_not_bound" });
+    }
+  });
+
+  it("only Continue sets the launch binding, and the ask's cookie is no binding: it cannot complete a callback", async () => {
+    const { app } = await newApp();
+    const state = await startConnect(app);
+    const asked = await seeAsk(app, state);
+    const done = await callback(app, state, asked.cookie, "code=code-a");
+    expect(done.json()).toEqual({ error: "state_not_bound" });
+    const go = await answer(app, state, "continue", asked.cookie);
+    expect(bindingCookieOf(go)).toBeDefined();
+    expect(bindingCookieOf(go)!.length).toBeLessThan(3500);
+  });
+
+  it("a managed connection that never passed through the ask completes nothing and leaves no receipt", async () => {
+    const { app, store } = await newApp();
+    const ctx = getHeimdallRuntimeContext(app);
+    const state = await startConnect(app);
+    const { jti, exp } = decodeJwt(state).payload as { jti: string; exp: number };
+    // A binding that names this state but carries no wording: what any launch outside the ask would leave.
+    const bare = signJwt({ typ: "heimdall_oauth_binding", iss: ctx.config.issuer, jti, iat: exp - 600, exp }, ctx.keys);
+    const done = await callback(app, state, `__Host-heimdall-oauth-${jti}=${bare}`, "code=code-a");
+    expect(done.statusCode).not.toBe(201);
+    expect(done.json()).not.toHaveProperty("consentReceiptId");
+    expect(await store.listConsentReceipts((await store.findStoredLinkedIdentity("joystick", "joy-a"))?.accountId ?? "none")).toEqual([]);
+  });
+
   it("the consent route refuses a flow that has no ask", async () => {
     const { app } = await newApp();
     const start = await app.inject({
@@ -189,8 +231,8 @@ describe("the ask", () => {
 
 describe("the wording digest", () => {
   const ask: ConsentAsk = { appSlug: "streampixels", provider: "joystick", scopes: ["identity:read"], returnOrigin: "https://streampixels.gamecult.org" };
-  it("is the sha-256 of the lines shown, and moves with the app, provider, scopes and origin", () => {
-    expect(consentDigest(ask)).toBe(createHash("sha256").update(consentLines(ask).join("\n"), "utf8").digest("hex"));
+  it("is the sha-256 of the text shown, and moves with the app, provider, scopes and origin", () => {
+    expect(consentDigest(ask)).toBe(createHash("sha256").update(consentText(ask), "utf8").digest("hex"));
     const variants: ConsentAsk[] = [
       { ...ask, appSlug: "bifrost" },
       { ...ask, provider: "twitch" },
@@ -212,7 +254,7 @@ describe("refusal", () => {
 
     // Nothing launches or completes afterwards, and nothing was kept.
     expect((await answer(app, state, "continue", cookie, "application/json")).json()).toEqual({ error: "state_already_launched" });
-    expect((await callback(app, state, cookie, "code=code-a")).json()).toEqual({ error: "state_already_used" });
+    expect((await callback(app, state, cookie, "code=code-a")).json()).toEqual({ error: "state_not_bound" });
     expect(await store.findStoredLinkedIdentity("joystick", "joy-a")).toBeNull();
     const events = [...(store as unknown as { auditEvents: Map<string, { eventType: string; eventPayloadJson: unknown }> }).auditEvents.values()];
     expect(events.filter((event) => event.eventType === "consent_refused").map((event) => event.eventPayloadJson)).toEqual([
@@ -259,8 +301,8 @@ describe("refusal", () => {
     await answer(app, byViewer, "decline", cookie);
     const byProvider = await startConnect(app, handoff);
     const second = await seeAsk(app, byProvider);
-    await answer(app, byProvider, "continue", second.cookie);
-    await callback(app, byProvider, second.cookie, "error=access_denied");
+    const proceeded = await answer(app, byProvider, "continue", second.cookie);
+    await callback(app, byProvider, bindingCookieOf(proceeded)!, "error=access_denied");
 
     expect(delivered.map((payload) => [payload.status, payload.error, payload.by])).toEqual([
       ["error", "consent_refused", "viewer"],
@@ -272,8 +314,9 @@ describe("refusal", () => {
 async function newFlow(app: FastifyInstance) {
   const state = await startConnect(app);
   const { cookie } = await seeAsk(app, state);
-  expect((await answer(app, state, "continue", cookie)).statusCode).toBe(302);
-  return { state, cookie };
+  const go = await answer(app, state, "continue", cookie);
+  expect(go.statusCode).toBe(302);
+  return { state, cookie: bindingCookieOf(go)! };
 }
 
 describe("the receipt", () => {
@@ -295,6 +338,21 @@ describe("the receipt", () => {
     });
   });
 
+  it("the receipt holds the wording the person was shown, and its digest is that wording's hash", async () => {
+    const { app, store } = await newApp();
+    const state = await startConnect(app);
+    const asked = await seeAsk(app, state);
+    const go = await answer(app, state, "continue", asked.cookie);
+    const done = await callback(app, state, bindingCookieOf(go)!, "code=code-a");
+    const [receipt] = await store.listConsentReceipts(done.json().account.id);
+    if (receipt?.kind !== "grant") throw new Error("no grant");
+    expect(receipt.consentPageDigest).toBe(digestOfText(receipt.consentText));
+    const shown = asked.page.body.replace(/&#39;/g, "'").replace(/&quot;/g, '"').replace(/&gt;/g, ">").replace(/&lt;/g, "<").replace(/&amp;/g, "&");
+    for (const line of receipt.consentText.split("\n")) expect(shown, line).toContain(line);
+    expect(receipt.consentText).toContain("Continue to Joystick");
+    expect(receipt.consentText).toContain("No, return to the app");
+  });
+
   it("a refusal leaves no receipt", async () => {
     const { app, store } = await newApp();
     const state = await startConnect(app);
@@ -308,8 +366,8 @@ describe("the receipt", () => {
     const { app } = await newApp();
     const state = await startConnect(app);
     const { cookie } = await seeAsk(app, state);
-    await answer(app, state, "continue", cookie);
-    const page = await callback(app, state, cookie, "code=code-a", "text/html");
+    const go = await answer(app, state, "continue", cookie);
+    const page = await callback(app, state, bindingCookieOf(go)!, "code=code-a", "text/html");
     expect(page.statusCode).toBe(200);
     expect(page.body).toMatch(/receipt [0-9a-f-]{36}/);
   });
@@ -422,6 +480,43 @@ describe("my grants", () => {
     expect(post.statusCode).toBe(200);
     expect(post.body).toContain("Taken back.");
     expect((await resolveCredential(app, a.account.id)).statusCode).toBe(410);
+  });
+
+  it("a page link is never renewed by being used: the forms on its page expire when the link does", async () => {
+    const { app } = await newApp();
+    const a = await grantAs(app, "a");
+    const link = await app.inject({ method: "POST", url: "/v1/me/grants/link", headers: bearer(a.accessToken) });
+    const url = new URL(link.json().url as string);
+    const linkToken = url.searchParams.get("t")!;
+    const page = await app.inject({ method: "GET", url: `${url.pathname}${url.search}`, headers: { accept: "text/html" } });
+    const formToken = /name="t" value="([^"]+)"/.exec(page.body)![1]!;
+    expect(decodeJwt(formToken).payload.exp).toBe(decodeJwt(linkToken).payload.exp);
+    // The same holds one hop on: the page a form post answers with.
+    const post = await app.inject({
+      method: "POST",
+      url: "/v1/me/grants/nope/revoke",
+      headers: { ...form, accept: "text/html" },
+      payload: new URLSearchParams({ t: formToken }).toString(),
+    });
+    expect(post.statusCode).toBe(404);
+    // A bearer, by contrast, opens a fresh window.
+    const fresh = await app.inject({ method: "GET", url: "/v1/me/grants", headers: { ...bearer(a.accessToken), accept: "text/html" } });
+    const freshToken = /name="t" value="([^"]+)"/.exec(fresh.body)![1]!;
+    expect(decodeJwt(freshToken).payload.exp).toBeGreaterThanOrEqual(decodeJwt(linkToken).payload.exp as number);
+  });
+
+  it("two revokes at once take the grant back once: one revocation row, one audit event, one reporter", async () => {
+    const { app, store } = await newApp();
+    const a = await grantAs(app, "a");
+    const url = `/v1/me/grants/${a.consentReceiptId}/revoke`;
+    const [one, two] = await Promise.all([
+      app.inject({ method: "POST", url, headers: bearer(a.accessToken) }),
+      app.inject({ method: "POST", url, headers: bearer(a.accessToken) }),
+    ]);
+    expect([one.json().revoked.length, two.json().revoked.length].sort()).toEqual([0, 1]);
+    expect((await store.listConsentReceipts(a.account.id)).filter((r) => r.kind === "revocation")).toHaveLength(1);
+    const events = [...(store as unknown as { auditEvents: Map<string, { eventType: string }> }).auditEvents.values()];
+    expect(events.filter((event) => event.eventType === "consent_revoked")).toHaveLength(1);
   });
 
   it("a page link proves only what it was minted for: an access token, a foreign token or none opens nothing", async () => {

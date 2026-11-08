@@ -486,10 +486,14 @@ export class InMemoryStore implements HeimdallStore {
     this.auditEvents.set(event.id ?? randomUUID(), event);
   }
 
-  async createConsentReceipt(input: CreateConsentReceiptInput): Promise<StoredConsentReceipt> {
+  async createConsentReceipt(input: CreateConsentReceiptInput): Promise<{ receipt: StoredConsentReceipt; created: boolean }> {
+    if (input.kind === "revocation") {
+      const existing = this.consentReceipts.find((r) => r.kind === "revocation" && r.revokesReceiptId === input.revokesReceiptId);
+      if (existing) return { receipt: clone(existing), created: false };
+    }
     const receipt = { id: randomUUID(), ...clone(input) } as StoredConsentReceipt;
     this.consentReceipts.push(clone(receipt));
-    return clone(receipt);
+    return { receipt: clone(receipt), created: true };
   }
 
   async listConsentReceipts(accountId: string): Promise<StoredConsentReceipt[]> {
