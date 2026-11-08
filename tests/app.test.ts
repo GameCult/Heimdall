@@ -1492,10 +1492,12 @@ describe("Heimdall service", () => {
       const app = await buildApp({ config: createTestConfig() });
       apps.push(app);
 
-      for (const targetId of ["   ", "\t", "\n ", "\u200B", "\u00A0\uFEFF"]) {
-        const refused = await startFor(app, provider, { kind: "creator", targetId }, own);
-        expect([refused.statusCode, refused.json().error], JSON.stringify(targetId)).toEqual([400, "invalid_connection_target"]);
-        expect(refused.body).not.toContain("authorizationUrl");
+      for (const kind of ["creator", "account"]) {
+        for (const targetId of ["   ", "\t", "\n ", "\u200B", "\u00A0\uFEFF"]) {
+          const refused = await startFor(app, provider, { kind, targetId }, own);
+          expect([refused.statusCode, refused.json().error], `${kind} ${JSON.stringify(targetId)}`).toEqual([400, "invalid_connection_target"]);
+          expect(refused.body).not.toContain("authorizationUrl");
+        }
       }
       expect((await startFor(app, provider, { kind: "creator", targetId: " creator-1 " }, own)).statusCode).toBe(201);
     });
