@@ -816,6 +816,7 @@ export class PostgresStore implements HeimdallStore {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      let decision: CredentialDecision | undefined;
       try {
         const locked = await client.query<LinkedIdentityRow>(
           "SELECT * FROM linked_identities WHERE id = $1 FOR UPDATE",
@@ -826,7 +827,7 @@ export class PostgresStore implements HeimdallStore {
           return null;
         }
         const row = mapLinkedIdentityRow(expectRow(locked.rows[0], "updateLinkedIdentityCredential"));
-        const decision = await decide(row);
+        decision = await decide(row);
         let committed = row;
         if (decision.kind === "failed") {
           const marked = await client.query<LinkedIdentityRow>(
@@ -863,6 +864,14 @@ export class PostgresStore implements HeimdallStore {
         return committed;
       } catch (error) {
         await client.query("ROLLBACK");
+        if (decision?.kind === "rotate") {
+          // The provider answered and may have consumed the refresh token, and the rotation could not be committed: the
+          // rollback took the answer with it. Leave the marker in a transaction of its own, so the next caller does not
+          // present the old token. Best effort: if this write fails too, the original error is the one that matters.
+          await client
+            .query("UPDATE linked_identities SET refresh_failed_at = $2 WHERE id = $1", [id, decision.updatedAt])
+            .catch(() => undefined);
+        }
         throw error;
       }
     } finally {

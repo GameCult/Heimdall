@@ -539,6 +539,91 @@ for (const { kind, live } of rigKinds) describe.skipIf(live && !adminUrl)(`manag
       expect((await rig.row()).refreshFailedAt).toBeUndefined();
     });
 
+    it("cross-process failed-refresh marker: stamped with the time of the failure, so a slow failure does not eat the backoff", timeout, async () => {
+      const rig = await makeRig(provider);
+      const endpoint = installTokenEndpoint(provider, "refresh-0");
+      endpoint.mode = "server_error";
+      const t0 = Date.now();
+      // The provider call takes 9 s of the clock's time: the failure is known at t0 + 9 s, not at t0.
+      const slowClock = () => t0 + (endpoint.calls > 0 ? 9_000 : 0);
+      const ctx = (store: HeimdallStore, clock: () => number) => ({ config: rig.config, store, tokenCustody: rig.custody, oauthRuntimes: createOAuthRuntimeRegistry(), clock });
+      const snapshot = await rig.row();
+
+      await expect(refreshManagedCredential(ctx(rig.stores[0]!, slowClock), snapshot)).rejects.toBeInstanceOf(ManagedCredentialRefreshFailed);
+      expect((await rig.row()).refreshFailedAt).toBe(new Date(t0 + 9_000).toISOString());
+
+      // 51 s after the failure, 60 s after the attempt began: still inside the backoff.
+      const other = rig.stores[rig.stores.length - 1]!;
+      await expect(refreshManagedCredential(ctx(other, () => t0 + MANAGED_CREDENTIAL_REFRESH_BACKOFF_MS), snapshot)).rejects.toBeInstanceOf(ManagedCredentialRefreshFailed);
+      expect(endpoint.calls).toBe(1);
+    });
+
+    it("cross-process failed-refresh marker: a failure after the provider answered still leaves the marker (the provider may have consumed the token)", timeout, async () => {
+      const rig = await makeRig(provider);
+      const endpoint = installTokenEndpoint(provider, "refresh-0");
+      const snapshot = await rig.row();
+      const throwingCustody = {
+        ...rig.custody,
+        encrypt: (plaintext: string) => {
+          if (plaintext === "access-1") throw new Error("CANARY custody encrypt failed");
+          return rig.custody.encrypt(plaintext);
+        },
+      };
+      const ctx = (store: HeimdallStore, tokenCustody: typeof rig.custody) => ({ config: rig.config, store, tokenCustody, oauthRuntimes: createOAuthRuntimeRegistry() });
+
+      const failure = await refreshManagedCredential(ctx(rig.stores[0]!, throwingCustody), snapshot).then(() => undefined, (error: unknown) => error);
+      expect(failure).toBeInstanceOf(ManagedCredentialRefreshFailed);
+      expect(String(failure) + JSON.stringify(failure)).not.toContain("CANARY");
+      expect(endpoint.calls).toBe(1);
+      const marked = await rig.row();
+      expect(marked.refreshFailedAt).toBeDefined();
+      expect(marked.refreshTokenEncrypted).toBe(snapshot.refreshTokenEncrypted);
+
+      // Another process inside the backoff does not present the old token again.
+      await expect(refreshManagedCredential(ctx(rig.stores[rig.stores.length - 1]!, rig.custody), snapshot)).rejects.toBeInstanceOf(ManagedCredentialRefreshFailed);
+      expect(endpoint.calls).toBe(1);
+    });
+
+    it.skipIf(!live)("cross-process failed-refresh marker: a rotation the database refuses to write still leaves the marker", timeout, async () => {
+      const rig = await makeRig(provider);
+      const endpoint = installTokenEndpoint(provider, "refresh-0");
+      const snapshot = await rig.row();
+      const db = new Pool({ connectionString: rig.databaseUrl!, max: 1 });
+      db.on("error", () => undefined);
+      try {
+        await db.query(`CREATE FUNCTION refuse_rotation() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'CANARY rotation write refused'; END $$ LANGUAGE plpgsql`);
+        await db.query(`CREATE TRIGGER refuse_rotation BEFORE UPDATE ON linked_identities FOR EACH ROW WHEN (NEW.access_token_encrypted IS DISTINCT FROM OLD.access_token_encrypted) EXECUTE FUNCTION refuse_rotation()`);
+        const ctx = (store: HeimdallStore) => ({ config: rig.config, store, tokenCustody: rig.custody, oauthRuntimes: createOAuthRuntimeRegistry() });
+
+        await expect(refreshManagedCredential(ctx(rig.stores[0]!), snapshot)).rejects.toThrow();
+        expect(endpoint.calls).toBe(1);
+        const marked = await rig.row();
+        expect(marked.refreshFailedAt).toBeDefined();
+        expect(marked.refreshTokenEncrypted).toBe(snapshot.refreshTokenEncrypted);
+
+        await expect(refreshManagedCredential(ctx(rig.stores[rig.stores.length - 1]!), snapshot)).rejects.toBeInstanceOf(ManagedCredentialRefreshFailed);
+        expect(endpoint.calls).toBe(1);
+      } finally {
+        await db.end();
+      }
+    });
+
+    it("cross-process failed-refresh marker: a writer's clock skewed by under the backoff still holds the reader off, and by the backoff or more does not", timeout, async () => {
+      const rig = await makeRig(provider);
+      const endpoint = installTokenEndpoint(provider, "refresh-0");
+      endpoint.mode = "server_error";
+      const t0 = Date.now();
+      const ctxAt = (at: number) => ({ config: rig.config, store: rig.stores[0]!, tokenCustody: rig.custody, oauthRuntimes: createOAuthRuntimeRegistry(), clock: () => at });
+      await expect(refreshManagedCredential(ctxAt(t0), await rig.row())).rejects.toBeInstanceOf(ManagedCredentialRefreshFailed);
+      expect(endpoint.calls).toBe(1);
+
+      // The marker is in this reader's future: a writer ahead of it. A bounded wait, not a refusal for as long as the skew.
+      await expect(refreshManagedCredential(ctxAt(t0 - MANAGED_CREDENTIAL_REFRESH_BACKOFF_MS + 1), await rig.row())).rejects.toBeInstanceOf(ManagedCredentialRefreshFailed);
+      expect(endpoint.calls).toBe(1);
+      await expect(refreshManagedCredential(ctxAt(t0 - MANAGED_CREDENTIAL_REFRESH_BACKOFF_MS), await rig.row())).rejects.toBeInstanceOf(ManagedCredentialRefreshFailed);
+      expect(endpoint.calls).toBe(2);
+    });
+
     it("a snapshot taken before another caller's refresh does not decide: the locked row does", timeout, async () => {
       const rig = await makeRig(provider);
       const endpoint = installTokenEndpoint(provider, "refresh-0");
