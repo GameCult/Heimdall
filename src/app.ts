@@ -25,7 +25,7 @@ import {
   type Provider,
 } from "./contracts.js";
 import { issueAccessClaim, type IssueAccessClaimInput } from "./claims.js";
-import { builtInAppProfiles, getAppProfile, isAllowedReturnOrigin, serializeAppProfile, admitsProviderForMode, callbackMint } from "./app-profiles.js";
+import { builtInAppProfiles, getAppProfile, isAllowedReturnOrigin, serializeAppProfile, admitsProviderForMode, callbackMint, isUsableConnectionTarget } from "./app-profiles.js";
 import { renderBrowserHandoffPage } from "./browser-handoff.js";
 import { consentText, digestOfText, grantViews, GRANTS_PATH, renderConsentPage, renderGrantsPage, type ConsentAsk } from "./consent.js";
 import { type HeimdallConfig, loadConfig } from "./config.js";
@@ -699,6 +699,13 @@ export async function startOAuthFlow(
     return {
       statusCode: 400,
       body: { error: "connection_not_allowed_in_sign_in", detail: "sign_in start must not carry a connection target." },
+    };
+  }
+
+  if (input.connection !== undefined && !isUsableConnectionTarget(input.connection.targetId)) {
+    return {
+      statusCode: 400,
+      body: { error: "invalid_connection_target", detail: "connection.targetId must name a target." },
     };
   }
 
