@@ -14,6 +14,7 @@ import { createTestConfig, setCookieOf, stateOf } from "./oauth-flow.js";
 
 const apps: FastifyInstance[] = [];
 afterEach(async () => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   while (apps.length) await apps.pop()?.close();
 });
@@ -206,7 +207,7 @@ describe("the ask", () => {
     const done = await callback(app, state, `__Host-heimdall-oauth-${jti}=${bare}`, "code=code-a");
     expect(done.statusCode).not.toBe(201);
     expect(done.json()).not.toHaveProperty("consentReceiptId");
-    expect(await store.listConsentReceipts((await store.findStoredLinkedIdentity("joystick", "joy-a"))?.accountId ?? "none")).toEqual([]);
+    expect(await store.findStoredLinkedIdentity("joystick", "joy-a"), "no credential is kept").toBeNull();
   });
 
   it("the consent route refuses a flow that has no ask", async () => {
@@ -488,6 +489,8 @@ describe("my grants", () => {
     const link = await app.inject({ method: "POST", url: "/v1/me/grants/link", headers: bearer(a.accessToken) });
     const url = new URL(link.json().url as string);
     const linkToken = url.searchParams.get("t")!;
+    // Two minutes on, so a form token minted afresh would differ from the link's.
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() + 120_000 });
     const page = await app.inject({ method: "GET", url: `${url.pathname}${url.search}`, headers: { accept: "text/html" } });
     const formToken = /name="t" value="([^"]+)"/.exec(page.body)![1]!;
     expect(decodeJwt(formToken).payload.exp).toBe(decodeJwt(linkToken).payload.exp);

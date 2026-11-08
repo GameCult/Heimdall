@@ -1619,6 +1619,16 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         if (mint === "refused") {
           throw new Error("The signed state names a mode the provider has no role for in this app.");
         }
+        // The text the person was shown rode in the launch binding. A custody
+        // flow that did not pass through the ask has none: it exchanges no code
+        // and stores no credential.
+        const shownText =
+          mint === "custody_only"
+            ? cookieConsentText(config, keys, request.cookies[oauthBindingCookieName(statePayload.jti)], oauthBindingType, statePayload)
+            : null;
+        if (mint === "custody_only" && shownText === null) {
+          throw new Error("A managed connection completed without the consent text the person was shown.");
+        }
         const callbackDescriptor = providerCatalog[request.params.provider];
         const oidc = callbackDescriptor.oidc ? deriveOidcSecrets(statePayload.jti, keys.privateKey) : undefined;
         const tokenSet = await runtime.exchangeAuthorizationCode({
@@ -1782,14 +1792,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         // Heimdall now holds a credential the person was asked about: the
         // receipt is the record of that agreement, written with the credential.
         let consentReceiptId: string | undefined;
-        if (mint === "custody_only") {
+        if (mint === "custody_only" && shownText !== null) {
           const ask = consentAskFor(statePayload);
-          // The text the person was shown rode in the launch binding. A custody
-          // flow that did not pass through the ask has none and completes nothing.
-          const shownText = cookieConsentText(config, keys, request.cookies[oauthBindingCookieName(statePayload.jti)], oauthBindingType, statePayload);
-          if (shownText === null) {
-            throw new Error("A managed connection completed without the consent text the person was shown.");
-          }
           const { receipt } = await store.createConsentReceipt({
             kind: "grant",
             accountId: account.id,
