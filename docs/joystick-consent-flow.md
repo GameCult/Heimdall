@@ -1,8 +1,10 @@
-# Joystick sign-in and consent: what exists, what is missing, a draft flow
+# Joystick sign-in and consent: what was missing, and the flow that fills it
 
-Status: DRAFT design, no code. Source-grounded at `fefd2dd` (main). Follow-up
-`heimdall-body:follow_up:chat-s3124-3129`. Not for merge until a Heimdall
-steward rules on the open questions below.
+Status: built (sections 3-6 describe the code on this branch); sections 1-2 are
+the state of `fefd2dd` (main) that motivated it. Follow-up
+`heimdall-body:follow_up:chat-s3124-3129`, built under
+`heimdall-body:follow_up:chat-mind-20261108T131253147Z-t1`. The steward's rulings
+on the five open questions are in section 4.
 
 ## 1. What a viewer sees today
 
@@ -59,65 +61,129 @@ person in the browser:
 | Receipt | Operator audit rows only | The viewer cannot audit what was agreed, when, or revoke it. |
 | Viewer vs creator | The `connect` binding proves a binding exists, not that the browser's owner is the creator (`joystick:follow_up:connect-start-needs-app-auth`) | Consent from the wrong person is not consent. |
 
-## 3. Draft consent flow
+## 3. The consent flow
 
-Applies to any Joystick completion (creator connect now; viewer sign-in when
-the public bot lands) and, if ruled, to every provider whose state carries
-`managed_credential`.
+Applies to every completion `callbackMint` calls `custody_only`: a managed
+creator connection (Joystick today; Twitch and YouTube on StreamPixels when
+they are connected rather than signed in). Viewer sign-in through an identity
+provider is unchanged.
 
-### 3.1 The ask (visible, before the redirect)
+### 3.1 The ask
 
-`GET /v1/oauth/:provider/launch` stops answering `302`. It renders a Heimdall
-page, **after** the state is verified but **before** the use is claimed, with:
+`GET /v1/oauth/:provider/launch` renders a Heimdall page (`src/consent.ts`)
+instead of answering `302`, after the state verifies and before any use is
+claimed. The page names the app and the origin the person returns to, the
+provider and the exact scopes Heimdall will send (`authorizationScopes`, the
+same function that builds the authorization URL), what Heimdall keeps (an
+encrypted refresh token and access token, until the person takes it back or the
+provider ends it), what the app receives, and how to take it back. It carries
+two POST forms to `/v1/oauth/:provider/consent`, **Continue to Joystick** and
+**No, return to the app**, and runs no script. It sets the binding cookie, so
+either answer can only come from the browser that was shown the ask; an answer
+without the cookie is `state_not_bound` and spends nothing. Viewing the ask
+claims nothing. Continue claims the launch use and answers `302`.
 
-- the app by display name and return origin;
-- the provider and the exact scope list that will be requested;
-- what Heimdall keeps (a refresh token, encrypted, rotating) versus what the
-  app receives (no token; a claim) and for how long;
-- two forms, both POST, CSRF-bound by the existing binding cookie:
-  **Continue to Joystick** and **No, return to the app**;
-- a link to the receipt of any earlier consent for this account and app.
-
-Only Continue claims the launch use and answers `302`. The page is plain
-server-rendered HTML with no script, matching the handoff page's escape rule.
+What the app receives, stated as the code does it: not a claim. The app
+backend can call `managed-credentials/resolve` and receive the current access
+token; it never receives the refresh token. The earlier draft said the app
+receives "no token"; that was wrong and the page does not say it.
 
 ### 3.2 Typed refusal
 
-**No** (and a provider `access_denied` on return) produces a distinct result
-`consent_refused` with `{provider, app, mode, by: "viewer" | "provider"}`:
-delivered to the app by the same handoff channel as any result, written as an
-audit event `consent_refused`, no credential stored, state consumed. A provider
-failure stays `provider_error`. The app is told not to ask again in the same
-session; whether it may ask later is the app's rule, not Heimdall's.
+A decline, and a provider `error=access_denied` on any provider, produce the
+result `consent_refused` with `by: "viewer" | "provider"`: an audit event
+`consent_refused` (provider, mode, by; no account, no person), the browser
+attempt denied with `denialCode consent_refused`, both uses of the state spent,
+a `backend_callback` app told with the same payload, a "Not Connected" page in
+the browser, and `400 {error: "consent_refused", by}` as JSON. No credential is
+stored and no receipt is written. Every other provider error stays
+`provider_error`. This changes the `access_denied` answer for every provider,
+including Bifrost's and Repixelizer's sign-in; see the PR for the contract note.
 
 ### 3.3 Receipt
 
-On a granted completion Heimdall writes one `consent_receipt` row: receipt id
-(random, non-guessable), account (or creator target), app, provider, scopes
-asked, scopes granted, what Heimdall retains, `grantedAt`, `consentPageDigest`
-(hash of the exact text shown, so a later wording change is visible), and a
-`revokedAt` slot. The handoff page shows the receipt id and a "View receipt" link.
+On a granted `custody_only` completion Heimdall writes one `consent_receipts`
+row of kind `grant`: id (random), account, app, provider, scopes asked, scopes
+granted (as the provider returned them), `consentPageDigest` (sha-256 of the
+lines the page showed, so a wording change is visible), `createdAt`. The id
+reaches the app (`consentReceiptId` in the completion and backend payloads) and
+the person (the handoff page).
 
-`GET /v1/receipts/:id` (viewer-bound by the same cookie or by the account's
-access token) shows the row and offers **Revoke**, which calls the existing
-managed-credential revocation and stamps `revokedAt`. Revoke is itself receipted.
-Receipts are append-only; a revocation is a second row, not an edit.
+Receipts are append-only: the store role has `SELECT` and `INSERT` on the table
+and nothing else. A revocation is a second row of kind `revocation` naming the
+grant it takes back; a grant is live exactly when no revocation names it. The
+draft's `revokedAt` slot is gone for that reason.
 
-## 4. Open questions for the steward
+### 3.4 My grants
 
-1. Who gets the ask: every provider, or only `managed_credential` ones? (Recommend: only managed custody, where Heimdall holds something beyond a login.)
-2. Where does the receipt live: Heimdall store as a new document, or the existing audit table with a new `eventType`? (Recommend: new typed document; the audit table is operator-shaped and has no viewer read path.)
-3. Viewer identity for the receipt page when the viewer has no Heimdall session yet (a first-time creator connect). Binding cookie only, or require sign-in first?
-4. Does `consent_refused` need to reach a backend callback app, or only the browser handoff?
-5. Wording ownership: the page text is legal-adjacent (CultCoin legal research is a sibling thread); who signs the copy?
+Signed in means a live Heimdall access token for any app (`Authorization:
+Bearer`), or a page link minted from one.
 
-## 5. Out of scope here
+- `GET /v1/me/grants`: every grant and receipt of the account. `Accept:
+  text/html` gets the page, one **Take this back** form per live grant; anything
+  else gets `{grants, receipts}`.
+- `POST /v1/me/grants/link` (bearer): `{url}` to the page, valid ten minutes.
+  The token is signed, purpose-bound (`heimdall_grants_page`), stateless, and
+  opens only this page and its revoke forms. This is how a browser that holds no
+  session gets in; Heimdall sets no new cookie and stores nothing for it.
+- `POST /v1/me/grants/:id/revoke` (bearer, or the page token in the form):
+  strips the stored tokens from the credential, then writes a revocation row
+  for every live grant on that credential. The credential is one row per account
+  and provider, whichever app asked, so taking it back ends every grant resting
+  on it. The next `managed-credentials/resolve` answers `410
+  managed_credential_revoked`; nothing else needs to learn of it. Revoking a
+  revoked grant changes nothing. Another account's grant id is `404`.
 
-Enabling Joystick in `identityProviders`; fixing `connect-start-needs-app-auth`;
-Postgres schema/migration for the receipt; any deploy. Each needs its own cut.
+Heimdall can delete its copy; it cannot withdraw the permission at the
+provider, and the page says so.
 
-## 6. Test sketch
+## 4. The steward's rulings
 
-`tests/joystick-consent.test.ts` holds the behaviours above as skipped tests
-(they cannot pass until the cut is built). Unrun: the author's workspace could
-not install dependencies, so treat the file as a sketch to be typechecked.
+Each ruling picks the answer that gives the person the most agency and leaves
+the least stored.
+
+1. **Who gets the ask: managed custody only.** Where Heimdall holds a credential
+   the person cannot see and an app can use, the person is asked and given a
+   receipt. A login is already asked by the provider's own screen, and a receipt
+   per login would store a row per sign-in for no agency the provider's screen
+   does not give. The line is `callbackMint === "custody_only"`, so it needs no
+   second list to keep in step with the profiles.
+2. **The receipt is a new typed table, `consent_receipts`.** The audit table is
+   operator-shaped and has no read path for the person; a viewer-readable
+   record in it would make every audit row a potential disclosure. The table
+   holds ids, scopes and a digest: no IP address, no user agent, no page text.
+   Refusals leave no receipt, only the anonymous audit row.
+3. **Viewer identity: sign-in, not the cookie.** The binding cookie dies with
+   the state and proves only that a browser launched a flow; it is not an
+   account. The receipt page and revoke require a live access token or a
+   ten-minute link minted from one. The cost is that a first-time creator must
+   hold the session the completion returned to the app; the app mints the link.
+   The alternative, a new long-lived Heimdall cookie, would store a session for
+   every person who merely looked.
+4. **`consent_refused` reaches a backend callback app.** An app that started the
+   attempt and is waiting must be told, or it polls to expiry and cannot tell
+   a person's no from a fault. The person's no is also not held against them:
+   Heimdall stores nothing and sets no cooldown; whether and when to ask again
+   is the app's rule.
+5. **Wording: derived, not authored.** The text is generated from facts the code
+   holds and states nothing the code does not do; it is a constant in
+   `src/consent.ts` and its digest rides every receipt. Legal review of the
+   wording (the CultCoin legal thread) may only narrow it, and any change moves
+   the digest. Until that review lands the copy is Heimdall's, signed by the
+   steward.
+
+## 5. Out of scope
+
+Enabling Joystick in `identityProviders`; fixing
+`joystick:follow_up:connect-start-needs-app-auth`; revoking at the provider
+(Joystick offers no revocation call Heimdall uses); retention or deletion of
+consent receipts and of the audit rows; consent for the creator's audience.
+
+## 6. Tests
+
+`tests/joystick-consent.test.ts` holds one behaviour per rule above. Rules were
+checked by mutation, each mutant run on its own with a 300 s limit under an 8 GB
+address-space cap (the PR lists them). The Postgres statements for
+`consent_receipts` are exercised by `tests/store.test.ts` against the fake pool
+and, when `HEIMDALL_TEST_PG_ADMIN_URL` is set, against a live database
+(`scripts/test-live-pg.sh`); the live run was not possible where this was built.

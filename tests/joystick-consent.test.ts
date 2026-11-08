@@ -382,6 +382,8 @@ describe("my grants", () => {
     expect(second.statusCode).toBe(200);
     expect(second.json().revoked).toEqual([]);
     expect(await store.listConsentReceipts(a.account.id)).toHaveLength(2);
+    const events = [...(store as unknown as { auditEvents: Map<string, { eventType: string }> }).auditEvents.values()];
+    expect(events.filter((event) => event.eventType === "consent_revoked")).toHaveLength(1);
   });
 
   it("a fresh connection after a revoke is a new grant, live again, and the old one stays revoked", async () => {
