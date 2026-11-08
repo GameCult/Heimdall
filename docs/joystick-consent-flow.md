@@ -161,7 +161,10 @@ the least stored.
 2. **The receipt is a new typed table, `consent_receipts`.** The audit table is
    operator-shaped and has no read path for the person; a viewer-readable
    record in it would make every audit row a potential disclosure. The table
-   holds ids, scopes and a digest: no IP address, no user agent, no page text.
+   holds ids, scopes and a digest: no IP address, no user agent, no page text. A revocation names a
+   receipt of its own account: a composite foreign key `(revokes_receipt_id,
+   account_id)` to `(id, account_id)`, which is why `(id, account_id)` is also a
+   unique key (`checkSchema` counts it). The in-memory store refuses the same.
    Refusals leave no receipt, only the anonymous audit row.
 3. **Viewer identity: sign-in, not the cookie.** The binding cookie dies with
    the state and proves only that a browser launched a flow; it is not an
@@ -181,6 +184,11 @@ the least stored.
    wording (the CultCoin legal thread) may only narrow it, and any change moves
    the digest. Until that review lands the copy is Heimdall's, signed by the
    steward.
+6. **Bounds on what rides the cookies.** The wording is read from a cookie
+   only up to 16 KB inflated, so a compressed bomb is refused, not expanded. An
+   app may request at most 32 scopes of 512 characters (`requested_scopes_too_large`
+   at the ask). A custody callback whose binding carries no wording is refused
+   with `consent_text_missing` before the state is claimed, so nothing is burned.
 
 ## 5. Out of scope
 
