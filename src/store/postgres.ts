@@ -864,9 +864,10 @@ export class PostgresStore implements HeimdallStore {
         return committed;
       } catch (error) {
         await client.query("ROLLBACK");
-        if (decision?.kind === "rotate") {
-          // The provider answered and may have consumed the refresh token, and the rotation could not be committed: the
-          // rollback took the answer with it. Leave the marker in a transaction of its own, so the next caller does not
+        if (decision?.kind === "rotate" || decision?.kind === "revoke") {
+          // The provider answered and may have consumed the refresh token, and the rotation or the revoke its answer
+          // called for (a rotating provider's missing refresh token) could not be committed: the rollback took the
+          // answer with it. Leave the marker in a transaction of its own, so the next caller does not
           // present the old token. Best effort: if this write fails too, the original error is the one that matters.
           await client
             .query("UPDATE linked_identities SET refresh_failed_at = $2 WHERE id = $1", [id, decision.updatedAt])

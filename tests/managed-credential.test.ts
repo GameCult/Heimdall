@@ -662,6 +662,35 @@ for (const { kind, live } of rigKinds) describe.skipIf(live && !adminUrl)(`manag
           { eventType: "managed_credential_revoked", payload: { provider, reason: "rotation_missing" } },
         ]);
       });
+
+      it.skipIf(!live).each(["no_refresh_token", "empty_refresh_token"] as const)(
+        "rotation-fails-closed: when the revoke the provider's answer called for cannot be written (%s), the marker is still left",
+        timeout,
+        async (mode) => {
+          const rig = await makeRig(provider);
+          const endpoint = installTokenEndpoint(provider, "refresh-0");
+          endpoint.mode = mode;
+          const snapshot = await rig.row();
+          const db = new Pool({ connectionString: rig.databaseUrl!, max: 1 });
+          db.on("error", () => undefined);
+          try {
+            await db.query(`CREATE FUNCTION refuse_revoke() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'CANARY revoke write refused'; END $$ LANGUAGE plpgsql`);
+            await db.query(`CREATE TRIGGER refuse_revoke BEFORE UPDATE ON linked_identities FOR EACH ROW WHEN (NEW.access_token_encrypted IS DISTINCT FROM OLD.access_token_encrypted) EXECUTE FUNCTION refuse_revoke()`);
+            const ctx = (store: HeimdallStore) => ({ config: rig.config, store, tokenCustody: rig.custody, oauthRuntimes: createOAuthRuntimeRegistry() });
+
+            await expect(refreshManagedCredential(ctx(rig.stores[0]!), snapshot)).rejects.toThrow();
+            expect(endpoint.calls).toBe(1);
+            const marked = await rig.row();
+            expect(marked.refreshFailedAt).toBeDefined();
+            expect(marked.refreshTokenEncrypted).toBe(snapshot.refreshTokenEncrypted);
+
+            await expect(refreshManagedCredential(ctx(rig.stores[rig.stores.length - 1]!), snapshot)).rejects.toBeInstanceOf(ManagedCredentialRefreshFailed);
+            expect(endpoint.calls).toBe(1);
+          } finally {
+            await db.end();
+          }
+        }
+      );
     } else {
       it.each(["no_refresh_token", "empty_refresh_token"] as const)("a response with %s keeps the old one for a non-rotating provider", timeout, async (mode) => {
         const rig = await makeRig(provider);
