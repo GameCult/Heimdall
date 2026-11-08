@@ -567,11 +567,13 @@ Important behavior:
   identity (`SELECT ... FOR UPDATE`), so a given refresh token is presented to
   the provider once across concurrent requests and across two Heimdall
   processes sharing one database. Within one process, concurrent refreshes of
-  one identity share a single attempt and its outcome (success or failure), so
-  nobody re-presents a token behind a failed holder in that burst. Residual
-  risk, tracked as follow-up `joystick:follow_up:cross-process-failed-refresh-marker`:
-  the guard is one presentation per process per burst, so N
-  Heimdall processes can present one token N times after a transient failure.
+  one identity share a single attempt and its outcome (success or failure). A
+  failed or timed-out attempt is recorded on the identity row
+  (`refresh_failed_at`, written in the same transaction as the lock), and no
+  process presents that row's refresh token again for 60 seconds: a process
+  that takes the lock inside the backoff answers the same
+  `managed_credential_refresh_failed` without calling the provider. A rotation,
+  a revocation or a re-link clears the marker.
   The provider call is bounded at 10 seconds
 - a provider whose refresh tokens rotate (Joystick) fails closed: a refresh
   response without a new refresh token revokes the credential instead of

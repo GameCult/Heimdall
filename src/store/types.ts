@@ -33,6 +33,8 @@ export interface StoredLinkedIdentity {
   accessTokenEncrypted?: string;
   refreshTokenEncrypted?: string;
   tokenExpiresAt?: string;
+  /** When a refresh attempt last failed; cleared by the next rotation, revocation or re-link. */
+  refreshFailedAt?: string;
   scopes: string[];
   profileJson: Record<string, unknown>;
   createdAt: string;
@@ -58,8 +60,9 @@ export interface UpsertLinkedIdentityInput {
 
 /**
  * What the owner of a refresh decides after reading the row under its lock.
- * `rotate` and `revoke` write token columns, scopes and updated_at only; they
- * never touch account, profile or identity fields.
+ * `rotate` and `revoke` write token columns, scopes, updated_at and clear the
+ * failed-refresh marker; `failed` writes the marker alone. None touches
+ * account, profile or identity fields.
  */
 export type CredentialDecision =
   | { kind: "keep" }
@@ -71,7 +74,8 @@ export type CredentialDecision =
       scopes: string[];
       updatedAt: string;
     }
-  | { kind: "revoke"; updatedAt: string };
+  | { kind: "revoke"; updatedAt: string }
+  | { kind: "failed"; failedAt: string };
 
 export interface StoredSession {
   id: string;
