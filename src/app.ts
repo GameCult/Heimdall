@@ -2220,7 +2220,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       // the route stays open to it. A link completion was minted for an
       // initiator the authenticated app named at start; only that app's
       // backend redeems it. Redeem is also where the connection target is
-      // held to what the signed state named. Both refusals read the row
+      // held to what the signed state named, both ways: a target the state never named is refused too. Both refusals read the row
       // without consuming it, so a wrong caller or target cannot burn the code.
       const pending = await store.findAuthCompletion(request.params.appSlug, request.body.completionCode);
       if (pending && !pending.consumedAt && pending.expiresAt > nowIso) {
@@ -2228,7 +2228,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           reply.code(401);
           return { error: "app_auth_required" };
         }
-        if (pending.targetId !== undefined && pending.targetId !== request.body.targetId) {
+        if (pending.targetId !== request.body.targetId) {
           await store.createAuditEvent({
             accountId: pending.accountId,
             sessionId: pending.sessionId,

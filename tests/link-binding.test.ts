@@ -218,6 +218,16 @@ describe("redeem binds caller, target and replay", () => {
     expect((await redeem(r, { completionCode, targetId: "target-a" }, appAuth)).statusCode).toBe(201);
   });
 
+  it("refuses a target named against a completion that recorded none, without consuming the code", async () => {
+    const r = await rig("d-r2b");
+    const completionCode = await linked(r, undefined);
+    const refused = await redeem(r, { completionCode, targetId: "target-a" }, appAuth);
+    expect([refused.statusCode, refused.json().error]).toEqual([403, "completion_target_mismatch"]);
+    expect(refused.json().accessToken).toBeUndefined();
+    expect((await r.store.findAuthCompletion("repixelizer", completionCode))?.consumedAt).toBeUndefined();
+    expect((await redeem(r, { completionCode }, appAuth)).statusCode).toBe(201);
+  });
+
   it("refuses a replayed completion", async () => {
     const r = await rig("d-r3");
     const completionCode = await linked(r, "target-a");
