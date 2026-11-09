@@ -867,10 +867,11 @@ export class PostgresStore implements HeimdallStore {
         if (decision?.kind === "rotate" || decision?.kind === "revoke") {
           // The provider answered and may have consumed the refresh token, and the rotation or the revoke its answer
           // called for (a rotating provider's missing refresh token) could not be committed: the rollback took the
-          // answer with it. Leave the marker in a transaction of its own, so the next caller does not
-          // present the old token. Best effort: if this write fails too, the original error is the one that matters.
+          // answer with it. In a transaction of its own, blank the consumed token and leave the marker, so no later
+          // caller, after the backoff either, presents it again. Best effort: if this write fails too, the original
+          // error is the one that matters, and the residual is named in docs/service-contract.md.
           await client
-            .query("UPDATE linked_identities SET refresh_failed_at = $2 WHERE id = $1", [id, decision.updatedAt])
+            .query("UPDATE linked_identities SET refresh_token_encrypted = NULL, refresh_failed_at = $2 WHERE id = $1", [id, decision.updatedAt])
             .catch(() => undefined);
         }
         throw error;

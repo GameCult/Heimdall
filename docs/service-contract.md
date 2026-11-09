@@ -572,11 +572,22 @@ Important behavior:
   (`refresh_failed_at`, written in the same transaction as the lock), and no
   process presents that row's refresh token again for 60 seconds: a process
   that takes the lock inside the backoff answers the same
-  `managed_credential_refresh_failed` without calling the provider. A rotation,
+  `managed_credential_refresh_failed` without calling the provider. A stamp
+  more than 60 seconds in the future (a writer whose clock runs ahead) is skew,
+  not a fresh failure, so the wait is capped at twice the backoff. A rotation,
   a revocation or a re-link clears the marker.
+  The marker is a best-effort write on a second connection, made after the
+  lock's transaction rolled back; it is not part of that transaction. When the
+  rotation or the revocation the provider's answer called for cannot be
+  committed (a rotating provider answered without a refresh token, so the
+  revoke was due, and the write was refused), the fallback write also blanks
+  the refresh token the provider consumed, so the end of the backoff does not
+  present it again (`joystick:follow_up:chat-s4509-4511`, steward ruling in
+  #minds, 2026-11-09).
   Residual risk: the provider may consume the refresh token as soon as the
   request is sent. If a Heimdall process dies after that and before the commit
-  of the marker, the rotation or the revocation, nothing is recorded, and the
+  of the marker, the rotation or the revocation, or if the blanking fallback
+  write fails too, nothing is recorded, and the
   next caller can present the refresh token the provider already consumed; for
   a provider that rotates (Joystick) that reads as token theft. The Heimdall
   steward ruled (#minds, 2026-11-08) that an intent log, written on its own

@@ -599,9 +599,12 @@ for (const { kind, live } of rigKinds) describe.skipIf(live && !adminUrl)(`manag
         expect(endpoint.calls).toBe(1);
         const marked = await rig.row();
         expect(marked.refreshFailedAt).toBeDefined();
-        expect(marked.refreshTokenEncrypted).toBe(snapshot.refreshTokenEncrypted);
+        // The provider consumed the token: nothing replayable is left on the row, so the backoff ending presents nothing.
+        expect(marked.refreshTokenEncrypted).toBeUndefined();
 
-        await expect(refreshManagedCredential(ctx(rig.stores[rig.stores.length - 1]!), snapshot)).rejects.toBeInstanceOf(ManagedCredentialRefreshFailed);
+        await expect(refreshManagedCredential(ctx(rig.stores[rig.stores.length - 1]!), snapshot)).resolves.toBeDefined();
+        const afterBackoff = { ...ctx(rig.stores[0]!), clock: () => Date.now() + 5 * 60_000 };
+        await expect(refreshManagedCredential(afterBackoff, snapshot)).resolves.toBeDefined();
         expect(endpoint.calls).toBe(1);
       } finally {
         await db.end();
@@ -682,9 +685,12 @@ for (const { kind, live } of rigKinds) describe.skipIf(live && !adminUrl)(`manag
             expect(endpoint.calls).toBe(1);
             const marked = await rig.row();
             expect(marked.refreshFailedAt).toBeDefined();
-            expect(marked.refreshTokenEncrypted).toBe(snapshot.refreshTokenEncrypted);
+            // The provider consumed the token: nothing replayable is left on the row, so the backoff ending presents nothing.
+            expect(marked.refreshTokenEncrypted).toBeUndefined();
 
-            await expect(refreshManagedCredential(ctx(rig.stores[rig.stores.length - 1]!), snapshot)).rejects.toBeInstanceOf(ManagedCredentialRefreshFailed);
+            await expect(refreshManagedCredential(ctx(rig.stores[rig.stores.length - 1]!), snapshot)).resolves.toBeDefined();
+            const afterBackoff = { ...ctx(rig.stores[0]!), clock: () => Date.now() + 5 * 60_000 };
+            await expect(refreshManagedCredential(afterBackoff, snapshot)).resolves.toBeDefined();
             expect(endpoint.calls).toBe(1);
           } finally {
             await db.end();
