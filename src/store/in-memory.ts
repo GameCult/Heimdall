@@ -203,7 +203,13 @@ export class InMemoryStore implements HeimdallStore {
       if (decision.kind === "keep") {
         return clone(current);
       }
+      if (decision.kind === "failed") {
+        const marked: StoredLinkedIdentity = { ...current, refreshFailedAt: decision.failedAt };
+        this.linkedIdentities.set(id, clone(marked));
+        return clone(marked);
+      }
       const next: StoredLinkedIdentity = { ...current, updatedAt: decision.updatedAt };
+      delete next.refreshFailedAt;
       delete next.accessTokenEncrypted;
       delete next.refreshTokenEncrypted;
       delete next.tokenExpiresAt;

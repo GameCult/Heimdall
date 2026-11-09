@@ -567,12 +567,34 @@ Important behavior:
   identity (`SELECT ... FOR UPDATE`), so a given refresh token is presented to
   the provider once across concurrent requests and across two Heimdall
   processes sharing one database. Within one process, concurrent refreshes of
-  one identity share a single attempt and its outcome (success or failure), so
-  nobody re-presents a token behind a failed holder in that burst. Residual
-  risk, tracked as follow-up `joystick:follow_up:cross-process-failed-refresh-marker`:
-  the guard is one presentation per process per burst, so N
-  Heimdall processes can present one token N times after a transient failure.
-  The provider call is bounded at 10 seconds
+  one identity share a single attempt and its outcome (success or failure). A
+  failed or timed-out attempt is recorded on the identity row
+  (`refresh_failed_at`, written in the same transaction as the lock), and no
+  process presents that row's refresh token again for 60 seconds: a process
+  that takes the lock inside the backoff answers the same
+  `managed_credential_refresh_failed` without calling the provider. A stamp
+  more than 60 seconds in the future (a writer whose clock runs ahead) is skew,
+  not a fresh failure, so the wait is capped at twice the backoff. A rotation,
+  a revocation or a re-link clears the marker.
+  The marker is a best-effort write on a second connection, made after the
+  lock's transaction rolled back; it is not part of that transaction. When the
+  rotation or the revocation the provider's answer called for cannot be
+  committed, the fallback write leaves the marker and blanks the refresh token
+  only when that token is spent: on a revoke (a rotating provider answered
+  without a refresh token, or the grant was rejected), or when the provider
+  rotates refresh tokens (Joystick) and so consumed it. A provider that keeps
+  its refresh token valid (Twitch) keeps it, so a transient database failure
+  does not strand the link: the next caller after the backoff presents it again.
+  Residual risk: the provider may consume the refresh token as soon as the
+  request is sent. If a Heimdall process dies after that and before the commit
+  of the marker, the rotation or the revocation, or if the blanking fallback
+  write fails too, nothing is recorded, and the
+  next caller can present the refresh token the provider already consumed; for
+  a provider that rotates (Joystick) that reads as token theft. The Heimdall
+  steward ruled (#minds, 2026-11-08) that an intent log, written on its own
+  connection before the provider call, replaces this marker; it is tracked in
+  `joystick:follow_up:write-ahead-refresh-attempt-record`.
+  The provider call is bounded at 10 seconds.
 - a provider whose refresh tokens rotate (Joystick) fails closed: a refresh
   response without a new refresh token revokes the credential instead of
   keeping the old token

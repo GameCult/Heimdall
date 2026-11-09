@@ -1,7 +1,7 @@
 import { type HeimdallConfig } from "./config.js";
 import { type Provider } from "./contracts.js";
 import { type TokenCustody } from "./custody.js";
-import { type OAuthProviderRuntime, type OAuthRuntimeRegistry, ProviderResponseError } from "./oauth.js";
+import { type ExpiringTokenSet, type OAuthProviderRuntime, type OAuthRuntimeRegistry, ProviderResponseError } from "./oauth.js";
 import { providerCatalog } from "./providers.js";
 import { type HeimdallStore } from "./store/index.js";
 import { type CredentialDecision, type StoredLinkedIdentity } from "./store/types.js";
@@ -15,6 +15,14 @@ export const MANAGED_CREDENTIAL_REFRESH_SKEW_MS = 5 * 60 * 1000;
  * long behind the holder.
  */
 export const MANAGED_CREDENTIAL_REFRESH_TIMEOUT_MS = 10_000;
+
+/**
+ * After a refresh attempt fails or times out, no process presents the row's
+ * refresh token again until this long has passed (the failure is recorded on
+ * the row, read under the lock). A provider that rotates may have consumed the
+ * token before the attempt was aborted, and presenting it again reads as theft.
+ */
+export const MANAGED_CREDENTIAL_REFRESH_BACKOFF_MS = 60 * 1000;
 
 export interface ManagedCredentialContext {
   config: HeimdallConfig;
@@ -55,6 +63,17 @@ function dueForRefresh(identity: StoredLinkedIdentity, runtime: OAuthProviderRun
   return Date.parse(identity.tokenExpiresAt) - now <= MANAGED_CREDENTIAL_REFRESH_SKEW_MS;
 }
 
+/**
+ * Whether a failure stamped `failedAt` still holds this clock off. A stamp from
+ * a writer whose clock runs ahead reads as the future; one this far ahead or
+ * more is skew, not a fresh failure, so the wait stays bounded at twice the
+ * backoff.
+ */
+function withinBackoff(failedAt: string, now: number): boolean {
+  const elapsed = now - Date.parse(failedAt);
+  return elapsed > -MANAGED_CREDENTIAL_REFRESH_BACKOFF_MS && elapsed < MANAGED_CREDENTIAL_REFRESH_BACKOFF_MS;
+}
+
 function withoutTokens(identity: StoredLinkedIdentity): StoredLinkedIdentity {
   const { accessTokenEncrypted: _a, refreshTokenEncrypted: _r, tokenExpiresAt: _e, ...rest } = identity;
   return rest;
@@ -68,10 +87,8 @@ function withoutTokens(identity: StoredLinkedIdentity): StoredLinkedIdentity {
  * attempt is in flight join it and receive its outcome, success or failure.
  * The entry lives exactly as long as the attempt: a later request retries.
  *
- * Known residual risk (docs/service-contract.md): one presentation per
- * process per burst, so N processes may present one token N times. The
- * cross-process failed-refresh marker that would close it is
- * joystick:follow_up:cross-process-failed-refresh-marker.
+ * Across processes the row owns it: a failed attempt leaves a marker on the
+ * row, and a process that takes the lock inside the backoff presents nothing.
  */
 const refreshesInFlight = new WeakMap<HeimdallStore, Map<string, Promise<ManagedCredentialOutcome>>>();
 
@@ -120,28 +137,8 @@ async function refreshUnderLock(
   const runtime = ctx.oauthRuntimes[provider];
 
   let revocation: ManagedCredentialRevocationReason | undefined;
-  const decide = async (locked: StoredLinkedIdentity): Promise<CredentialDecision> => {
-    if (!locked.accessTokenEncrypted || !dueForRefresh(locked, runtime, clock())) {
-      return { kind: "keep" };
-    }
-    const updatedAt = new Date(clock()).toISOString();
-    const refreshToken = ctx.tokenCustody.decrypt(locked.refreshTokenEncrypted!);
-
-    let refreshed;
-    try {
-      refreshed = await runtime.refreshAccessToken!({
-        config: ctx.config,
-        refreshToken,
-        signal: AbortSignal.timeout(ctx.timeoutMs ?? MANAGED_CREDENTIAL_REFRESH_TIMEOUT_MS),
-      });
-    } catch (error) {
-      if (error instanceof ProviderResponseError && error.oauthError === "invalid_grant") {
-        revocation = "provider_revoked";
-        return { kind: "revoke", updatedAt };
-      }
-      throw new ManagedCredentialRefreshFailed(provider);
-    }
-
+  let failed = false;
+  const rotation = (locked: StoredLinkedIdentity, refreshed: ExpiringTokenSet, updatedAt: string): CredentialDecision => {
     let refreshTokenEncrypted: string;
     if (refreshed.refreshToken) {
       refreshTokenEncrypted = ctx.tokenCustody.encrypt(refreshed.refreshToken);
@@ -162,7 +159,45 @@ async function refreshUnderLock(
       tokenExpiresAt: refreshed.expiresAt,
       scopes: refreshed.scope.length ? refreshed.scope : locked.scopes,
       updatedAt,
+      consumedRefreshToken: providerCatalog[provider].rotatesRefreshTokens,
     };
+  };
+
+  const decide = async (locked: StoredLinkedIdentity): Promise<CredentialDecision> => {
+    if (!locked.accessTokenEncrypted || !dueForRefresh(locked, runtime, clock())) {
+      return { kind: "keep" };
+    }
+    if (locked.refreshFailedAt && withinBackoff(locked.refreshFailedAt, clock())) {
+      failed = true;
+      return { kind: "keep" };
+    }
+    const refreshToken = ctx.tokenCustody.decrypt(locked.refreshTokenEncrypted!);
+
+    let refreshed;
+    try {
+      refreshed = await runtime.refreshAccessToken!({
+        config: ctx.config,
+        refreshToken,
+        signal: AbortSignal.timeout(ctx.timeoutMs ?? MANAGED_CREDENTIAL_REFRESH_TIMEOUT_MS),
+      });
+    } catch (error) {
+      if (error instanceof ProviderResponseError && error.oauthError === "invalid_grant") {
+        revocation = "provider_revoked";
+        return { kind: "revoke", updatedAt: new Date(clock()).toISOString() };
+      }
+      failed = true;
+      return { kind: "failed", failedAt: new Date(clock()).toISOString() };
+    }
+
+    // The provider has answered, and may have consumed the token: from here a throw must still leave the marker, which
+    // a rolled-back transaction would not (the store writes it on its own for a rotation it could not commit).
+    const answeredAt = new Date(clock()).toISOString();
+    try {
+      return rotation(locked, refreshed, answeredAt);
+    } catch {
+      failed = true;
+      return { kind: "failed", failedAt: new Date(clock()).toISOString() };
+    }
   };
 
   const committed = await ctx.store.updateLinkedIdentityCredential(snapshot.id, decide);
@@ -173,6 +208,9 @@ async function refreshUnderLock(
       eventPayloadJson: { provider, reason: revocation },
       createdAt: new Date(clock()).toISOString(),
     });
+  }
+  if (failed) {
+    throw new ManagedCredentialRefreshFailed(provider);
   }
   if (!committed) {
     return { kind: "revoked", identity: withoutTokens(snapshot) };

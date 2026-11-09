@@ -47,6 +47,7 @@ interface LinkedIdentityRow extends QueryResultRow {
   access_token_encrypted: string | null;
   refresh_token_encrypted: string | null;
   token_expires_at: string | null;
+  refresh_failed_at: string | null;
   scopes: string;
   profile_json: Record<string, unknown>;
   created_at: string;
@@ -205,6 +206,10 @@ function mapLinkedIdentityRow(row: LinkedIdentityRow): StoredLinkedIdentity {
   if (row.token_expires_at) {
     // pg hands back a Date for TIMESTAMPTZ whatever the row type says; the port promises ISO strings.
     identity.tokenExpiresAt = new Date(row.token_expires_at).toISOString();
+  }
+
+  if (row.refresh_failed_at) {
+    identity.refreshFailedAt = new Date(row.refresh_failed_at).toISOString();
   }
 
   return identity;
@@ -777,6 +782,7 @@ export class PostgresStore implements HeimdallStore {
         access_token_encrypted = EXCLUDED.access_token_encrypted,
         refresh_token_encrypted = EXCLUDED.refresh_token_encrypted,
         token_expires_at = EXCLUDED.token_expires_at,
+        refresh_failed_at = NULL,
         scopes = EXCLUDED.scopes,
         profile_json = EXCLUDED.profile_json,
         updated_at = EXCLUDED.updated_at
@@ -810,6 +816,7 @@ export class PostgresStore implements HeimdallStore {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      let decision: CredentialDecision | undefined;
       try {
         const locked = await client.query<LinkedIdentityRow>(
           "SELECT * FROM linked_identities WHERE id = $1 FOR UPDATE",
@@ -820,9 +827,15 @@ export class PostgresStore implements HeimdallStore {
           return null;
         }
         const row = mapLinkedIdentityRow(expectRow(locked.rows[0], "updateLinkedIdentityCredential"));
-        const decision = await decide(row);
+        decision = await decide(row);
         let committed = row;
-        if (decision.kind !== "keep") {
+        if (decision.kind === "failed") {
+          const marked = await client.query<LinkedIdentityRow>(
+            "UPDATE linked_identities SET refresh_failed_at = $2 WHERE id = $1 RETURNING *",
+            [id, decision.failedAt]
+          );
+          committed = mapLinkedIdentityRow(expectRow(marked.rows[0], "updateLinkedIdentityCredential"));
+        } else if (decision.kind !== "keep") {
           const rotated = decision.kind === "rotate" ? decision : undefined;
           const written = await client.query<LinkedIdentityRow>(
             `
@@ -830,6 +843,7 @@ export class PostgresStore implements HeimdallStore {
             SET access_token_encrypted = $2,
                 refresh_token_encrypted = $3,
                 token_expires_at = $4,
+                refresh_failed_at = NULL,
                 scopes = $5,
                 updated_at = $6
             WHERE id = $1
@@ -850,6 +864,21 @@ export class PostgresStore implements HeimdallStore {
         return committed;
       } catch (error) {
         await client.query("ROLLBACK");
+        if (decision?.kind === "rotate" || decision?.kind === "revoke") {
+          // The provider answered, and what its answer called for could not be committed: the rollback took the answer
+          // with it. In a transaction of its own, leave the marker, so no caller presents the token within the backoff.
+          // Blank the token only when it is spent: a revoke, or a provider that rotates (Joystick) and consumed it.
+          // A provider that keeps its refresh token valid (Twitch) keeps it, so a transient write failure does not
+          // strand the link. Best effort: if this write fails too, the original error is the one that matters, and the
+          // residual is named in docs/service-contract.md.
+          const spent = decision.kind === "revoke" || decision.consumedRefreshToken;
+          await client
+            .query(
+              `UPDATE linked_identities SET ${spent ? "refresh_token_encrypted = NULL, " : ""}refresh_failed_at = $2 WHERE id = $1`,
+              [id, decision.updatedAt]
+            )
+            .catch(() => undefined);
+        }
         throw error;
       }
     } finally {

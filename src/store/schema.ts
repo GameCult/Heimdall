@@ -123,6 +123,11 @@ ALTER TABLE auth_completions ADD COLUMN IF NOT EXISTS attempt_id TEXT;
 -- compares it against the target the redeeming app states.
 ALTER TABLE auth_completions ADD COLUMN IF NOT EXISTS target_id TEXT;
 
+-- When a refresh attempt on this row last failed or timed out, read under the row
+-- lock so a second Heimdall process does not present the same refresh token
+-- right behind it. Cleared by rotation, revocation and re-link.
+ALTER TABLE linked_identities ADD COLUMN IF NOT EXISTS refresh_failed_at TIMESTAMPTZ;
+
 -- One attempt handle may bind at most one unconsumed completion (R21.1): a
 -- second completion for the same handle would let the by-attempt UPDATE in
 -- consumeAuthCompletionByAttempt match more than one row, silently consuming

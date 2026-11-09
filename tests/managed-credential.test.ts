@@ -6,6 +6,7 @@ import { type HeimdallConfig } from "../src/config.js";
 import { type Provider } from "../src/contracts.js";
 import { createTokenCustody } from "../src/custody.js";
 import {
+  MANAGED_CREDENTIAL_REFRESH_BACKOFF_MS,
   MANAGED_CREDENTIAL_REFRESH_SKEW_MS,
   ManagedCredentialRefreshFailed,
   refreshManagedCredential,
@@ -419,17 +420,18 @@ for (const { kind, live } of rigKinds) describe.skipIf(live && !adminUrl)(`manag
       expect(Date.now() - started).toBeLessThan(5_000);
 
       endpoint.mode = "normal";
-      const outcome = await refreshManagedCredential(ctx, await rig.row());
+      const afterBackoff = { ...ctx, clock: () => Date.now() + MANAGED_CREDENTIAL_REFRESH_BACKOFF_MS };
+      const outcome = await refreshManagedCredential(afterBackoff, await rig.row());
       expect(outcome.kind).toBe("current");
       expect(rig.custody.decrypt(outcome.identity.accessTokenEncrypted!)).toBe("access-1");
     });
 
-    it("single flight: concurrent refreshes against a never-answering endpoint make one provider call per process, and every caller gets the typed failure", timeout, async () => {
+    it("single flight: concurrent refreshes against a never-answering endpoint make one provider call across all processes, and every caller gets the typed failure", timeout, async () => {
       const rig = await makeRig(provider);
       const endpoint = installTokenEndpoint(provider, "refresh-0");
       endpoint.mode = "hang";
       const snapshot = await rig.row();
-      const ctxFor = (store: HeimdallStore) => ({ config: rig.config, store, tokenCustody: rig.custody, oauthRuntimes: createOAuthRuntimeRegistry(), timeoutMs: 150 });
+      const ctxFor = (store: HeimdallStore, clock = Date.now) => ({ config: rig.config, store, tokenCustody: rig.custody, oauthRuntimes: createOAuthRuntimeRegistry(), timeoutMs: 150, clock });
 
       const results = await Promise.allSettled(
         Array.from({ length: 12 }, (_, i) => refreshManagedCredential(ctxFor(rig.stores[i % rig.stores.length]!), snapshot))
@@ -439,14 +441,205 @@ for (const { kind, live } of rigKinds) describe.skipIf(live && !adminUrl)(`manag
       for (const result of results) {
         expect((result as PromiseRejectedResult).reason).toBeInstanceOf(ManagedCredentialRefreshFailed);
       }
-      expect(endpoint.calls).toBe(rig.stores.length);
+      // The process that queued behind the failed holder reads the holder's marker under the lock and presents nothing.
+      expect(endpoint.calls).toBe(1);
       expect(rig.custody.decrypt((await rig.row()).refreshTokenEncrypted!)).toBe("refresh-0");
 
-      // The burst is over: a later independent request tries again.
+      // The burst is over and so is the backoff the failure left on the row: a later independent request tries again.
       endpoint.mode = "normal";
-      const later = await refreshManagedCredential(ctxFor(rig.stores[0]!), await rig.row());
+      const later = await refreshManagedCredential(ctxFor(rig.stores[0]!, () => Date.now() + MANAGED_CREDENTIAL_REFRESH_BACKOFF_MS), await rig.row());
       expect(later.kind).toBe("current");
-      expect(endpoint.calls).toBe(rig.stores.length + 1);
+      expect(endpoint.calls).toBe(2);
+    });
+
+    it.each(["server_error", "hang"] as const)(
+      "cross-process failed-refresh marker (%s): the failed attempt is recorded on the row, and another process does not present the token inside the backoff",
+      timeout,
+      async (mode) => {
+        const rig = await makeRig(provider);
+        const endpoint = installTokenEndpoint(provider, "refresh-0");
+        endpoint.mode = mode;
+        const t0 = Date.now();
+        const ctxFor = (store: HeimdallStore, at: number) => ({
+          config: rig.config, store, tokenCustody: rig.custody, oauthRuntimes: createOAuthRuntimeRegistry(), timeoutMs: 100, clock: () => at,
+        });
+        const snapshot = await rig.row();
+        const first = rig.stores[0]!;
+        const other = rig.stores[rig.stores.length - 1]!;
+
+        await expect(refreshManagedCredential(ctxFor(first, t0), snapshot)).rejects.toBeInstanceOf(ManagedCredentialRefreshFailed);
+        expect(endpoint.calls).toBe(1);
+        const marked = await rig.row();
+        expect(marked.refreshFailedAt).toBe(new Date(t0).toISOString());
+        expect(marked.accessTokenEncrypted).toBe(snapshot.accessTokenEncrypted);
+        expect(marked.refreshTokenEncrypted).toBe(snapshot.refreshTokenEncrypted);
+        expect(marked.tokenExpiresAt).toBe(snapshot.tokenExpiresAt);
+
+        // Another process, holding the stale snapshot, one tick before the backoff ends: the locked row decides, and no token call is made.
+        const backedOff = ctxFor(other, t0 + MANAGED_CREDENTIAL_REFRESH_BACKOFF_MS - 1);
+        await expect(refreshManagedCredential(backedOff, snapshot)).rejects.toBeInstanceOf(ManagedCredentialRefreshFailed);
+        expect(endpoint.calls).toBe(1);
+        // Being turned away does not extend the backoff.
+        expect((await rig.row()).refreshFailedAt).toBe(marked.refreshFailedAt);
+        expect(await rig.audit()).toEqual([]);
+      }
+    );
+
+    it("cross-process failed-refresh marker: the backoff ends exactly at its length, a success clears the marker, and a failure after it marks anew", timeout, async () => {
+      const rig = await makeRig(provider);
+      const endpoint = installTokenEndpoint(provider, "refresh-0");
+      endpoint.mode = "server_error";
+      const t0 = Date.now();
+      const ctxAt = (at: number) => ({ config: rig.config, store: rig.stores[0]!, tokenCustody: rig.custody, oauthRuntimes: createOAuthRuntimeRegistry(), clock: () => at });
+      await expect(refreshManagedCredential(ctxAt(t0), await rig.row())).rejects.toBeInstanceOf(ManagedCredentialRefreshFailed);
+
+      const retryAt = t0 + MANAGED_CREDENTIAL_REFRESH_BACKOFF_MS;
+      await expect(refreshManagedCredential(ctxAt(retryAt), await rig.row())).rejects.toBeInstanceOf(ManagedCredentialRefreshFailed);
+      expect(endpoint.calls).toBe(2);
+      expect((await rig.row()).refreshFailedAt).toBe(new Date(retryAt).toISOString());
+
+      endpoint.mode = "normal";
+      const laterAt = retryAt + MANAGED_CREDENTIAL_REFRESH_BACKOFF_MS;
+      const outcome = await refreshManagedCredential(ctxAt(laterAt), await rig.row());
+      expect(outcome.kind).toBe("current");
+      expect(endpoint.calls).toBe(3);
+      expect(rig.custody.decrypt(outcome.identity.accessTokenEncrypted!)).toBe("access-1");
+      expect((await rig.row()).refreshFailedAt).toBeUndefined();
+    });
+
+    it("cross-process failed-refresh marker: a revocation and a re-link both clear it", timeout, async () => {
+      const rig = await makeRig(provider);
+      const endpoint = installTokenEndpoint(provider, "refresh-0");
+      endpoint.mode = "server_error";
+      const t0 = Date.now();
+      const ctxAt = (at: number) => ({ config: rig.config, store: rig.stores[0]!, tokenCustody: rig.custody, oauthRuntimes: createOAuthRuntimeRegistry(), clock: () => at });
+      await expect(refreshManagedCredential(ctxAt(t0), await rig.row())).rejects.toBeInstanceOf(ManagedCredentialRefreshFailed);
+      expect((await rig.row()).refreshFailedAt).toBeDefined();
+
+      endpoint.mode = "invalid_grant";
+      const revoked = await refreshManagedCredential(ctxAt(t0 + MANAGED_CREDENTIAL_REFRESH_BACKOFF_MS), await rig.row());
+      expect(revoked.kind).toBe("revoked");
+      expect((await rig.row()).refreshFailedAt).toBeUndefined();
+
+      // A fresh consent after a failure replaces the whole credential, marker included.
+      endpoint.mode = "server_error";
+      const relinkSeed = await rig.row();
+      await rig.stores[0]!.upsertLinkedIdentity({
+        accountId: rig.accountId, provider, providerUserId: relinkSeed.providerUserId, scopes: ["identity:read"], profileJson: {},
+        accessTokenEncrypted: rig.custody.encrypt("access-r"), refreshTokenEncrypted: rig.custody.encrypt("refresh-r"),
+        tokenExpiresAt: new Date(t0 + 1000).toISOString(), createdAt: relinkSeed.createdAt, updatedAt: new Date(t0).toISOString(),
+      });
+      await expect(refreshManagedCredential(ctxAt(t0 + 2000), await rig.row())).rejects.toBeInstanceOf(ManagedCredentialRefreshFailed);
+      expect((await rig.row()).refreshFailedAt).toBeDefined();
+      await rig.stores[0]!.upsertLinkedIdentity({
+        accountId: rig.accountId, provider, providerUserId: relinkSeed.providerUserId, scopes: ["identity:read"], profileJson: {},
+        accessTokenEncrypted: rig.custody.encrypt("access-s"), refreshTokenEncrypted: rig.custody.encrypt("refresh-s"),
+        tokenExpiresAt: new Date(t0 + 3000).toISOString(), createdAt: relinkSeed.createdAt, updatedAt: new Date(t0 + 2500).toISOString(),
+      });
+      expect((await rig.row()).refreshFailedAt).toBeUndefined();
+    });
+
+    it("cross-process failed-refresh marker: stamped with the time of the failure, so a slow failure does not eat the backoff", timeout, async () => {
+      const rig = await makeRig(provider);
+      const endpoint = installTokenEndpoint(provider, "refresh-0");
+      endpoint.mode = "server_error";
+      const t0 = Date.now();
+      // The provider call takes 9 s of the clock's time: the failure is known at t0 + 9 s, not at t0.
+      const slowClock = () => t0 + (endpoint.calls > 0 ? 9_000 : 0);
+      const ctx = (store: HeimdallStore, clock: () => number) => ({ config: rig.config, store, tokenCustody: rig.custody, oauthRuntimes: createOAuthRuntimeRegistry(), clock });
+      const snapshot = await rig.row();
+
+      await expect(refreshManagedCredential(ctx(rig.stores[0]!, slowClock), snapshot)).rejects.toBeInstanceOf(ManagedCredentialRefreshFailed);
+      expect((await rig.row()).refreshFailedAt).toBe(new Date(t0 + 9_000).toISOString());
+
+      // 51 s after the failure, 60 s after the attempt began: still inside the backoff.
+      const other = rig.stores[rig.stores.length - 1]!;
+      await expect(refreshManagedCredential(ctx(other, () => t0 + MANAGED_CREDENTIAL_REFRESH_BACKOFF_MS), snapshot)).rejects.toBeInstanceOf(ManagedCredentialRefreshFailed);
+      expect(endpoint.calls).toBe(1);
+    });
+
+    it("cross-process failed-refresh marker: a failure after the provider answered still leaves the marker (the provider may have consumed the token)", timeout, async () => {
+      const rig = await makeRig(provider);
+      const endpoint = installTokenEndpoint(provider, "refresh-0");
+      const snapshot = await rig.row();
+      const throwingCustody = {
+        ...rig.custody,
+        encrypt: (plaintext: string) => {
+          if (plaintext === "access-1") throw new Error("CANARY custody encrypt failed");
+          return rig.custody.encrypt(plaintext);
+        },
+      };
+      const ctx = (store: HeimdallStore, tokenCustody: typeof rig.custody) => ({ config: rig.config, store, tokenCustody, oauthRuntimes: createOAuthRuntimeRegistry() });
+
+      const failure = await refreshManagedCredential(ctx(rig.stores[0]!, throwingCustody), snapshot).then(() => undefined, (error: unknown) => error);
+      expect(failure).toBeInstanceOf(ManagedCredentialRefreshFailed);
+      expect(String(failure) + JSON.stringify(failure)).not.toContain("CANARY");
+      expect(endpoint.calls).toBe(1);
+      const marked = await rig.row();
+      expect(marked.refreshFailedAt).toBeDefined();
+      expect(marked.refreshTokenEncrypted).toBe(snapshot.refreshTokenEncrypted);
+
+      // Another process inside the backoff does not present the old token again.
+      await expect(refreshManagedCredential(ctx(rig.stores[rig.stores.length - 1]!, rig.custody), snapshot)).rejects.toBeInstanceOf(ManagedCredentialRefreshFailed);
+      expect(endpoint.calls).toBe(1);
+    });
+
+    it.skipIf(!live)("cross-process failed-refresh marker: a rotation the database refuses to write still leaves the marker", timeout, async () => {
+      const rig = await makeRig(provider);
+      const endpoint = installTokenEndpoint(provider, "refresh-0");
+      const snapshot = await rig.row();
+      const db = new Pool({ connectionString: rig.databaseUrl!, max: 1 });
+      db.on("error", () => undefined);
+      try {
+        await db.query(`CREATE FUNCTION refuse_rotation() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'CANARY rotation write refused'; END $$ LANGUAGE plpgsql`);
+        await db.query(`CREATE TRIGGER refuse_rotation BEFORE UPDATE ON linked_identities FOR EACH ROW WHEN (NEW.access_token_encrypted IS DISTINCT FROM OLD.access_token_encrypted) EXECUTE FUNCTION refuse_rotation()`);
+        const ctx = (store: HeimdallStore) => ({ config: rig.config, store, tokenCustody: rig.custody, oauthRuntimes: createOAuthRuntimeRegistry() });
+
+        await expect(refreshManagedCredential(ctx(rig.stores[0]!), snapshot)).rejects.toThrow();
+        expect(endpoint.calls).toBe(1);
+        const marked = await rig.row();
+        expect(marked.refreshFailedAt).toBeDefined();
+        if (providerCatalog[provider].rotatesRefreshTokens) {
+          // The provider consumed the token: nothing replayable is left on the row, so the backoff ending presents nothing.
+          expect(marked.refreshTokenEncrypted).toBeUndefined();
+
+          await expect(refreshManagedCredential(ctx(rig.stores[rig.stores.length - 1]!), snapshot)).resolves.toBeDefined();
+          const afterBackoff = { ...ctx(rig.stores[0]!), clock: () => Date.now() + 5 * 60_000 };
+          await expect(refreshManagedCredential(afterBackoff, snapshot)).resolves.toBeDefined();
+          expect(endpoint.calls).toBe(1);
+        } else {
+          // A non-rotating provider keeps the token valid: a transient write failure must not strand the link.
+          expect(marked.refreshTokenEncrypted).toBe(snapshot.refreshTokenEncrypted);
+
+          await expect(refreshManagedCredential(ctx(rig.stores[rig.stores.length - 1]!), snapshot)).rejects.toBeInstanceOf(ManagedCredentialRefreshFailed);
+          expect(endpoint.calls).toBe(1);
+          await db.query("DROP TRIGGER refuse_rotation ON linked_identities");
+          // The fake endpoint rotates on every refresh; Twitch does not, so its answer left refresh-0 valid.
+          endpoint.live = "refresh-0";
+          const afterBackoff = { ...ctx(rig.stores[0]!), clock: () => Date.now() + 5 * 60_000 };
+          const outcome = await refreshManagedCredential(afterBackoff, snapshot);
+          expect(outcome.kind).toBe("current");
+          expect(endpoint.calls).toBe(2);
+        }
+      } finally {
+        await db.end();
+      }
+    });
+
+    it("cross-process failed-refresh marker: a writer's clock skewed by under the backoff still holds the reader off, and by the backoff or more does not", timeout, async () => {
+      const rig = await makeRig(provider);
+      const endpoint = installTokenEndpoint(provider, "refresh-0");
+      endpoint.mode = "server_error";
+      const t0 = Date.now();
+      const ctxAt = (at: number) => ({ config: rig.config, store: rig.stores[0]!, tokenCustody: rig.custody, oauthRuntimes: createOAuthRuntimeRegistry(), clock: () => at });
+      await expect(refreshManagedCredential(ctxAt(t0), await rig.row())).rejects.toBeInstanceOf(ManagedCredentialRefreshFailed);
+      expect(endpoint.calls).toBe(1);
+
+      // The marker is in this reader's future: a writer ahead of it. A bounded wait, not a refusal for as long as the skew.
+      await expect(refreshManagedCredential(ctxAt(t0 - MANAGED_CREDENTIAL_REFRESH_BACKOFF_MS + 1), await rig.row())).rejects.toBeInstanceOf(ManagedCredentialRefreshFailed);
+      expect(endpoint.calls).toBe(1);
+      await expect(refreshManagedCredential(ctxAt(t0 - MANAGED_CREDENTIAL_REFRESH_BACKOFF_MS), await rig.row())).rejects.toBeInstanceOf(ManagedCredentialRefreshFailed);
+      expect(endpoint.calls).toBe(2);
     });
 
     it("a snapshot taken before another caller's refresh does not decide: the locked row does", timeout, async () => {
@@ -487,6 +680,38 @@ for (const { kind, live } of rigKinds) describe.skipIf(live && !adminUrl)(`manag
           { eventType: "managed_credential_revoked", payload: { provider, reason: "rotation_missing" } },
         ]);
       });
+
+      it.skipIf(!live).each(["no_refresh_token", "empty_refresh_token"] as const)(
+        "rotation-fails-closed: when the revoke the provider's answer called for cannot be written (%s), the marker is still left",
+        timeout,
+        async (mode) => {
+          const rig = await makeRig(provider);
+          const endpoint = installTokenEndpoint(provider, "refresh-0");
+          endpoint.mode = mode;
+          const snapshot = await rig.row();
+          const db = new Pool({ connectionString: rig.databaseUrl!, max: 1 });
+          db.on("error", () => undefined);
+          try {
+            await db.query(`CREATE FUNCTION refuse_revoke() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'CANARY revoke write refused'; END $$ LANGUAGE plpgsql`);
+            await db.query(`CREATE TRIGGER refuse_revoke BEFORE UPDATE ON linked_identities FOR EACH ROW WHEN (NEW.access_token_encrypted IS DISTINCT FROM OLD.access_token_encrypted) EXECUTE FUNCTION refuse_revoke()`);
+            const ctx = (store: HeimdallStore) => ({ config: rig.config, store, tokenCustody: rig.custody, oauthRuntimes: createOAuthRuntimeRegistry() });
+
+            await expect(refreshManagedCredential(ctx(rig.stores[0]!), snapshot)).rejects.toThrow();
+            expect(endpoint.calls).toBe(1);
+            const marked = await rig.row();
+            expect(marked.refreshFailedAt).toBeDefined();
+            // The provider consumed the token: nothing replayable is left on the row, so the backoff ending presents nothing.
+            expect(marked.refreshTokenEncrypted).toBeUndefined();
+
+            await expect(refreshManagedCredential(ctx(rig.stores[rig.stores.length - 1]!), snapshot)).resolves.toBeDefined();
+            const afterBackoff = { ...ctx(rig.stores[0]!), clock: () => Date.now() + 5 * 60_000 };
+            await expect(refreshManagedCredential(afterBackoff, snapshot)).resolves.toBeDefined();
+            expect(endpoint.calls).toBe(1);
+          } finally {
+            await db.end();
+          }
+        }
+      );
     } else {
       it.each(["no_refresh_token", "empty_refresh_token"] as const)("a response with %s keeps the old one for a non-rotating provider", timeout, async (mode) => {
         const rig = await makeRig(provider);
@@ -532,6 +757,7 @@ for (const { kind, live } of rigKinds) describe.skipIf(live && !adminUrl)(`manag
           tokenExpiresAt: past,
           scopes: locked.scopes,
           updatedAt: past,
+          consumedRefreshToken: false,
         }));
         expect((await rig.resolve()).statusCode).toBe(200);
         expect(endpoint.calls).toBe(2);
@@ -711,6 +937,7 @@ for (const { kind, live } of rigKinds) describe.skipIf(live && !adminUrl)(`manag
         tokenExpiresAt: "2999-01-01T00:00:00.000Z",
         scopes: ["a", "b"],
         updatedAt: "2999-01-02T00:00:00.000Z",
+        consumedRefreshToken: false,
       }));
       expect(rotated).toEqual({
         ...before,
@@ -794,6 +1021,7 @@ for (const { kind, live } of rigKinds) describe.skipIf(live && !adminUrl)(`manag
               tokenExpiresAt: new Date(Date.now() + 3600_000).toISOString(),
               scopes: locked.scopes,
               updatedAt: new Date().toISOString(),
+              consumedRefreshToken: false,
             };
           })
         )
@@ -1072,6 +1300,7 @@ describe("refresh answer classification", () => {
       tokenExpiresAt: new Date().toISOString(),
       scopes: locked.scopes,
       updatedAt: new Date().toISOString(),
+      consumedRefreshToken: false,
     })))!;
     const calls = answer(JSON.stringify({ access_token: "access-1", refresh_token: "refresh-1", ...extra }), 200);
     let skew = 0;
@@ -1104,6 +1333,7 @@ describe("refresh answer classification", () => {
       tokenExpiresAt: dueAt,
       scopes: ["s"],
       updatedAt: dueAt,
+      consumedRefreshToken: false,
     }));
     const calls = answer(JSON.stringify({ access_token: "access-2", expires_in: 3600 }), 200);
     await refreshManagedCredential(ctxFor(store), snapshot);
