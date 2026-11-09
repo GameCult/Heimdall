@@ -1440,6 +1440,12 @@ describe("Heimdall service", () => {
     expect(urls).toEqual([]);
   });
 
+  // Targets made only of whitespace, format characters, controls and the invisible fillers that render as nothing.
+  const BLANK_TARGETS = [
+    "   ", "\t", "\n ", "\u200B", "\u00A0\uFEFF",
+    "\u2800", "\u3164", "\u115F", "\u1160", "\uFFA0", "\u034F", "\u0000", "\u0007", " \u2800\u3164 ",
+  ];
+
   describe("a connect start that names a connection target is the app backend's", () => {
     // The target is app-backend authority: the StreamPixels backend proves the creator-manage session and states the
     // creator it started the connect for. Anyone else naming {creator, X} would have X's connector rebound to their
@@ -1493,7 +1499,7 @@ describe("Heimdall service", () => {
       apps.push(app);
 
       for (const kind of ["creator", "account"]) {
-        for (const targetId of ["   ", "\t", "\n ", "\u200B", "\u00A0\uFEFF"]) {
+        for (const targetId of BLANK_TARGETS) {
           const refused = await startFor(app, provider, { kind, targetId }, own);
           expect([refused.statusCode, refused.json().error], `${kind} ${JSON.stringify(targetId)}`).toEqual([400, "invalid_connection_target"]);
           expect(refused.body).not.toContain("authorizationUrl");
@@ -1502,11 +1508,25 @@ describe("Heimdall service", () => {
       expect((await startFor(app, provider, { kind: "creator", targetId: " creator-1 " }, own)).statusCode).toBe(201);
     });
 
+    it.each(managed)("%s: a blank target without the app's secret gets 401, not the 400 that would tell a stranger what the gate checks", async (provider) => {
+      const app = await buildApp({ config: createTestConfig() });
+      apps.push(app);
+
+      for (const headers of [{}, { "x-heimdall-app-secret": "wrong" }]) {
+        for (const targetId of ["   ", "\u2800"]) {
+          const refused = await startFor(app, provider, { kind: "creator", targetId }, headers);
+          expect([refused.statusCode, refused.json()], JSON.stringify(targetId)).toEqual([401, { error: "app_auth_required" }]);
+        }
+      }
+    });
+
     it("the callback mint holds a blank creator target to the same bar", () => {
       const streampixels = builtInAppProfiles.streampixels!;
-      for (const targetId of ["   ", "\t", "\u200B", "\uFEFF"]) {
+      for (const targetId of BLANK_TARGETS) {
         expect(callbackMint(streampixels, "joystick", "connect", { kind: "creator", targetId }), JSON.stringify(targetId)).toBe("refused");
       }
+      // A visible character among the blanks names a target.
+      expect(callbackMint(streampixels, "joystick", "connect", { kind: "creator", targetId: "\u2800a\u3164" })).toBe("custody_only");
       expect(callbackMint(streampixels, "joystick", "connect", { kind: "creator", targetId: "creator-1" })).toBe("custody_only");
     });
   });
