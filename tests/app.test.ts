@@ -1444,7 +1444,11 @@ describe("Heimdall service", () => {
   const BLANK_TARGETS = [
     "   ", "\t", "\n ", "\u200B", "\u00A0\uFEFF",
     "\u2800", "\u3164", "\u115F", "\u1160", "\uFFA0", "\u034F", "\u0000", "\u0007", " \u2800\u3164 ",
+    // Marks, private-use, unassigned and lone-surrogate code points, and the symbols that read as nothing: none is a letter or a number.
+    "\u0300", "\uE000", "\u0378", "\uD800", "\u{16FE4}", "\u{1D159}", "\u{F0000}", "\u0300\uE000 ",
   ];
+  // A target is usable when it holds a letter or a number that is not an invisible filler.
+  const NAMING_TARGETS = ["creator-1", " creator-1 ", "Framgång", "42", "\u2800a\u3164", "\u3164\u0300x"];
 
   describe("a connect start that names a connection target is the app backend's", () => {
     // The target is app-backend authority: the StreamPixels backend proves the creator-manage session and states the
@@ -1505,7 +1509,9 @@ describe("Heimdall service", () => {
           expect(refused.body).not.toContain("authorizationUrl");
         }
       }
-      expect((await startFor(app, provider, { kind: "creator", targetId: " creator-1 " }, own)).statusCode).toBe(201);
+      for (const targetId of NAMING_TARGETS) {
+        expect((await startFor(app, provider, { kind: "creator", targetId }, own)).statusCode, JSON.stringify(targetId)).toBe(201);
+      }
     });
 
     it.each(managed)("%s: a blank target without the app's secret gets 401, not the 400 that would tell a stranger what the gate checks", async (provider) => {
@@ -1527,7 +1533,9 @@ describe("Heimdall service", () => {
       }
       // A visible character among the blanks names a target.
       expect(callbackMint(streampixels, "joystick", "connect", { kind: "creator", targetId: "\u2800a\u3164" })).toBe("custody_only");
-      expect(callbackMint(streampixels, "joystick", "connect", { kind: "creator", targetId: "creator-1" })).toBe("custody_only");
+      for (const targetId of NAMING_TARGETS) {
+        expect(callbackMint(streampixels, "joystick", "connect", { kind: "creator", targetId }), JSON.stringify(targetId)).toBe("custody_only");
+      }
     });
   });
 
