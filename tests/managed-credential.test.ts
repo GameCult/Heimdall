@@ -757,6 +757,7 @@ for (const { kind, live } of rigKinds) describe.skipIf(live && !adminUrl)(`manag
           tokenExpiresAt: past,
           scopes: locked.scopes,
           updatedAt: past,
+          consumedRefreshToken: false,
         }));
         expect((await rig.resolve()).statusCode).toBe(200);
         expect(endpoint.calls).toBe(2);
@@ -936,6 +937,7 @@ for (const { kind, live } of rigKinds) describe.skipIf(live && !adminUrl)(`manag
         tokenExpiresAt: "2999-01-01T00:00:00.000Z",
         scopes: ["a", "b"],
         updatedAt: "2999-01-02T00:00:00.000Z",
+        consumedRefreshToken: false,
       }));
       expect(rotated).toEqual({
         ...before,
@@ -1019,6 +1021,7 @@ for (const { kind, live } of rigKinds) describe.skipIf(live && !adminUrl)(`manag
               tokenExpiresAt: new Date(Date.now() + 3600_000).toISOString(),
               scopes: locked.scopes,
               updatedAt: new Date().toISOString(),
+              consumedRefreshToken: false,
             };
           })
         )
@@ -1297,6 +1300,7 @@ describe("refresh answer classification", () => {
       tokenExpiresAt: new Date().toISOString(),
       scopes: locked.scopes,
       updatedAt: new Date().toISOString(),
+      consumedRefreshToken: false,
     })))!;
     const calls = answer(JSON.stringify({ access_token: "access-1", refresh_token: "refresh-1", ...extra }), 200);
     let skew = 0;
@@ -1329,6 +1333,7 @@ describe("refresh answer classification", () => {
       tokenExpiresAt: dueAt,
       scopes: ["s"],
       updatedAt: dueAt,
+      consumedRefreshToken: false,
     }));
     const calls = answer(JSON.stringify({ access_token: "access-2", expires_in: 3600 }), 200);
     await refreshManagedCredential(ctxFor(store), snapshot);
