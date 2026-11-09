@@ -73,6 +73,8 @@ export type CredentialDecision =
       tokenExpiresAt: string;
       scopes: string[];
       updatedAt: string;
+      /** The provider rotates refresh tokens, so the one presented is spent whether or not this decision commits. */
+      consumedRefreshToken: boolean;
     }
   | { kind: "revoke"; updatedAt: string }
   | { kind: "failed"; failedAt: string };

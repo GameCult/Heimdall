@@ -159,6 +159,7 @@ async function refreshUnderLock(
       tokenExpiresAt: refreshed.expiresAt,
       scopes: refreshed.scope.length ? refreshed.scope : locked.scopes,
       updatedAt,
+      consumedRefreshToken: providerCatalog[provider].rotatesRefreshTokens,
     };
   };
 

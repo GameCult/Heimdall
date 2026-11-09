@@ -865,13 +865,18 @@ export class PostgresStore implements HeimdallStore {
       } catch (error) {
         await client.query("ROLLBACK");
         if (decision?.kind === "rotate" || decision?.kind === "revoke") {
-          // The provider answered and may have consumed the refresh token, and the rotation or the revoke its answer
-          // called for (a rotating provider's missing refresh token) could not be committed: the rollback took the
-          // answer with it. In a transaction of its own, blank the consumed token and leave the marker, so no later
-          // caller, after the backoff either, presents it again. Best effort: if this write fails too, the original
-          // error is the one that matters, and the residual is named in docs/service-contract.md.
+          // The provider answered, and what its answer called for could not be committed: the rollback took the answer
+          // with it. In a transaction of its own, leave the marker, so no caller presents the token within the backoff.
+          // Blank the token only when it is spent: a revoke, or a provider that rotates (Joystick) and consumed it.
+          // A provider that keeps its refresh token valid (Twitch) keeps it, so a transient write failure does not
+          // strand the link. Best effort: if this write fails too, the original error is the one that matters, and the
+          // residual is named in docs/service-contract.md.
+          const spent = decision.kind === "revoke" || decision.consumedRefreshToken;
           await client
-            .query("UPDATE linked_identities SET refresh_token_encrypted = NULL, refresh_failed_at = $2 WHERE id = $1", [id, decision.updatedAt])
+            .query(
+              `UPDATE linked_identities SET ${spent ? "refresh_token_encrypted = NULL, " : ""}refresh_failed_at = $2 WHERE id = $1`,
+              [id, decision.updatedAt]
+            )
             .catch(() => undefined);
         }
         throw error;

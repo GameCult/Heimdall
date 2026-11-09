@@ -579,11 +579,12 @@ Important behavior:
   The marker is a best-effort write on a second connection, made after the
   lock's transaction rolled back; it is not part of that transaction. When the
   rotation or the revocation the provider's answer called for cannot be
-  committed (a rotating provider answered without a refresh token, so the
-  revoke was due, and the write was refused), the fallback write also blanks
-  the refresh token the provider consumed, so the end of the backoff does not
-  present it again (`joystick:follow_up:chat-s4509-4511`, steward ruling in
-  #minds, 2026-11-09).
+  committed, the fallback write leaves the marker and blanks the refresh token
+  only when that token is spent: on a revoke (a rotating provider answered
+  without a refresh token, or the grant was rejected), or when the provider
+  rotates refresh tokens (Joystick) and so consumed it. A provider that keeps
+  its refresh token valid (Twitch) keeps it, so a transient database failure
+  does not strand the link: the next caller after the backoff presents it again.
   Residual risk: the provider may consume the refresh token as soon as the
   request is sent. If a Heimdall process dies after that and before the commit
   of the marker, the rotation or the revocation, or if the blanking fallback
