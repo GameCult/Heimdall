@@ -264,14 +264,14 @@ export function isAllowedReturnOrigin(profile: AppProfile, returnTo: string): bo
 }
 
 /**
- * A connection target names something: at least one character that is not
- * whitespace, a control, a default-ignorable code point (format characters,
- * variation selectors, the Hangul and Khmer fillers, the combining grapheme
- * joiner) or the Braille blank U+2800. The one definition the start gate and
- * the callback mint both use.
+ * A connection target names something: at least one letter or number that is
+ * not a default-ignorable code point (the Hangul and Khmer fillers are letters
+ * that render as nothing). An allowlist, so marks, private-use, unassigned and
+ * surrogate code points and symbols cannot stand in for a name. The one
+ * definition the start gate and the callback mint both use.
  */
 export function isUsableConnectionTarget(targetId: string): boolean {
-  return /[^\s\p{Z}\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}\u2800]/u.test(targetId);
+  return /(?![\p{Default_Ignorable_Code_Point}])[\p{L}\p{N}]/u.test(targetId);
 }
 
 /**
