@@ -447,13 +447,12 @@ builder was not used.
   process, so N Heimdall processes can present one token N times after a
   transient failure. Needs a failed-attempt marker on the row, read under the
   lock. Must land before or with Idunn onboarding.
-- `joystick:follow_up:connect-start-needs-app-auth`: connect starts are
-  unauthenticated, so anyone can name `{creator, targetId}`; the callback
-  re-check proves a binding exists, not that the caller owns it. It also owns
-  the whitespace-only `targetId` that passes both gates and the callback's
-  fail-open `''` fallback for a vanished profile (finding
-  `joystick:finding:cut-h1.s4.whitespace-targetid-passes-custody-gate`). Must
-  land before the public Joystick bot or a second creator.
+- `joystick:follow_up:connect-start-needs-app-auth` (Heimdall side done): a
+  connect start that names a connection target needs the app's own secret for
+  every managed provider, and a blank target is refused at start and at the
+  callback mint. What StreamPixels must do on its side is in
+  `notes/streampixels-connect-redeem.md`; its redeem must refuse a creator
+  connect whose target it did not start.
 - `joystick:follow_up:heimdall-idunn-onboarding` (gamecult-ops): live Heimdall
   is a hand-copied release under `heimdall.service`, not an Idunn-admitted
   generation; the recipe's Joystick lines are declared but unproven by a

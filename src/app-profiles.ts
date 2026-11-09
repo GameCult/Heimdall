@@ -264,6 +264,17 @@ export function isAllowedReturnOrigin(profile: AppProfile, returnTo: string): bo
 }
 
 /**
+ * A connection target names something: at least one letter or number that is
+ * not a default-ignorable code point (the Hangul and Khmer fillers are letters
+ * that render as nothing). An allowlist, so marks, private-use, unassigned and
+ * surrogate code points and symbols cannot stand in for a name. The one
+ * definition the start gate and the callback mint both use.
+ */
+export function isUsableConnectionTarget(targetId: string): boolean {
+  return /(?![\p{Default_Ignorable_Code_Point}])[\p{L}\p{N}]/u.test(targetId);
+}
+
+/**
  * What a completed OAuth callback may mint, decided at the callback from the
  * signed state's mode and the provider's role in the profile (the start gate
  * is only an early refusal). `viewer_session`: the provider is one of the
@@ -289,7 +300,7 @@ export function callbackMint(
   return mode === "connect" &&
     profile.managedConnectionProviders.includes(provider) &&
     connection?.kind === "creator" &&
-    connection.targetId !== ""
+    isUsableConnectionTarget(connection.targetId)
     ? "custody_only"
     : "refused";
 }

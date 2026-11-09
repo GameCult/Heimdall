@@ -1440,6 +1440,105 @@ describe("Heimdall service", () => {
     expect(urls).toEqual([]);
   });
 
+  // Targets made only of whitespace, format characters, controls and the invisible fillers that render as nothing.
+  const BLANK_TARGETS = [
+    "   ", "\t", "\n ", "\u200B", "\u00A0\uFEFF",
+    "\u2800", "\u3164", "\u115F", "\u1160", "\uFFA0", "\u034F", "\u0000", "\u0007", " \u2800\u3164 ",
+    // Marks, private-use, unassigned and lone-surrogate code points, and the symbols that read as nothing: none is a letter or a number.
+    "\u0300", "\uE000", "\u0378", "\uD800", "\u{16FE4}", "\u{1D159}", "\u{F0000}", "\u0300\uE000 ",
+  ];
+  // A target is usable when it holds a letter or a number that is not an invisible filler.
+  const NAMING_TARGETS = ["creator-1", " creator-1 ", "Framgång", "42", "\u2800a\u3164", "\u3164\u0300x"];
+
+  describe("a connect start that names a connection target is the app backend's", () => {
+    // The target is app-backend authority: the StreamPixels backend proves the creator-manage session and states the
+    // creator it started the connect for. Anyone else naming {creator, X} would have X's connector rebound to their
+    // own OAuth account at StreamPixels' redeem.
+    const returnTo = "https://streampixels.gamecult.org/auth/connect";
+    const managed = ["twitch", "youtube", "joystick"] as const;
+    const startFor = (app: FastifyInstance, provider: string, connection: unknown, headers: Record<string, string> = {}) =>
+      app.inject({
+        method: "POST",
+        url: `/v1/oauth/${provider}/start`,
+        headers,
+        payload: { appSlug: "streampixels", mode: "connect", returnTo, connection },
+      });
+    const own = { "x-heimdall-app-secret": "streampixels-secret" };
+
+    it.each(managed)("%s: a creator target is refused without the app's own secret and minted for it", async (provider) => {
+      const config = createTestConfig();
+      const app = await buildApp({ config });
+      apps.push(app);
+      const creator = { kind: "creator", targetId: "victim-creator" };
+
+      for (const headers of [{}, { "x-heimdall-app-secret": "repixelizer-secret" }, { "x-heimdall-app-secret": "wrong" }]) {
+        const refused = await startFor(app, provider, creator, headers);
+        expect([refused.statusCode, refused.json()]).toEqual([401, { error: "app_auth_required" }]);
+        expect(refused.body).not.toContain("authorizationUrl");
+      }
+      const started = await startFor(app, provider, creator, own);
+      expect(started.statusCode).toBe(201);
+      const verified = verifyJwt(stateOf(started.json()), getPublicKey(app));
+      expect(verified.valid && verified.payload).toEqual(expect.objectContaining({ connection: expect.objectContaining(creator) }));
+
+      // A direct caller (the command plane hands startOAuthFlow its own) is held to the slug too.
+      const input = { appSlug: "streampixels" as const, mode: "connect" as const, returnTo, connection: { kind: "creator" as const, targetId: "victim-creator" } };
+      const foreign = resolveAppCaller(config, "repixelizer", { "x-heimdall-app-secret": "repixelizer-secret" });
+      expect((await startOAuthFlow(getHeimdallRuntimeContext(app), provider, foreign, input)).statusCode).toBe(401);
+      expect((await startOAuthFlow(getHeimdallRuntimeContext(app), provider, null, input)).statusCode).toBe(401);
+    });
+
+    it.each(["twitch", "youtube"] as const)("%s: any connection kind needs the app's secret, not only creator", async (provider) => {
+      const app = await buildApp({ config: createTestConfig() });
+      apps.push(app);
+      const account = { kind: "account", targetId: "victim-account" };
+
+      const refused = await startFor(app, provider, account);
+      expect([refused.statusCode, refused.json()]).toEqual([401, { error: "app_auth_required" }]);
+      expect((await startFor(app, provider, account, own)).statusCode).toBe(201);
+    });
+
+    it.each(managed)("%s: a blank target is refused even for the app, whatever the blank is made of", async (provider) => {
+      const app = await buildApp({ config: createTestConfig() });
+      apps.push(app);
+
+      for (const kind of ["creator", "account"]) {
+        for (const targetId of BLANK_TARGETS) {
+          const refused = await startFor(app, provider, { kind, targetId }, own);
+          expect([refused.statusCode, refused.json().error], `${kind} ${JSON.stringify(targetId)}`).toEqual([400, "invalid_connection_target"]);
+          expect(refused.body).not.toContain("authorizationUrl");
+        }
+      }
+      for (const targetId of NAMING_TARGETS) {
+        expect((await startFor(app, provider, { kind: "creator", targetId }, own)).statusCode, JSON.stringify(targetId)).toBe(201);
+      }
+    });
+
+    it.each(managed)("%s: a blank target without the app's secret gets 401, not the 400 that would tell a stranger what the gate checks", async (provider) => {
+      const app = await buildApp({ config: createTestConfig() });
+      apps.push(app);
+
+      for (const headers of [{}, { "x-heimdall-app-secret": "wrong" }]) {
+        for (const targetId of ["   ", "\u2800"]) {
+          const refused = await startFor(app, provider, { kind: "creator", targetId }, headers);
+          expect([refused.statusCode, refused.json()], JSON.stringify(targetId)).toEqual([401, { error: "app_auth_required" }]);
+        }
+      }
+    });
+
+    it("the callback mint holds a blank creator target to the same bar", () => {
+      const streampixels = builtInAppProfiles.streampixels!;
+      for (const targetId of BLANK_TARGETS) {
+        expect(callbackMint(streampixels, "joystick", "connect", { kind: "creator", targetId }), JSON.stringify(targetId)).toBe("refused");
+      }
+      // A visible character among the blanks names a target.
+      expect(callbackMint(streampixels, "joystick", "connect", { kind: "creator", targetId: "\u2800a\u3164" })).toBe("custody_only");
+      for (const targetId of NAMING_TARGETS) {
+        expect(callbackMint(streampixels, "joystick", "connect", { kind: "creator", targetId }), JSON.stringify(targetId)).toBe("custody_only");
+      }
+    });
+  });
+
   describe("joystick connect", () => {
     const creator = { kind: "creator", targetId: "creator-1" };
     async function connect(app: FastifyInstance, extra: Record<string, unknown> = { connection: creator }) {
