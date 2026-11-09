@@ -265,11 +265,13 @@ export function isAllowedReturnOrigin(profile: AppProfile, returnTo: string): bo
 
 /**
  * A connection target names something: at least one character that is not
- * whitespace or an invisible format character (U+200B, U+FEFF and the like).
- * The one definition the start gate and the callback mint both use.
+ * whitespace, a control, a default-ignorable code point (format characters,
+ * variation selectors, the Hangul and Khmer fillers, the combining grapheme
+ * joiner) or the Braille blank U+2800. The one definition the start gate and
+ * the callback mint both use.
  */
 export function isUsableConnectionTarget(targetId: string): boolean {
-  return /[^\s\p{Cf}]/u.test(targetId);
+  return /[^\s\p{Z}\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}\u2800]/u.test(targetId);
 }
 
 /**

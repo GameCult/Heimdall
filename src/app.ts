@@ -702,23 +702,6 @@ export async function startOAuthFlow(
     };
   }
 
-  if (input.connection !== undefined && !isUsableConnectionTarget(input.connection.targetId)) {
-    return {
-      statusCode: 400,
-      body: { error: "invalid_connection_target", detail: "connection.targetId must name a target." },
-    };
-  }
-
-  if (callbackMint(profile, provider, input.mode, input.connection) === "refused") {
-    return {
-      statusCode: 400,
-      body: {
-        error: "creator_connection_required",
-        detail: `${provider} on ${profile.slug} is a managed creator connection: connect needs connection.kind creator and a targetId.`,
-      },
-    };
-  }
-
   const descriptor = providerCatalog[provider];
   // A provider that never mints an account attaches an identity only through
   // a bound link: the user's own access token, since the app's word does not
@@ -816,6 +799,24 @@ export async function startOAuthFlow(
   }
   if ((entitlementPolicy || profile.startRequiresAppCaller || (input.mode === "connect" && input.connection !== undefined)) && (!isAppCaller(caller) || caller.appSlug !== profile.slug)) {
     return { statusCode: 401, body: { error: "app_auth_required" } };
+  }
+
+  // After the app-secret gate, so a caller without the secret learns nothing about what a target must look like.
+  if (input.connection !== undefined && !isUsableConnectionTarget(input.connection.targetId)) {
+    return {
+      statusCode: 400,
+      body: { error: "invalid_connection_target", detail: "connection.targetId must name a target." },
+    };
+  }
+
+  if (callbackMint(profile, provider, input.mode, input.connection) === "refused") {
+    return {
+      statusCode: 400,
+      body: {
+        error: "creator_connection_required",
+        detail: `${provider} on ${profile.slug} is a managed creator connection: connect needs connection.kind creator and a targetId.`,
+      },
+    };
   }
 
   const providerConfig = config.providers[provider];
