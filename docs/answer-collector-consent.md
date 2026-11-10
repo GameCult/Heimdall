@@ -155,6 +155,12 @@ A record is training or evaluation data only if all hold:
    version when they answered;
 3. `exited = false` at export time.
 
+Open gap: `accepted_at` is the homeserver's `origin_server_ts` and `received_at` is the collector's own clock, so
+condition 2 compares two clocks. If the collector's clock is behind the homeserver's, a member's first answer (which is
+also their acceptance) can fail `accepted_at <= received_at` and is excluded. That fails closed, never opens `train`
+wrongly. The remedy is to compare on one clock (keep the reply's `origin_server_ts` on the answer); this revision does
+not rule it.
+
 No recorded scope, or no recorded acceptance, means excluded. Records wider than
 `show` are kept apart from `show` records: one store per scope (`show`, `study`,
 `train`) plus a store for scopeless replies that no read path serves. A record
