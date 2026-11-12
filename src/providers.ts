@@ -23,6 +23,12 @@ export interface ProviderDescriptor {
   clientSecretEnv: string;
   additionalAuthorizationParams?: Record<string, string>;
   /**
+   * The authorize parameters that make this provider ask the person again
+   * (a sign_in step-up). Absent means the provider has no such parameter, and
+   * a step-up start for it is refused rather than passed without the step.
+   */
+  stepUpAuthorizationParams?: Record<string, string>;
+  /**
    * What a callback does with a (provider, subject) no account holds yet.
    * `mints_account` is every provider's behaviour before Google: the first
    * login makes an account. `requires_link` never mints: the identity
@@ -92,6 +98,8 @@ export const providerCatalog: Record<Provider, ProviderDescriptor> = {
     firstLogin: "mints_account",
     clientIdEnv: "GC_ACCESS_PROVIDER_TWITCH_CLIENT_ID",
     clientSecretEnv: "GC_ACCESS_PROVIDER_TWITCH_CLIENT_SECRET_FILE",
+    // Twitch force_verify re-shows the authorize page; it is not a password prompt.
+    stepUpAuthorizationParams: { force_verify: "true" },
   },
   youtube: {
     key: "youtube",
@@ -116,6 +124,8 @@ export const providerCatalog: Record<Provider, ProviderDescriptor> = {
       include_granted_scopes: "true",
       prompt: "consent",
     },
+    // login forces re-authentication; consent is kept because this provider always asks for it.
+    stepUpAuthorizationParams: { prompt: "login consent" },
   },
   spotify: {
     key: "spotify",
@@ -150,6 +160,7 @@ export const providerCatalog: Record<Provider, ProviderDescriptor> = {
     clientIdEnv: "GC_ACCESS_PROVIDER_GOOGLE_CLIENT_ID",
     clientSecretEnv: "GC_ACCESS_PROVIDER_GOOGLE_CLIENT_SECRET_FILE",
     additionalAuthorizationParams: { prompt: "select_account" },
+    stepUpAuthorizationParams: { prompt: "login" },
   },
   joystick: {
     key: "joystick",
@@ -180,6 +191,8 @@ export function buildAuthorizationUrl(options: {
   requestedScopes: string[] | undefined;
   /** For an OIDC provider: the nonce, and the S256 challenge of the PKCE verifier. */
   oidc?: { nonce: string; codeChallenge: string };
+  /** Ask the provider for a real re-authentication. Throws for a provider with no such parameter: never a silent pass. */
+  stepUp?: boolean;
 }): string {
   const descriptor = providerCatalog[options.provider];
   const url = new URL(descriptor.authorizationEndpoint);
@@ -201,6 +214,15 @@ export function buildAuthorizationUrl(options: {
 
   for (const [key, value] of Object.entries(descriptor.additionalAuthorizationParams ?? {})) {
     url.searchParams.set(key, value);
+  }
+
+  if (options.stepUp) {
+    if (!descriptor.stepUpAuthorizationParams) {
+      throw new Error(`${descriptor.displayName} has no re-authentication parameter: a step-up cannot be honoured.`);
+    }
+    for (const [key, value] of Object.entries(descriptor.stepUpAuthorizationParams)) {
+      url.searchParams.set(key, value);
+    }
   }
 
   return url.toString();

@@ -78,6 +78,8 @@ export interface OAuthStartRequest {
   handoff?: OAuthHandoff;
   requestedScopes?: string[];
   entitlementPolicy?: OAuthEntitlementPolicy;
+  /** Sign_in only, app-authenticated: ask the provider for a real re-authentication. Off when absent. */
+  stepUp?: boolean;
 }
 
 export interface OAuthStatePayload {
@@ -99,6 +101,8 @@ export interface OAuthStatePayload {
   entitlement_policy: OAuthEntitlementPolicy | null;
   /** The start's requestedScopes, carried so the launch hop can build the provider URL from the signed state alone. */
   requested_scopes: string[] | null;
+  /** The start's step-up request. Signed, so the launch hop reads it here and nowhere else; null when not asked. */
+  step_up: true | null;
 }
 
 export interface LinkedIdentityInput {

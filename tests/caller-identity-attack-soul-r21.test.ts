@@ -366,7 +366,7 @@ describe("R21.2: the WeakSet brand at every consumer", () => {
         if (line.includes("caller.appSlug")) expect(line, `${file}: ${line.trim()}`).toContain("isAppCaller(caller)");
       }
     }
-    expect(consumers).toEqual(["app.ts: reads=3 guards=3"]);
+    expect(consumers).toEqual(["app.ts: reads=4 guards=4"]);
   });
 
   it("a caller minted for app A is refused where app B is expected, over HTTP and by direct call", async () => {
