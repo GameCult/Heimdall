@@ -1365,6 +1365,18 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     if (!clientId) {
       return providerNotConfigured(reply, state);
     }
+    const oidc = providerCatalog[state.provider].oidc ? deriveOidcSecrets(state.jti, keys.privateKey) : undefined;
+    // Built before the state is claimed: a state that cannot be honoured (a step-up for a provider with no
+    // re-authentication parameter) fails here without burning its launch use or setting the binding cookie.
+    const authorizationUrl = buildAuthorizationUrl({
+      provider: state.provider,
+      clientId,
+      redirectUri: oauthCallbackUrl(config, state.provider),
+      state: rawState,
+      requestedScopes: state.requested_scopes ?? undefined,
+      ...(state.step_up ? { stepUp: true } : {}),
+      ...(oidc ? { oidc: { nonce: oidc.nonce, codeChallenge: oidc.codeChallenge } } : {}),
+    });
     const first = await store.claimOAuthStateUse({
       jti: state.jti,
       phase: "launch",
@@ -1376,22 +1388,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       return refuseVerifiedState(request, reply, state, "state_already_launched");
     }
 
-    const oidc = providerCatalog[state.provider].oidc ? deriveOidcSecrets(state.jti, keys.privateKey) : undefined;
     setOAuthBindingCookie(reply, state, signOAuthBinding(config, keys, state, shownText), state.exp - nowEpochSeconds());
     reply.header("Cache-Control", "no-store");
     reply.header("Referrer-Policy", "no-referrer");
-    return reply.redirect(
-      buildAuthorizationUrl({
-        provider: state.provider,
-        clientId,
-        redirectUri: oauthCallbackUrl(config, state.provider),
-        state: rawState,
-        requestedScopes: state.requested_scopes ?? undefined,
-        ...(state.step_up ? { stepUp: true } : {}),
-        ...(oidc ? { oidc: { nonce: oidc.nonce, codeChallenge: oidc.codeChallenge } } : {}),
-      }),
-      302
-    );
+    return reply.redirect(authorizationUrl, 302);
   };
 
   app.get<{

@@ -220,6 +220,10 @@ Step-up (`stepUp: true`, sign_in only, off by default):
 - A provider with no such parameter (Discord, Patreon, GitHub, Spotify,
   Joystick) is `400 step_up_not_supported`, with the provider named, before any
   state is signed. The URL builder throws rather than omit the step.
+- A `backend_callback` handoff delivery does not carry `stepUpRequested`; only the redeemed completion does.
+- A state signed by a build with step-up and launched by an older build loses the step
+  silently (the older parser ignores `step_up`): deploy every Heimdall instance on one
+  release, with no mixed window.
 - Heimdall requests the step; it cannot observe that the provider honoured it.
   `stepUpRequested` says "asked", not "verified".
 

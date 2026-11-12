@@ -1,8 +1,11 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
 import { type OAuthProviderRuntime } from "../src/oauth.js";
 import { buildAuthorizationUrl, providerCatalog } from "../src/providers.js";
-import { decodeJwt } from "../src/signing.js";
+import { createRuntimeKeyMaterial, decodeJwt, signJwt, verifyJwt } from "../src/signing.js";
 import { InMemoryStore } from "../src/store/index.js";
 import { createTestConfig, launchFlow, launchWithRedirect } from "./oauth-flow.js";
 
@@ -34,9 +37,9 @@ afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
 });
 
-async function rig() {
+async function rig(config = createTestConfig()) {
   const app = await buildApp({
-    config: createTestConfig(),
+    config,
     store: new InMemoryStore(),
     oauthRuntimes: { twitch: runtime("twitch", "t-1"), youtube: runtime("youtube", "y-1") },
   });
@@ -147,6 +150,58 @@ describe("the flag is the signed state's, not the redeem side's", () => {
       const redeemed = await app.inject({ method: "POST", url: "/v1/apps/streampixels/auth-completions/redeem", payload: { completionCode: code, stepUp: true } });
       expect(redeemed.statusCode).toBe(201);
       expect(redeemed.json().stepUpRequested).toBe(asked ? true : undefined);
+    }
+  });
+});
+
+describe("a forged or odd state cannot carry a step-up the start would not have signed", () => {
+  // A real signing key on disk, so the test can re-sign a state as only Heimdall's key holder could.
+  const dir = mkdtempSync(join(tmpdir(), "heimdall-stepup-"));
+  const config = { ...createTestConfig(), signingPrivateKeyPath: join(dir, "signing.pem"), bootstrapSigningPrivateKeyOnMissing: true };
+  // The app creates the key on first boot; read it only after the rig exists.
+  const loadKeys = (c: typeof config) => createRuntimeKeyMaterial({ ...c, bootstrapSigningPrivateKeyOnMissing: false });
+
+  async function forgedState(app: App, provider: string, headers: Record<string, string>, stepUp: unknown, appSlug = "streampixels", url = returnTo) {
+    const started = await start(app, provider, {}, headers, appSlug, url);
+    const real = new URL(started.json().authorizationUrl).searchParams.get("state") ?? "";
+    const keys = loadKeys(config);
+    const verified = verifyJwt(real, keys.publicKey) as { valid: boolean; payload: Record<string, unknown> };
+    expect(verified.valid, "the test key signs what the app verifies").toBe(true);
+    return { real, forged: signJwt({ ...verified.payload, step_up: stepUp }, keys) };
+  }
+  const launch = (app: App, provider: string, state: string) => app.inject({ method: "GET", url: `/v1/oauth/${provider}/launch?state=${encodeURIComponent(state)}` });
+
+  it("rejects any step_up that is not null or true as invalid_state at the launch hop", async () => {
+    const app = await rig(config);
+    expect((await launch(app, "twitch", (await forgedState(app, "twitch", {}, true)).forged)).statusCode, "a well-formed true still launches").toBe(302);
+    for (const odd of ["true", "yes", 1, 0, false, {}, []]) {
+      const res = await launch(app, "twitch", (await forgedState(app, "twitch", {}, odd)).forged);
+      expect([res.statusCode, res.json().error], JSON.stringify(odd)).toEqual([400, "invalid_state"]);
+    }
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("a step-up state for a provider with no re-authentication parameter fails closed and does not burn the state", async () => {
+    const dir2 = mkdtempSync(join(tmpdir(), "heimdall-stepup-"));
+    const config2 = { ...createTestConfig(), signingPrivateKeyPath: join(dir2, "signing.pem"), bootstrapSigningPrivateKeyOnMissing: true };
+    try {
+      const app = await rig(config2);
+      const bifrost = { "x-heimdall-app-secret": "bifrost-secret" };
+      const started = await start(app, "discord", {}, bifrost, "bifrost", "https://bifrost.gamecult.org/auth/heimdall/return");
+      const real = new URL(started.json().authorizationUrl).searchParams.get("state") ?? "";
+      const keys2 = loadKeys(config2);
+      const verified = verifyJwt(real, keys2.publicKey) as { valid: boolean; payload: Record<string, unknown> };
+      expect(verified.valid).toBe(true);
+      const forged = signJwt({ ...verified.payload, step_up: true }, keys2);
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const res = await launch(app, "discord", forged);
+        expect(res.statusCode, "never a redirect without the step").toBe(500);
+        expect(res.headers.location).toBeUndefined();
+      }
+      // Not "state_already_launched": the refused launches did not claim the state.
+      expect((await launch(app, "discord", real)).statusCode).toBe(302);
+    } finally {
+      rmSync(dir2, { recursive: true, force: true });
     }
   });
 });
