@@ -198,6 +198,35 @@ Failure modes:
   secret, or another app's, is refused before any state is signed. `sign_in`
   starts carrying a `connection` are `400 connection_not_allowed_in_sign_in`
 
+Step-up (`stepUp: true`, sign_in only, off by default):
+
+- Asks the provider for a real re-authentication on the authorize URL, so a
+  provider session already open in the browser is not enough to complete the
+  sign-in. The start request field is `stepUp`; the signed state carries it as
+  `step_up`, and the launch hop builds the provider URL from the state alone.
+  Nothing on the callback or redeem side can set or clear it (a `stepUp` in a
+  redeem body is ignored), and a completion reports it as `stepUpRequested: true`
+  when the start asked.
+- It is the authenticated app's request, like a connection target: no secret or
+  another app's is `401 app_auth_required`; a `link` or `connect` start carrying
+  it is `400 step_up_only_in_sign_in`; `stepUp: false` is the same as absent.
+- Provider parameters (`stepUpAuthorizationParams`, `src/providers.ts`): Twitch
+  `force_verify=true`, YouTube `prompt=login consent` (consent is kept; the
+  provider always asks it), Google `prompt=login`. **The strengths differ.**
+  Google `prompt=login` forces the person to re-authenticate. Twitch
+  `force_verify` re-shows the authorize page: it proves a person at that browser
+  chose to continue, not that they entered credentials. A consumer that needs
+  credentials re-entered must not rely on Twitch step-up.
+- A provider with no such parameter (Discord, Patreon, GitHub, Spotify,
+  Joystick) is `400 step_up_not_supported`, with the provider named, before any
+  state is signed. The URL builder throws rather than omit the step.
+- A `backend_callback` handoff delivery does not carry `stepUpRequested`; only the redeemed completion does.
+- A state signed by a build with step-up and launched by an older build loses the step
+  silently (the older parser ignores `step_up`): deploy every Heimdall instance on one
+  release, with no mixed window.
+- Heimdall requests the step; it cannot observe that the provider honoured it.
+  `stepUpRequested` says "asked", not "verified".
+
 Launch note:
 
 - Discord and Patreon are the implemented provider runtimes for Repixelizer

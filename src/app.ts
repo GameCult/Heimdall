@@ -99,6 +99,7 @@ function buildOAuthStateToken(options: {
   handoff: OAuthHandoff;
   entitlementPolicy: OAuthEntitlementPolicy | undefined;
   requestedScopes: string[] | undefined;
+  stepUp: boolean | undefined;
   keys: ReturnType<typeof createRuntimeKeyMaterial>;
 }): { token: string; jti: string; expiresAt: string } {
   const issuedAt = nowEpochSeconds();
@@ -121,6 +122,7 @@ function buildOAuthStateToken(options: {
     handoff: options.handoff,
     entitlement_policy: options.entitlementPolicy ?? null,
     requested_scopes: options.requestedScopes ?? null,
+    step_up: options.stepUp ? true : null,
   };
   const token = signJwt(payload as unknown as Record<string, unknown>, options.keys);
 
@@ -184,7 +186,8 @@ function parseOAuthStatePayload(payload: Record<string, unknown>): OAuthStatePay
     !handoffIsValid ||
     !entitlementPolicyIsValid ||
     !(payload.initiator_account_id === undefined || payload.initiator_account_id === null || typeof payload.initiator_account_id === "string") ||
-    !requestedScopesAreValid
+    !requestedScopesAreValid ||
+    !(payload.step_up === undefined || payload.step_up === null || payload.step_up === true)
   ) {
     return null;
   }
@@ -201,6 +204,9 @@ function parseOAuthStatePayload(payload: Record<string, unknown>): OAuthStatePay
   }
   if (!normalizedPayload.requested_scopes) {
     normalizedPayload.requested_scopes = null;
+  }
+  if (!normalizedPayload.step_up) {
+    normalizedPayload.step_up = null;
   }
 
   return normalizedPayload;
@@ -702,6 +708,10 @@ export async function startOAuthFlow(
     };
   }
 
+  if (input.stepUp && input.mode !== "sign_in") {
+    return { statusCode: 400, body: { error: "step_up_only_in_sign_in", detail: "stepUp applies to sign_in starts only." } };
+  }
+
   const descriptor = providerCatalog[provider];
   // A provider that never mints an account attaches an identity only through
   // a bound link: the user's own access token, since the app's word does not
@@ -742,6 +752,19 @@ export async function startOAuthFlow(
     }
   } else if (input.initiatingAccountId !== undefined) {
     return { statusCode: 400, body: { error: "initiator_only_in_link_mode" } };
+  }
+
+  // A step-up is app-backend authority, like a connection target: it is
+  // asked for by the authenticated app, never by a browser, and only on
+  // sign_in. A provider with no re-authentication parameter is refused here,
+  // at start, so no step-up ever reaches the person without its step.
+  if (input.stepUp) {
+    if (!isAppCaller(caller) || caller.appSlug !== profile.slug) {
+      return { statusCode: 401, body: { error: "app_auth_required" } };
+    }
+    if (!providerCatalog[provider].stepUpAuthorizationParams) {
+      return { statusCode: 400, body: { error: "step_up_not_supported", provider, detail: `${providerCatalog[provider].displayName} has no re-authentication parameter.` } };
+    }
   }
 
   if (
@@ -838,6 +861,7 @@ export async function startOAuthFlow(
     handoff,
     entitlementPolicy,
     requestedScopes: input.requestedScopes,
+    stepUp: input.stepUp,
     keys,
   });
   return {
@@ -1175,6 +1199,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
               },
             },
             initiatingAccountId: { type: "string", minLength: 1 },
+            stepUp: { type: "boolean" },
             handoff: {
               type: "object",
               required: ["kind"],
@@ -1340,6 +1365,18 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     if (!clientId) {
       return providerNotConfigured(reply, state);
     }
+    const oidc = providerCatalog[state.provider].oidc ? deriveOidcSecrets(state.jti, keys.privateKey) : undefined;
+    // Built before the state is claimed: a state that cannot be honoured (a step-up for a provider with no
+    // re-authentication parameter) fails here without burning its launch use or setting the binding cookie.
+    const authorizationUrl = buildAuthorizationUrl({
+      provider: state.provider,
+      clientId,
+      redirectUri: oauthCallbackUrl(config, state.provider),
+      state: rawState,
+      requestedScopes: state.requested_scopes ?? undefined,
+      ...(state.step_up ? { stepUp: true } : {}),
+      ...(oidc ? { oidc: { nonce: oidc.nonce, codeChallenge: oidc.codeChallenge } } : {}),
+    });
     const first = await store.claimOAuthStateUse({
       jti: state.jti,
       phase: "launch",
@@ -1351,21 +1388,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       return refuseVerifiedState(request, reply, state, "state_already_launched");
     }
 
-    const oidc = providerCatalog[state.provider].oidc ? deriveOidcSecrets(state.jti, keys.privateKey) : undefined;
     setOAuthBindingCookie(reply, state, signOAuthBinding(config, keys, state, shownText), state.exp - nowEpochSeconds());
     reply.header("Cache-Control", "no-store");
     reply.header("Referrer-Policy", "no-referrer");
-    return reply.redirect(
-      buildAuthorizationUrl({
-        provider: state.provider,
-        clientId,
-        redirectUri: oauthCallbackUrl(config, state.provider),
-        state: rawState,
-        requestedScopes: state.requested_scopes ?? undefined,
-        ...(oidc ? { oidc: { nonce: oidc.nonce, codeChallenge: oidc.codeChallenge } } : {}),
-      }),
-      302
-    );
+    return reply.redirect(authorizationUrl, 302);
   };
 
   app.get<{
@@ -1935,6 +1961,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           entitlements: entitlementEvaluation,
           returnTo: statePayload.return_to,
           connection: statePayload.connection,
+          ...(statePayload.step_up ? { stepUpRequested: true } : {}),
           ...(consentReceiptId ? { consentReceiptId } : {}),
           ...delivered,
         };
