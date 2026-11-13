@@ -18,6 +18,8 @@ import {
   type CreateSessionInput,
   type CreatePrivateCommandReceiptInput,
   type HeimdallStore,
+  OAUTH_STATE_PRUNE_BATCH,
+  oauthStatePruneCutoffMs,
   type StoredAccount,
   type StoredAuthAttempt,
   type StoredAuthCompletion,
@@ -449,10 +451,11 @@ export function samePredicate(declared: string, actual: string, keyColumns: stri
 /**
  * What the store's statements do to each table, and so the privileges its
  * database role needs: it reads what it returns or looks up, inserts what it
- * creates, updates what it changes or upserts, and deletes nothing.
+ * creates, updates what it changes or upserts, and deletes only expired
+ * oauth_state_uses rows (which needs SELECT for its WHERE).
  * audit_events is written and never read back.
  */
-export const STORE_TABLE_PRIVILEGES: Readonly<Record<string, readonly ("SELECT" | "INSERT" | "UPDATE")[]>> = {
+export const STORE_TABLE_PRIVILEGES: Readonly<Record<string, readonly ("SELECT" | "INSERT" | "UPDATE" | "DELETE")[]>> = {
   accounts: ["SELECT", "INSERT", "UPDATE"],
   linked_identities: ["SELECT", "INSERT", "UPDATE"],
   sessions: ["SELECT", "INSERT", "UPDATE"],
@@ -460,7 +463,7 @@ export const STORE_TABLE_PRIVILEGES: Readonly<Record<string, readonly ("SELECT" 
   private_command_receipts: ["SELECT", "INSERT"],
   auth_completions: ["SELECT", "INSERT", "UPDATE"],
   pending_links: ["SELECT", "INSERT", "UPDATE"],
-  oauth_state_uses: ["INSERT"],
+  oauth_state_uses: ["SELECT", "INSERT", "DELETE"],
   capability_grants: ["SELECT", "INSERT"],
   entitlement_snapshots: ["SELECT", "INSERT", "UPDATE"],
   consent_receipts: ["SELECT", "INSERT"],
@@ -598,7 +601,9 @@ export async function checkSchemaRequirements(pool: Pick<Pool, "query">, require
       SELECT 1 FROM unnest($2::text[], $3::text[]) AS used(table_name, column_name)
       JOIN pg_attribute a ON a.attrelid = to_regclass(used.table_name) AND a.attname = used.column_name AND NOT a.attisdropped
       WHERE used.table_name = required.table_name
-        AND NOT has_column_privilege(a.attrelid, a.attnum, required.privilege)
+        AND NOT CASE WHEN required.privilege = 'DELETE'
+          THEN has_table_privilege(a.attrelid, 'DELETE') -- DELETE is a row privilege, never held per column
+          ELSE has_column_privilege(a.attrelid, a.attnum, required.privilege) END
     )
     `,
     [
@@ -1221,7 +1226,7 @@ export class PostgresStore implements HeimdallStore {
   }
 
   async claimOAuthStateUse(input: ClaimOAuthStateUseInput): Promise<boolean> {
-    // No conflict target and no RETURNING: both need SELECT, and the role has INSERT only.
+    // No conflict target and no RETURNING: ON CONFLICT DO NOTHING alone says whether the row was new.
     const result = await this.pool.query(
       `
       INSERT INTO oauth_state_uses (jti, phase, app_slug, used_at, expires_at)
@@ -1230,7 +1235,24 @@ export class PostgresStore implements HeimdallStore {
       `,
       [input.jti, input.phase, input.appSlug, input.usedAt, input.expiresAt]
     );
-    return result.rowCount === 1;
+    if (result.rowCount !== 1) return false;
+    // Retention: one bounded delete of records past the shared cutoff, inline as the memory store does.
+    // The claim row is already written, so a prune failure must not fail the claim: a throw would make
+    // the user's retry look like a replay. Unpruned rows are harmless and the next claim prunes them.
+    try {
+      await this.pool.query(
+        `
+        DELETE FROM oauth_state_uses
+        WHERE (jti, phase) IN (
+          SELECT jti, phase FROM oauth_state_uses WHERE expires_at <= $1 LIMIT $2
+        )
+        `,
+        [new Date(oauthStatePruneCutoffMs(Date.parse(input.usedAt))), OAUTH_STATE_PRUNE_BATCH]
+      );
+    } catch {
+      // deliberately swallowed, see above
+    }
+    return true;
   }
 
   async upsertEntitlementSnapshot(input: CreateEntitlementSnapshotInput): Promise<void> {
