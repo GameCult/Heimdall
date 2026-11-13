@@ -118,11 +118,15 @@ describe("step_up_at on the access claim", () => {
     const stepped = await signIn(r, true);
     expect(stepped.claimSet.step_up_at).toBeGreaterThanOrEqual(before);
     expect(stepped.claimSet.step_up_at).toBeLessThanOrEqual(Math.floor(Date.now() / 1000));
-    expect((await signIn(r, false)).claimSet.step_up_at).toBeUndefined();
+    expect(stepped.claimSet.step_up_method).toBe("provider:twitch");
+    const plain = (await signIn(r, false)).claimSet;
+    expect(plain.step_up_at).toBeUndefined();
+    expect(plain.step_up_method).toBeUndefined();
 
     const refreshed = await r.app.inject({ method: "POST", url: "/v1/apps/streampixels/sessions/refresh", payload: { refreshToken: stepped.refreshToken } });
     expect(refreshed.statusCode).toBe(201);
     expect(refreshed.json().claimSet.step_up_at, "a refresh never renews proof").toBeUndefined();
+    expect(refreshed.json().claimSet.step_up_method).toBeUndefined();
   });
 });
 
@@ -211,7 +215,7 @@ describe("POST /v1/me/identities/:identityId/unlink", () => {
     expect(await r.store.listStoredLinkedIdentitiesForAccount(account.id)).toHaveLength(1);
     const event = audit.mock.calls.map(([e]) => e).find((e) => e.eventType === "identity_unlinked");
     expect(event?.accountId).toBe(account.id);
-    expect(event?.eventPayloadJson).toEqual({ provider: "discord", identityId: rows[1]!.id });
+    expect(event?.eventPayloadJson).toEqual({ provider: "discord", identityId: rows[1]!.id, stepUpMethod: "provider:twitch" });
   });
 
   it("the account's only identity is 409 last_identity and the row stays", async () => {

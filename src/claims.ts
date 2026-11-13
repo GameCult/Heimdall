@@ -53,6 +53,8 @@ export interface IssueAccessClaimInput {
   ttlSeconds?: number;
   /** Epoch seconds of a step-up sign-in completing; only that callback sets it, a refresh never does. */
   stepUpAt?: number;
+  /** Required with stepUpAt (`provider:<name>`); the claim never carries one without the other. */
+  stepUpMethod?: string;
 }
 
 export interface IssuedAccessClaimResult {
@@ -137,6 +139,9 @@ export async function issueAccessClaim(options: {
 
   if (options.input.stepUpAt !== undefined) {
     claimSet.step_up_at = options.input.stepUpAt;
+    if (options.input.stepUpMethod !== undefined) {
+      claimSet.step_up_method = options.input.stepUpMethod;
+    }
   }
 
   if (options.input.displayName) {
@@ -199,4 +204,28 @@ export async function issueAccessClaim(options: {
       ? []
       : profile.capabilities.filter((capability) => capability.mode === "hybrid"),
   };
+}
+
+/**
+ * A new access token for the session the bearer already holds, carrying proof
+ * the calling app asserted. Everything the bearer claimed is copied and
+ * nothing is recomputed, so the route can add proof and no capability; `exp`
+ * stays the bearer's, so it cannot extend a lifetime; no refresh token is
+ * minted and no session row is written, so it cannot extend the session.
+ */
+export function signAssertedStepUpClaim(options: {
+  keys: RuntimeKeyMaterial;
+  bearerClaims: Record<string, unknown>;
+  method: string;
+}): { accessToken: string; claimSet: Record<string, unknown>; stepUpAt: number } {
+  const stepUpAt = nowEpochSeconds();
+  const claimSet = {
+    ...options.bearerClaims,
+    jti: randomUUID(),
+    iat: stepUpAt,
+    nbf: stepUpAt,
+    step_up_at: stepUpAt,
+    step_up_method: options.method,
+  };
+  return { accessToken: signJwt(claimSet, options.keys), claimSet, stepUpAt };
 }

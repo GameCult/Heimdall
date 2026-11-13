@@ -77,3 +77,22 @@ patron points locally.
 This route is a bridge from auth-owned Patreon evidence to Bifrost-owned
 governance meaning. Heimdall still does not own points, votes, tiers, ledger
 history, or payout policy.
+
+## App-asserted step-up
+
+Bifrost's profile carries `stepUpAssertion: { methods: ["bifrost-passkey",
+"bifrost-email-code"] }`, the only such grant. With its secret and a member's
+live Heimdall bearer, Bifrost calls `POST /v1/apps/bifrost/step-up` with
+`{method, nonce}` after it has checked the factor itself, and receives an access
+token for the same session whose `step_up_at` and `step_up_method` satisfy
+Heimdall's unlink check. Bifrost must send a fresh nonce per assertion, keep
+the returned token only for the action it is for, and never send a method it did
+not verify: Heimdall cannot tell. Contract, codes, limits and what it does not
+prove are in `docs/service-contract.md`.
+
+Precondition and limit: Bifrost can call this only while it holds the member's
+Heimdall bearer, which it deliberately does not today. Holding it in a cookie
+ticket would turn cookie theft into bearer theft and, with a passkey or email
+code, into unlink power. And unlink accepts any method: a `bifrost-email-code`
+proof can unlink an identity a Google re-authentication would have guarded.
+Requiring a method per route is the later hardening (identity moves).

@@ -209,7 +209,8 @@ export function oauthStatePruneCutoffMs(nowMs: number): number {
 
 export interface ClaimOAuthStateUseInput {
   jti: string;
-  phase: "launch" | "callback";
+  /** `step_up_assert` is the app-asserted step-up route's one-use nonce claim: jti is a digest of session and nonce. */
+  phase: "launch" | "callback" | "step_up_assert";
   appSlug: AppSlug;
   usedAt: string;
   expiresAt: string;

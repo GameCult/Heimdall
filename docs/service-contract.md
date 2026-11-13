@@ -599,7 +599,8 @@ body is empty or `null`.
   with the remaining list in the shape above.
 
 `step_up_at` (epoch seconds) is set on the access claim only when the callback's
-signed state has `step_up` true and mode `sign_in`. A refresh never carries it:
+signed state has `step_up` true and mode `sign_in`, or by an app's `POST
+/v1/apps/{appSlug}/step-up` assertion (below). A refresh never carries it:
 tokens a refresh issues cannot unlink, so proof is renewed only by a new step-up
 sign-in. The unlink writes the audit event `identity_unlinked` (provider and
 identity id only). When the account then holds no identity of that provider, the
@@ -625,6 +626,111 @@ A link no longer moves an identity: `upsertLinkedIdentity` refuses an identity
 another account holds (`links/confirm` answers `409 identity_linked_elsewhere`,
 the callback `link_initiator_mismatch`). An unlinked identity belongs to no
 account and can be linked by any account through the normal link flow.
+
+### `POST /v1/apps/{appSlug}/step-up`
+
+An app asserts that a member just passed a factor the app itself checked (for
+Bifrost: a passkey assertion or an emailed code), and receives an access token
+that carries that proof. The unlink route's step-up check then passes unchanged.
+
+Authentication: both, always.
+
+- the app's secret in `x-heimdall-app-secret`, as for every app route; and
+- the member's live Heimdall access token for the same app as
+  `Authorization: Bearer`.
+
+Body (`additionalProperties` are dropped as on the sibling routes):
+
+```json
+{ "method": "bifrost-passkey", "nonce": "16 to 128 characters, fresh per assertion" }
+```
+
+Nonce: 16 to 128 characters of the base64url alphabet (`A-Za-z0-9_-`), so a
+random token fits and spaces, controls and lone surrogates are a 400 schema
+refusal. `method` is 1 to 64 characters and then must be in the profile's set.
+
+Schema validation (body shape, `method` length, the nonce pattern and length,
+the app slug) runs before the secret is checked and answers `400` with
+Fastify's fixed schema error, the same for every caller whatever the secret and
+never audited. Then the order of refusals, each a closed `error` code:
+
+- `401 app_auth_required`: missing, wrong or another app's secret. The first
+  check of the handler; nothing is written.
+- `403 step_up_assertion_not_permitted`: the app's profile has no
+  `stepUpAssertion` grant. Only `bifrost` has one; every other app is refused
+  with its own secret. This branch has its own small budget (5 per 60 s per
+  app); past it the answer is 429.
+- `429 step_up_rate_limited` (`retryAfterSeconds`): the per-app budget (120 per
+  60 s, spent by every attempt that passed the secret and the grant, including
+  ones whose bearer then fails) is spent. In-process fixed windows: they reset
+  when the process restarts and are not shared between instances.
+- `401 sign_in_required`: the bearer is missing, malformed, expired, signed by
+  another key, a refresh token, or rests on a session that is not live (no row,
+  wrong account, revoked or expired, revision moved). One answer for all of
+  them; it does not say whether an account exists.
+- `403 bearer_app_mismatch`: a live bearer issued to another app. An app cannot
+  assert for a token issued to another app. It tells only a holder of the
+  secret and a valid bearer that the bearer is live and for another app, which
+  that holder already knows.
+- `429 step_up_rate_limited`: the per-account budget (10 per 600 s) is spent.
+  It is checked after the bearer and its audience, before method and nonce.
+- `400 unknown_step_up_method`: `method` is not in the profile's closed set
+  (`methods` in the answer lists it). Bifrost: `bifrost-passkey`,
+  `bifrost-email-code`. Provider labels (`provider:*`) cannot be asserted.
+- `409 step_up_nonce_replayed`: that nonce was already spent for this session.
+  The claim is the store's `oauth_state_uses` single-use primitive with phase
+  `step_up_assert` and the key a SHA-256 of session id and nonce, so it holds
+  across restarts and instances. **Retention is the session's expiry as of the
+  claim plus 10.5 minutes (the 10 minute prune margin and 30 s clock skew), and
+  pruning is lazy: each successful claim deletes at most 50 expired rows.** A refresh slides the session's expiry
+  without bound, so a nonce can be pruned while its session is still live and
+  then be accepted again. Replaying it still needs the secret and a live
+  bearer, which is the power to assert with a fresh nonce; the nonce guards a
+  captured request, not a compromised app. A refused method or a rate-limited
+  attempt does not spend the nonce.
+- `201`: `{"accessToken", "claimSet", "stepUp": {"at", "method", "validForSeconds"}}`,
+  `Cache-Control: no-store`.
+
+What the minted token is: a copy of the bearer's claims with a new `jti`,
+`iat` and `nbf`, `step_up_at` = now and `step_up_method` = the asserted method.
+It keeps the bearer's `exp`, same `sid` and account. Facts, capabilities and
+identities are the bearer's and are not recomputed, so the route adds proof and
+no capability. It mints no refresh token and writes no session row: it cannot
+extend a lifetime or a session. A later refresh carries neither claim. The proof
+is good for the usual 600 seconds (`STEP_UP_PROOF_TTL_SECONDS`) and only until
+the token's own `exp`.
+
+Receipts: each assertion writes the audit event `step_up_asserted`, and each
+refusal after the secret verified writes `step_up_assertion_refused`, except
+that two kinds are not recorded row by row: a rate-limited refusal is recorded
+once per window per budget (its first; the row's `budget` names `app`,
+`account` or `notPermitted`), and an app without the grant once per window.
+Every other refusal under budget still writes a row each, up to about 121 a
+minute for a holder of the secret, and `audit_events` has no retention: that is
+an open follow-up. Rows carry the
+app, the account and session when the bearer resolved, `method` (null when it
+was not in the allowlist), `outcome`, `code`, `budget` (rate-limit rows) and `nonceDigest`. Never the
+secret, the bearer, the minted token or the nonce. A request without the secret,
+or failing schema validation, writes nothing.
+
+Precondition: the route is usable only once the app holds the member's Heimdall
+bearer. Bifrost deliberately does not hold it today. Putting the bearer in a
+cookie ticket would turn cookie theft into bearer theft and, with
+`bifrost-passkey` or `bifrost-email-code`, into unlink power; whether and how
+Bifrost keeps the bearer is its own decision and is not made here.
+
+Unlink accepts any method today. A `bifrost-email-code` proof unlinks an
+identity a Google re-authentication would have guarded. Requiring a method per
+route (identity moves first) is the later hardening and is not in this change.
+
+What this does not prove: Heimdall cannot see the passkey or the code. It trusts
+the calling app's word, exactly as it trusts `stepUpRequested` (asked, not
+verified). The word is bounded by the app secret, a live member bearer for that
+app, the profile's method allowlist, a single-use nonce, the proof window and
+the rate limits. A compromised Bifrost can assert proofs only for members whose
+live bearer it holds. `identity_unlinked` records the proof's `stepUpMethod`
+(`provider:<name>`, an app label, or null), and unlink does not yet require any
+particular method.
 
 ### `POST /v1/apps/{appSlug}/managed-credentials/resolve`
 
@@ -761,6 +867,8 @@ Current claim payload fields:
 - `typ`
 - `account_id`
 - `access_revision`
+- `step_up_at` optional: epoch seconds of the proof; set only by a `sign_in` step-up callback or `POST /v1/apps/{appSlug}/step-up`, never by a refresh
+- `step_up_method` optional: present exactly when `step_up_at` is; `provider:<name>` for a provider step-up sign-in, otherwise the method label the app asserted
 - `display_name` optional
 - `app.slug`
 - `app.profile_version`
