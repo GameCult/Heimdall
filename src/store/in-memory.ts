@@ -4,6 +4,8 @@ import {
   type CreateAccountInput,
   type CreateAuthAttemptInput,
   type ClaimOAuthStateUseInput,
+  OAUTH_STATE_PRUNE_BATCH,
+  oauthStatePruneCutoffMs,
   type CreateAuthCompletionInput,
   type CreateConsentReceiptInput,
   type CreatePendingLinkInput,
@@ -25,9 +27,6 @@ import {
   type StoredPrivateCommandReceipt,
   type UpsertLinkedIdentityInput,
 } from "./types.js";
-
-/** The skew a signed OAuth state is still accepted for past its exp (verifyOAuthState). */
-const OAUTH_STATE_SKEW_MS = 30_000;
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -464,18 +463,23 @@ export class InMemoryStore implements HeimdallStore {
   }
 
   async claimOAuthStateUse(input: ClaimOAuthStateUseInput): Promise<boolean> {
-    // A state is still accepted until its exp + 30 s skew, so a use record must outlive that.
-    const usedAtMs = Date.parse(input.usedAt);
-    for (const [key, expiresAt] of this.oauthStateUses) {
-      if (Date.parse(expiresAt) + OAUTH_STATE_SKEW_MS <= usedAtMs) {
-        this.oauthStateUses.delete(key);
-      }
-    }
     const key = `${input.jti}:${input.phase}`;
     if (this.oauthStateUses.has(key)) {
       return false;
     }
     this.oauthStateUses.set(key, input.expiresAt);
+    // A state is still accepted until its exp + skew; a record is kept a margin longer, and each
+    // successful claim removes at most a batch of what is past that (oauthStatePruneCutoffMs), as
+    // the Postgres store does.
+    const cutoff = oauthStatePruneCutoffMs(Date.parse(input.usedAt));
+    let pruned = 0;
+    for (const [oldKey, expiresAt] of this.oauthStateUses) {
+      if (pruned >= OAUTH_STATE_PRUNE_BATCH) break;
+      if (Date.parse(expiresAt) <= cutoff) {
+        this.oauthStateUses.delete(oldKey);
+        pruned += 1;
+      }
+    }
     return true;
   }
 

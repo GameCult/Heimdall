@@ -143,9 +143,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS auth_completions_attempt_unconsumed_unique_idx
 
 -- One use per (state jti, phase): a signed OAuth state launches once and
 -- completes once. The first INSERT for a pair wins; ON CONFLICT DO NOTHING
--- reports every later claim as no row. The Postgres store deletes nothing, so rows
--- stay like consumed auth_completions; a state is accepted until expires_at + 30 s
--- of skew, so a row may be pruned only after that and is never consulted again.
+-- reports every later claim as no row. A state is accepted until expires_at + 30 s
+-- of skew, so a row may be pruned only after that and is never consulted again;
+-- each successful claim deletes a bounded batch of rows past expires_at + skew
+-- + margin (OAUTH_STATE_* in types.ts), found through the expires_at index.
 CREATE TABLE IF NOT EXISTS oauth_state_uses (
   jti TEXT NOT NULL,
   phase TEXT NOT NULL,
@@ -154,6 +155,8 @@ CREATE TABLE IF NOT EXISTS oauth_state_uses (
   expires_at TIMESTAMPTZ NOT NULL,
   PRIMARY KEY (jti, phase)
 );
+
+CREATE INDEX IF NOT EXISTS oauth_state_uses_expires_at_idx ON oauth_state_uses(expires_at);
 
 CREATE TABLE IF NOT EXISTS capability_grants (
   id TEXT PRIMARY KEY,

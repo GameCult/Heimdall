@@ -14,6 +14,11 @@ import {
   samePredicate,
   STORE_TABLE_PRIVILEGES,
 } from "../src/store/postgres.js";
+import {
+  OAUTH_STATE_PRUNE_BATCH,
+  OAUTH_STATE_PRUNE_MARGIN_MS,
+  OAUTH_STATE_SKEW_MS,
+} from "../src/store/types.js";
 import { CREATE_SCHEMA_SQL, REQUIRED_COLUMNS, REQUIRED_KEYS, REQUIRED_TABLES } from "../src/store/schema.js";
 
 describe("PostgresStore", () => {
@@ -276,18 +281,81 @@ describe("InMemoryStore.claimOAuthStateUse", () => {
     expect(await store.claimOAuthStateUse({ ...use, jti: "state-2" })).toBe(true);
   });
 
-  it("drops a record once its state's exp + 30 s skew has passed, and keeps it until then", async () => {
+  it("drops a record only once its state's exp + skew + margin has passed", async () => {
     const store = new InMemoryStore();
     await store.claimOAuthStateUse(use);
-    // Before expiry a later claim of another state leaves the record in force.
-    await store.claimOAuthStateUse({ ...use, jti: "state-2", usedAt: "2026-04-26T12:09:59.000Z" });
+    const expMs = Date.parse(use.expiresAt);
+    const at = (ms: number) => new Date(ms).toISOString();
+    // Inside the skew past expiry the state still verifies, and the margin keeps the record beyond that.
+    await store.claimOAuthStateUse({ ...use, jti: "state-2", usedAt: at(expMs + OAUTH_STATE_SKEW_MS) });
     expect(await store.claimOAuthStateUse(use)).toBe(false);
-    // Inside the 30 s skew past expiry the state still verifies, so the record still refuses a replay.
-    await store.claimOAuthStateUse({ ...use, jti: "state-3", usedAt: "2026-04-26T12:10:29.999Z" });
+    const boundary = expMs + OAUTH_STATE_SKEW_MS + OAUTH_STATE_PRUNE_MARGIN_MS;
+    await store.claimOAuthStateUse({ ...use, jti: "state-3", usedAt: at(boundary - 1) });
     expect(await store.claimOAuthStateUse(use)).toBe(false);
-    // At exp + 30 s the state is refused before any claim and the record is dead weight.
-    await store.claimOAuthStateUse({ ...use, jti: "state-4", usedAt: "2026-04-26T12:10:30.000Z" });
+    // At exactly exp + skew + margin the record is prunable (the rule is <=).
+    await store.claimOAuthStateUse({ ...use, jti: "state-4", usedAt: at(boundary) });
     expect(await store.claimOAuthStateUse(use)).toBe(true);
+  });
+
+  it("removes at most one batch of prunable records per successful claim", async () => {
+    const store = new InMemoryStore();
+    const expMs = Date.parse(use.expiresAt);
+    const total = OAUTH_STATE_PRUNE_BATCH * 2 + 7;
+    for (let i = 0; i < total; i += 1) await store.claimOAuthStateUse({ ...use, jti: `old-${i}` });
+    const size = () => (store as unknown as { oauthStateUses: Map<string, string> }).oauthStateUses.size;
+    expect(size()).toBe(total);
+    const later = new Date(expMs + OAUTH_STATE_SKEW_MS + OAUTH_STATE_PRUNE_MARGIN_MS).toISOString();
+    await store.claimOAuthStateUse({ ...use, jti: "fresh-1", usedAt: later, expiresAt: later });
+    expect(size()).toBe(total + 1 - OAUTH_STATE_PRUNE_BATCH);
+    // A refused (replayed) claim prunes nothing, as on Postgres where the delete follows a new row.
+    await store.claimOAuthStateUse({ ...use, jti: "fresh-1", usedAt: later, expiresAt: later });
+    expect(size()).toBe(total + 1 - OAUTH_STATE_PRUNE_BATCH);
+  });
+});
+
+describe("PostgresStore.claimOAuthStateUse retention", () => {
+  const use = {
+    jti: "state-1",
+    phase: "launch" as const,
+    appSlug: "repixelizer" as const,
+    usedAt: "2026-04-26T12:00:00.000Z",
+    expiresAt: "2026-04-26T12:10:00.000Z",
+  };
+
+  function doublePool(prune: "ok" | "throws", inserted = 1) {
+    const calls: Array<{ sql: string; params: unknown[] }> = [];
+    const pool = {
+      query: async (sql: string, params: unknown[]) => {
+        calls.push({ sql, params });
+        if (calls.length === 1) return { rowCount: inserted, rows: [] };
+        if (prune === "throws") throw Object.assign(new Error("permission denied for table oauth_state_uses"), { code: "42501" });
+        return { rowCount: 0, rows: [] };
+      },
+    };
+    return { calls, store: new PostgresStore(pool as unknown as Pool) };
+  }
+
+  it("runs one bounded delete after a new row, at the shared cutoff and batch", async () => {
+    const { calls, store } = doublePool("ok");
+    expect(await store.claimOAuthStateUse(use)).toBe(true);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.sql).toMatch(/DELETE FROM oauth_state_uses/);
+    expect(calls[1]!.params).toEqual([
+      new Date(Date.parse(use.usedAt) - OAUTH_STATE_SKEW_MS - OAUTH_STATE_PRUNE_MARGIN_MS),
+      OAUTH_STATE_PRUNE_BATCH,
+    ]);
+  });
+
+  it("prunes nothing when the claim is a replay", async () => {
+    const { calls, store } = doublePool("ok", 0);
+    expect(await store.claimOAuthStateUse(use)).toBe(false);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("a failing prune does not change the claim's result", async () => {
+    const { calls, store } = doublePool("throws");
+    expect(await store.claimOAuthStateUse(use)).toBe(true);
+    expect(calls).toHaveLength(2);
   });
 });
 
@@ -481,6 +549,15 @@ async function exerciseStore(store: PostgresStore): Promise<Set<string>> {
   expect(await s.claimOAuthStateUse(stateUse)).toBe(true);
   expect(await s.claimOAuthStateUse(stateUse)).toBe(false);
   expect(await s.claimOAuthStateUse({ ...stateUse, phase: "callback" })).toBe(true);
+  // The prune is swallowed when the role may not run it, so the exercise proves it ran: a long-expired
+  // record is gone after the next new claim. A missing prune stands for the privilege refusal behind it.
+  const stale = { ...stateUse, jti: randomUUID(), usedAt: "2000-01-01T00:00:00.000Z", expiresAt: "2000-01-01T00:10:00.000Z" };
+  expect(await s.claimOAuthStateUse(stale)).toBe(true);
+  expect(await s.claimOAuthStateUse({ ...stateUse, jti: randomUUID() })).toBe(true);
+  const retained = await s.claimOAuthStateUse(stale);
+  if (!retained) {
+    throw Object.assign(new Error("oauth_state_uses was not pruned"), { code: "42501" });
+  }
   const { receipt: grant } = await s.createConsentReceipt({ kind: "grant", accountId: account.id, appSlug: "streampixels", provider: "joystick", createdAt: now, scopesAsked: ["a", "b"], scopesGranted: ["a"], consentPageDigest: "d", consentText: "t" });
   const revocation = { kind: "revocation" as const, accountId: account.id, appSlug: "streampixels" as const, provider: "joystick" as const, createdAt: later, revokesReceiptId: grant.id };
   const first = await s.createConsentReceipt(revocation);
@@ -639,6 +716,68 @@ describe.skipIf(!adminUrl)("startup against a live Postgres (HEIMDALL_TEST_PG_AD
     }
   });
 
+  describe("oauth_state_uses retention", () => {
+    const expMs = Date.parse("2026-04-26T12:10:00.000Z");
+    const boundary = expMs + OAUTH_STATE_SKEW_MS + OAUTH_STATE_PRUNE_MARGIN_MS;
+    const use = (jti: string, usedAtMs: number, expiresAtMs = expMs) => ({
+      jti,
+      phase: "launch" as const,
+      appSlug: "repixelizer" as const,
+      usedAt: new Date(usedAtMs).toISOString(),
+      expiresAt: new Date(expiresAtMs).toISOString(),
+    });
+    const count = async (owner: Pool) => Number((await owner.query("SELECT count(*) AS n FROM oauth_state_uses")).rows[0].n);
+    const seed = async (owner: Pool, jti: string) => {
+      await owner.query(
+        "INSERT INTO oauth_state_uses (jti, phase, app_slug, used_at, expires_at) VALUES ($1, 'launch', 'repixelizer', $2, $2)",
+        [jti, new Date(expMs)]
+      );
+    };
+
+    it.each([
+      [boundary - 1, true],
+      [boundary, false],
+      [boundary + 1, false],
+    ])("a claim at exp + skew + margin %i ms keeps the record: %s", async (usedAtMs, kept) => {
+      const { owner } = await appliedDatabase();
+      const store = new PostgresStore(owner);
+      expect(await store.claimOAuthStateUse(use("old", expMs - 1000))).toBe(true);
+      expect(await store.claimOAuthStateUse(use("other", usedAtMs, usedAtMs + 600_000))).toBe(true);
+      expect(await store.claimOAuthStateUse(use("old", usedAtMs))).toBe(!kept);
+    });
+
+    it("removes at most one batch per claim and never the live record", async () => {
+      const { owner } = await appliedDatabase();
+      const store = new PostgresStore(owner);
+      const total = OAUTH_STATE_PRUNE_BATCH * 2 + 7;
+      for (let i = 0; i < total; i += 1) await seed(owner, `old-${i}`);
+      const fresh = use("fresh", boundary + 5, boundary + 600_000);
+      expect(await store.claimOAuthStateUse(fresh)).toBe(true);
+      expect(await count(owner)).toBe(total + 1 - OAUTH_STATE_PRUNE_BATCH);
+      expect(await store.claimOAuthStateUse(fresh)).toBe(false);
+      expect(await count(owner)).toBe(total + 1 - OAUTH_STATE_PRUNE_BATCH);
+    });
+
+    it("keeps its expires_at index", async () => {
+      const { owner } = await appliedDatabase();
+      const found = await owner.query("SELECT 1 FROM pg_indexes WHERE indexname = 'oauth_state_uses_expires_at_idx'");
+      expect(found.rowCount).toBe(1);
+    });
+
+    it("a role without DELETE still claims, and leaves the old records", async () => {
+      const { name, owner } = await appliedDatabase();
+      await grant(owner, { ...STORE_TABLE_PRIVILEGES, oauth_state_uses: ["SELECT", "INSERT"] });
+      await seed(owner, "old");
+      const pool = fixturePool(urlFor(name, role, rolePassword));
+      cleanup.push(async () => {
+        await pool.end();
+      });
+      const store = new PostgresStore(pool);
+      expect(await store.claimOAuthStateUse(use("fresh", boundary + 5, boundary + 600_000))).toBe(true);
+      expect(await count(owner)).toBe(2);
+    });
+  });
+
   it("refuses to apply the schema as a role that may not, and closes the store", async () => {
     const { name, owner } = await appliedDatabase();
     await grant(owner, STORE_TABLE_PRIVILEGES);
@@ -686,7 +825,10 @@ describe.skipIf(!adminUrl)("startup against a live Postgres (HEIMDALL_TEST_PG_AD
     await owner.query(`GRANT USAGE ON SCHEMA public TO ${role}`);
     for (const [table, wanted] of Object.entries(STORE_TABLE_PRIVILEGES)) {
       const columns = REQUIRED_COLUMNS.filter((column) => column.table === table).map((column) => column.column).join(", ");
-      for (const privilege of wanted) await owner.query(`GRANT ${privilege} (${columns}) ON ${table} TO ${role}`);
+      for (const privilege of wanted) {
+        // DELETE removes rows and cannot be granted per column.
+        await owner.query(privilege === "DELETE" ? `GRANT DELETE ON ${table} TO ${role}` : `GRANT ${privilege} (${columns}) ON ${table} TO ${role}`);
+      }
     }
 
     expect(await start(urlFor(name, role, rolePassword), false)).toBe("started");

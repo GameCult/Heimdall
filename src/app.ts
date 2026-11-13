@@ -43,6 +43,7 @@ import { authorizationScopes, buildAuthorizationUrl, providerCatalog, providerEx
 import { createRuntimeKeyMaterial, signJwt, verifyJwt } from "./signing.js";
 import { createStore, type HeimdallStore } from "./store/index.js";
 import {
+  OAUTH_STATE_SKEW_MS,
   type CreateAccountInput,
   type StoredCapabilityGrant,
   type StoredLinkedIdentity,
@@ -218,8 +219,8 @@ type OAuthStateVerdict =
 
 /**
  * The one place a signed OAuth state becomes trusted: signature, shape, issuer,
- * audience and provider, and the time window with the same 30 s skew refresh
- * tokens use. Every route that turns a state into navigation or a completion
+ * audience and provider, and the time window with OAUTH_STATE_SKEW_MS of skew
+ * (30 s, as refresh tokens use). Every route that turns a state into navigation or a completion
  * runs this first; the refusals are fixed codes and never echo the token.
  */
 function verifyOAuthState(
@@ -242,7 +243,7 @@ function verifyOAuthState(
   }
 
   const now = nowEpochSeconds();
-  if (payload.nbf > now + 30 || payload.exp <= now - 30) {
+  if (payload.nbf > now + OAUTH_STATE_SKEW_MS / 1000 || payload.exp <= now - OAUTH_STATE_SKEW_MS / 1000) {
     return { ok: false, error: "state_expired" };
   }
 

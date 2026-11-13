@@ -173,6 +173,22 @@ export interface StoredAuthCompletion {
   payloadJson: Record<string, unknown>;
 }
 
+/** The skew a signed OAuth state is still accepted for past its exp: verifyOAuthState in app.ts reads this, so the two cannot drift. */
+export const OAUTH_STATE_SKEW_MS = 30_000;
+/** Extra time a use record is kept past exp + skew before it may be pruned. */
+export const OAUTH_STATE_PRUNE_MARGIN_MS = 10 * 60_000;
+/** The most use records one claim deletes. */
+export const OAUTH_STATE_PRUNE_BATCH = 50;
+
+/**
+ * The one retention rule for oauth_state_uses, shared by both stores: a record
+ * is prunable when expires_at + skew + margin <= now, that is when its
+ * expires_at is at or before this cutoff.
+ */
+export function oauthStatePruneCutoffMs(nowMs: number): number {
+  return nowMs - OAUTH_STATE_SKEW_MS - OAUTH_STATE_PRUNE_MARGIN_MS;
+}
+
 export interface ClaimOAuthStateUseInput {
   jti: string;
   phase: "launch" | "callback";
