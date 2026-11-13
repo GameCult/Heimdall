@@ -606,6 +606,10 @@ identity id only). When the account then holds no identity of that provider, the
 revocation receipts for its live grants of that provider are written, as the
 grants revoke route writes them.
 
+A Twitch step-up proof is weaker than YouTube's or Google's: `force_verify` does
+not force credential re-entry (see the step-up note under the OAuth start
+section, "The strengths differ").
+
 Limits that stay:
 
 - Access tokens issued before the unlink keep the unlinked identity in their
