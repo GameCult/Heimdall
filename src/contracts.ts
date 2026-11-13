@@ -155,6 +155,13 @@ export interface AccessClaimPayload {
   access_revision: number;
   /** Epoch seconds of the step-up sign-in this access token was minted by; absent on every other token, and never carried by a refresh. */
   step_up_at?: number;
+  /**
+   * How the proof in step_up_at was made: `provider:<name>` for a step-up
+   * sign-in Heimdall ran, or one of the calling app's allowlisted method
+   * labels when the app asserted it (POST /v1/apps/{app}/step-up). Present
+   * exactly when step_up_at is; never carried by a refresh.
+   */
+  step_up_method?: string;
   display_name?: string;
   app: {
     slug: AppSlug;

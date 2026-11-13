@@ -1,4 +1,4 @@
-import { createHmac, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { deflateRawSync, inflateRawSync } from "node:zlib";
 import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
@@ -24,7 +24,8 @@ import {
   type OAuthStartRequest,
   type Provider,
 } from "./contracts.js";
-import { issueAccessClaim, STEP_UP_PROOF_TTL_SECONDS, type IssueAccessClaimInput } from "./claims.js";
+import { issueAccessClaim, signAssertedStepUpClaim, STEP_UP_PROOF_TTL_SECONDS, type IssueAccessClaimInput } from "./claims.js";
+import { FixedWindowBudget, type FixedWindowLimit } from "./fixed-window.js";
 import { builtInAppProfiles, getAppProfile, isAllowedReturnOrigin, serializeAppProfile, admitsProviderForMode, callbackMint, isUsableConnectionTarget } from "./app-profiles.js";
 import { renderBrowserHandoffPage } from "./browser-handoff.js";
 import { consentText, digestOfText, grantViews, GRANTS_PATH, renderConsentPage, renderGrantsPage, type ConsentAsk } from "./consent.js";
@@ -883,6 +884,8 @@ export async function startOAuthFlow(
 interface ResolvedBearer {
   accountId: string;
   claims: Record<string, unknown>;
+  /** When the session row the bearer rests on expires (the refresh horizon, not the access token's `exp`). */
+  sessionExpiresAt: string;
 }
 
 /**
@@ -927,7 +930,7 @@ async function resolveBearer(
   ) {
     return null;
   }
-  return { accountId: claims.account_id, claims };
+  return { accountId: claims.account_id, claims, sessionExpiresAt: session.expiresAt };
 }
 
 /** The account a link start binds to: the one a live Heimdall access token for this app names. A link is explicit or it does not happen. */
@@ -945,6 +948,103 @@ async function resolveAccessAccount(
   authorization: string | undefined
 ): Promise<string | null> {
   return (await resolveBearer(ctx, authorization))?.accountId ?? null;
+}
+
+/** What an app may spend asserting step-up proofs: per member account, and per calling app. */
+export const STEP_UP_ASSERT_LIMITS: { account: FixedWindowLimit; app: FixedWindowLimit } = {
+  account: { max: 10, windowMs: 600_000 },
+  app: { max: 120, windowMs: 60_000 },
+};
+
+export interface StepUpAssertBudgets {
+  account: FixedWindowBudget;
+  app: FixedWindowBudget;
+}
+
+export function createStepUpAssertBudgets(now: () => number = () => Date.now()): StepUpAssertBudgets {
+  return { account: new FixedWindowBudget(STEP_UP_ASSERT_LIMITS.account, now), app: new FixedWindowBudget(STEP_UP_ASSERT_LIMITS.app, now) };
+}
+
+/**
+ * POST /v1/apps/{app}/step-up. The app says its member just passed a factor
+ * the app checked; Heimdall cannot see the factor, so the word is bounded by
+ * what the route demands: the app's secret AND the member's live bearer for
+ * that same app, the profile's explicit grant and method allowlist, a nonce
+ * spent once per session, and a rate per account and per app. Every
+ * refusal after the secret verified is recorded; a request without the secret
+ * writes nothing, since anyone can send one. The audit rows carry a digest of
+ * the nonce, never the nonce, the bearer or the secret.
+ */
+export async function assertStepUp(
+  ctx: Pick<HeimdallRuntimeContext, "config" | "keys" | "store">,
+  budgets: StepUpAssertBudgets,
+  appSlug: AppSlug,
+  headers: Record<string, string | string[] | undefined>,
+  input: { method: string; nonce: string }
+): Promise<HandlerResult> {
+  const { config, keys, store } = ctx;
+  if (!resolveAppCaller(config, appSlug, headers)) {
+    return { statusCode: 401, body: { error: "app_auth_required" } };
+  }
+  const permitted = getAppProfile(appSlug)?.stepUpAssertion;
+  let known: { accountId: string; sessionId: string } | undefined;
+  let nonceDigest: string | undefined;
+  const refuse = async (statusCode: number, error: string, extra: Record<string, unknown> = {}): Promise<HandlerResult> => {
+    await store.createAuditEvent({
+      ...(known ? { accountId: known.accountId, sessionId: known.sessionId } : {}),
+      appSlug,
+      eventType: "step_up_assertion_refused",
+      eventPayloadJson: { outcome: "refused", code: error, method: permitted?.methods.includes(input.method) ? input.method : null, nonceDigest: nonceDigest ?? null },
+      createdAt: new Date().toISOString(),
+    });
+    return { statusCode, body: { error, ...extra } };
+  };
+  const limited = (seconds: number) => refuse(429, "step_up_rate_limited", { retryAfterSeconds: seconds });
+
+  if (!permitted) {
+    return refuse(403, "step_up_assertion_not_permitted", { detail: `${appSlug} may not assert step-up proofs.` });
+  }
+  const appWait = budgets.app.spend(appSlug);
+  if (appWait) return limited(appWait);
+
+  const bearer = await resolveBearer(ctx, headers.authorization as string | undefined);
+  if (!bearer) {
+    return refuse(401, "sign_in_required", { detail: "Send the member's live Heimdall access token as a Bearer token." });
+  }
+  const sessionId = bearer.claims.sid as string;
+  known = { accountId: bearer.accountId, sessionId };
+  if (bearer.claims.aud !== appSlug) {
+    return refuse(403, "bearer_app_mismatch", { detail: `The access token was not issued to ${appSlug}.` });
+  }
+  const accountWait = budgets.account.spend(bearer.accountId);
+  if (accountWait) return limited(accountWait);
+
+  nonceDigest = createHash("sha256").update(`heimdall-step-up-nonce\0${sessionId}\0${input.nonce}`).digest("hex");
+  if (!permitted.methods.includes(input.method)) {
+    return refuse(400, "unknown_step_up_method", { methods: permitted.methods });
+  }
+  const at = new Date().toISOString();
+  if (!(await store.claimOAuthStateUse({ jti: nonceDigest, phase: "step_up_assert", appSlug, usedAt: at, expiresAt: bearer.sessionExpiresAt }))) {
+    return refuse(409, "step_up_nonce_replayed", { detail: "A nonce is good once per session; send a fresh one." });
+  }
+
+  const minted = signAssertedStepUpClaim({ keys, bearerClaims: bearer.claims, method: input.method });
+  await store.createAuditEvent({
+    accountId: bearer.accountId,
+    sessionId,
+    appSlug,
+    eventType: "step_up_asserted",
+    eventPayloadJson: { outcome: "asserted", code: null, method: input.method, nonceDigest, stepUpAt: minted.stepUpAt },
+    createdAt: at,
+  });
+  return {
+    statusCode: 201,
+    body: {
+      accessToken: minted.accessToken,
+      claimSet: minted.claimSet,
+      stepUp: { at: minted.stepUpAt, method: input.method, validForSeconds: STEP_UP_PROOF_TTL_SECONDS },
+    },
+  };
 }
 
 const grantsPageTokenType = "heimdall_grants_page";
@@ -1925,7 +2025,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           facts: [...new Set([...entitlementEvaluation.facts, ...linkedFacts]), ...buildGrantFacts(grants)],
           ...(mint === "custody_only" ? { withoutCapabilities: true } : {}),
           // Proof of a fresh re-authentication, from the signed state alone: only a sign_in the app started with stepUp.
-          ...(statePayload.step_up && statePayload.mode === "sign_in" ? { stepUpAt: nowEpochSeconds() } : {}),
+          ...(statePayload.step_up && statePayload.mode === "sign_in" ? { stepUpAt: nowEpochSeconds(), stepUpMethod: `provider:${statePayload.provider}` } : {}),
         };
         if (account.displayName !== undefined) {
           issueInput.displayName = account.displayName;
@@ -2435,6 +2535,36 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     }
   );
 
+  // An app asserting that a member just passed a factor it checked: see assertStepUp.
+  const stepUpBudgets = createStepUpAssertBudgets();
+  app.post<{ Params: { appSlug: AppSlug }; Body: { method: string; nonce: string } }>(
+    "/v1/apps/:appSlug/step-up",
+    {
+      schema: {
+        params: {
+          type: "object",
+          required: ["appSlug"],
+          additionalProperties: false,
+          properties: { appSlug: { type: "string", enum: [...appSlugs] } },
+        },
+        body: {
+          type: "object",
+          required: ["method", "nonce"],
+          additionalProperties: false,
+          properties: {
+            method: { type: "string", minLength: 1, maxLength: 64 },
+            nonce: { type: "string", minLength: 16, maxLength: 128 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const result = await assertStepUp({ config, keys, store }, stepUpBudgets, request.params.appSlug, request.headers, request.body);
+      reply.code(result.statusCode).header("cache-control", "no-store");
+      return result.body;
+    }
+  );
+
   app.post<{
     Params: { appSlug: AppSlug };
     Body: {
@@ -2785,7 +2915,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       await store.createAuditEvent({
         accountId,
         eventType: "identity_unlinked",
-        eventPayloadJson: { provider: identity.provider, identityId: identity.id },
+        eventPayloadJson: { provider: identity.provider, identityId: identity.id, stepUpMethod: typeof claims.step_up_method === "string" ? claims.step_up_method : null },
         createdAt: at,
       });
       // The credential went with the row. When no identity of that provider

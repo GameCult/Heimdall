@@ -56,6 +56,15 @@ export interface AppProfile {
    * state. Absent for apps whose browser starts are public by design.
    */
   startRequiresAppCaller?: boolean;
+  /**
+   * The app may assert, with its secret and a member's live bearer, that the
+   * member just passed a factor the app itself checked (POST
+   * /v1/apps/{app}/step-up). Heimdall cannot see that factor and trusts the
+   * app, so the grant is explicit per app and closed per method: only these
+   * labels may be asserted, and they end up in the claim's step_up_method.
+   * Absent for every app that may not assert.
+   */
+  stepUpAssertion?: { methods: readonly string[] };
 }
 
 /** The membership signal shared by every app that gates on GameCult membership. */
@@ -154,6 +163,7 @@ const bifrostProfile: AppProfile = {
   managedConnectionProviders: [],
   allowedReturnOrigins: ["https://bifrost.gamecult.org"],
   startRequiresAppCaller: true,
+  stepUpAssertion: { methods: ["bifrost-passkey", "bifrost-email-code"] },
   capabilities: [
     {
       key: "member_access",

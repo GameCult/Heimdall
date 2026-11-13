@@ -879,6 +879,20 @@ describe.skipIf(!adminUrl)("startup against a live Postgres (HEIMDALL_TEST_PG_AD
       expect(found.rowCount).toBe(1);
     });
 
+    it("the step_up_assert nonce claim is single-use under the store's own role, and independent of the other phases", async () => {
+      const { name, owner } = await appliedDatabase();
+      await grant(owner, STORE_TABLE_PRIVILEGES);
+      const pool = fixturePool(urlFor(name, role, rolePassword));
+      cleanup.push(async () => {
+        await pool.end();
+      });
+      const store = new PostgresStore(pool);
+      const claim = { ...use("digest", boundary, boundary + 600_000), phase: "step_up_assert" as const, appSlug: "bifrost" };
+      expect(await store.claimOAuthStateUse(claim)).toBe(true);
+      expect(await store.claimOAuthStateUse(claim)).toBe(false);
+      expect(await store.claimOAuthStateUse({ ...claim, phase: "callback" })).toBe(true);
+    });
+
     it("a role without DELETE still claims, and leaves the old records", async () => {
       const { name, owner } = await appliedDatabase();
       await grant(owner, { ...STORE_TABLE_PRIVILEGES, oauth_state_uses: ["SELECT", "INSERT"] });
