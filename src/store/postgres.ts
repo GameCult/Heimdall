@@ -18,6 +18,7 @@ import {
   type CreateSessionInput,
   type CreatePrivateCommandReceiptInput,
   type HeimdallStore,
+  IdentityHeldElsewhereError,
   OAUTH_STATE_PRUNE_BATCH,
   oauthStatePruneCutoffMs,
   type StoredAccount,
@@ -27,6 +28,7 @@ import {
   type StoredLinkedIdentity,
   type StoredSession,
   type StoredPrivateCommandReceipt,
+  type UnlinkResult,
   type UpsertLinkedIdentityInput,
 } from "./types.js";
 
@@ -451,13 +453,15 @@ export function samePredicate(declared: string, actual: string, keyColumns: stri
 /**
  * What the store's statements do to each table, and so the privileges its
  * database role needs: it reads what it returns or looks up, inserts what it
- * creates, updates what it changes or upserts, and deletes only expired
- * oauth_state_uses rows (which needs SELECT for its WHERE).
+ * creates, updates what it changes or upserts, and deletes two things:
+ * expired oauth_state_uses rows (which needs SELECT for its WHERE), and the one
+ * linked_identities row an unlink names (unlinkLinkedIdentity, the only
+ * delete there; it needs SELECT for its WHERE and for the account's count).
  * audit_events is written and never read back.
  */
 export const STORE_TABLE_PRIVILEGES: Readonly<Record<string, readonly ("SELECT" | "INSERT" | "UPDATE" | "DELETE")[]>> = {
   accounts: ["SELECT", "INSERT", "UPDATE"],
-  linked_identities: ["SELECT", "INSERT", "UPDATE"],
+  linked_identities: ["SELECT", "INSERT", "UPDATE", "DELETE"],
   sessions: ["SELECT", "INSERT", "UPDATE"],
   auth_attempts: ["SELECT", "INSERT", "UPDATE"],
   private_command_receipts: ["SELECT", "INSERT"],
@@ -780,7 +784,6 @@ export class PostgresStore implements HeimdallStore {
       )
       ON CONFLICT (provider, provider_user_id)
       DO UPDATE SET
-        account_id = EXCLUDED.account_id,
         username = EXCLUDED.username,
         display_name = EXCLUDED.display_name,
         primary_email = EXCLUDED.primary_email,
@@ -791,6 +794,7 @@ export class PostgresStore implements HeimdallStore {
         scopes = EXCLUDED.scopes,
         profile_json = EXCLUDED.profile_json,
         updated_at = EXCLUDED.updated_at
+      WHERE linked_identities.account_id = EXCLUDED.account_id
       RETURNING *
       `,
       [
@@ -811,7 +815,42 @@ export class PostgresStore implements HeimdallStore {
       ]
     );
 
-    return mapLinkedIdentityRow(expectRow(result.rows[0], "upsertLinkedIdentity"));
+    // The conflict arm updates only the holder's own row; another account's yields no row.
+    if (!result.rows[0]) throw new IdentityHeldElsewhereError();
+    return mapLinkedIdentityRow(result.rows[0]);
+  }
+
+  async unlinkLinkedIdentity(accountId: string, identityId: string): Promise<UnlinkResult> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      try {
+        // The account row serialises its unlinks: two clients racing for the last two identities queue here.
+        await client.query("SELECT id FROM accounts WHERE id = $1 FOR UPDATE", [accountId]);
+        const held = await client.query<{ n: string | number }>(
+          "SELECT count(*) AS n FROM linked_identities WHERE account_id = $1",
+          [accountId]
+        );
+        let result: UnlinkResult;
+        if (Number(held.rows[0]?.n ?? 0) <= 1) {
+          const mine = await client.query("SELECT 1 FROM linked_identities WHERE id = $1 AND account_id = $2", [identityId, accountId]);
+          result = mine.rowCount ? { kind: "last_identity" } : { kind: "not_found" };
+        } else {
+          const deleted = await client.query<LinkedIdentityRow>(
+            "DELETE FROM linked_identities WHERE id = $2 AND account_id = $1 RETURNING *",
+            [accountId, identityId]
+          );
+          result = deleted.rows[0] ? { kind: "unlinked", identity: mapLinkedIdentityRow(deleted.rows[0]) } : { kind: "not_found" };
+        }
+        await client.query("COMMIT");
+        return result;
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      }
+    } finally {
+      client.release();
+    }
   }
 
   async updateLinkedIdentityCredential(

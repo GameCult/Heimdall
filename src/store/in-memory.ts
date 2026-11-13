@@ -18,6 +18,7 @@ import {
   type CreateSessionInput,
   type CreatePrivateCommandReceiptInput,
   type HeimdallStore,
+  IdentityHeldElsewhereError,
   type StoredAccount,
   type StoredAuthAttempt,
   type StoredAuthCompletion,
@@ -25,6 +26,7 @@ import {
   type StoredLinkedIdentity,
   type StoredSession,
   type StoredPrivateCommandReceipt,
+  type UnlinkResult,
   type UpsertLinkedIdentityInput,
 } from "./types.js";
 
@@ -148,6 +150,9 @@ export class InMemoryStore implements HeimdallStore {
     const existing = [...this.linkedIdentities.values()].find(
       (identity) => identity.provider === input.provider && identity.providerUserId === input.providerUserId
     );
+    if (existing && existing.accountId !== input.accountId) {
+      throw new IdentityHeldElsewhereError();
+    }
     const id = existing?.id ?? input.id ?? randomUUID();
     const linkedIdentity: StoredLinkedIdentity = {
       id,
@@ -186,6 +191,15 @@ export class InMemoryStore implements HeimdallStore {
 
     this.linkedIdentities.set(id, clone(linkedIdentity));
     return clone(linkedIdentity);
+  }
+
+  async unlinkLinkedIdentity(accountId: string, identityId: string): Promise<UnlinkResult> {
+    const target = this.linkedIdentities.get(identityId);
+    if (!target || target.accountId !== accountId) return { kind: "not_found" };
+    const held = [...this.linkedIdentities.values()].filter((identity) => identity.accountId === accountId).length;
+    if (held <= 1) return { kind: "last_identity" };
+    this.linkedIdentities.delete(identityId);
+    return { kind: "unlinked", identity: clone(target) };
   }
 
   async updateLinkedIdentityCredential(

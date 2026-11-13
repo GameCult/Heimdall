@@ -3,7 +3,7 @@ import { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { newDb } from "pg-mem";
 import { type HeimdallConfig } from "../src/config.js";
-import { createStore, InMemoryStore } from "../src/store/index.js";
+import { createStore, IdentityHeldElsewhereError, InMemoryStore, type HeimdallStore } from "../src/store/index.js";
 import {
   createPostgresStore,
   PostgresStore,
@@ -200,6 +200,84 @@ describe("PostgresStore", () => {
     })).rejects.toThrow("Idempotency key was reused");
 
     await store.close();
+  });
+});
+
+// linked_identities has one writer that can move a row between accounts: none.
+// upsert refreshes the holder's own row and refuses another account's; unlink is
+// the only delete, and it never takes an account's last identity.
+const unlinkStores: Array<[string, () => Promise<HeimdallStore>]> = [
+  ["InMemoryStore", async () => new InMemoryStore()],
+  [
+    "PostgresStore on pg-mem",
+    async () => {
+      const store = new PostgresStore(new (newDb().adapters.createPg().Pool)());
+      await store.ensureSchema();
+      return store;
+    },
+  ],
+];
+describe.each(unlinkStores)("linked_identities writes, %s", (_name, make) => {
+  const at = "2026-11-13T12:00:00.000Z";
+  const input = (accountId: string, providerUserId: string, extra: Record<string, unknown> = {}) => ({
+    accountId,
+    provider: "discord" as const,
+    providerUserId,
+    scopes: ["identify"],
+    profileJson: {},
+    createdAt: at,
+    updatedAt: at,
+    ...extra,
+  });
+  async function twoAccounts() {
+    const store = await make();
+    const a = await store.createAccount({ createdAt: at, lastSeenAt: at });
+    const b = await store.createAccount({ createdAt: at, lastSeenAt: at });
+    return { store, a, b };
+  }
+
+  // pg-mem has neither ON CONFLICT ... WHERE nor row locks: these two run on real Postgres below.
+  const realPostgresOnly = _name !== "InMemoryStore";
+
+  it.skipIf(realPostgresOnly)("upsert on an identity another account holds throws IdentityHeldElsewhereError and leaves the row untouched", async () => {
+    const { store, a, b } = await twoAccounts();
+    const held = await store.upsertLinkedIdentity(input(a.id, "u1", { username: "original", accessTokenEncrypted: "keep" }));
+    await expect(
+      store.upsertLinkedIdentity(input(b.id, "u1", { username: "thief", accessTokenEncrypted: "stolen", updatedAt: "2027-01-01T00:00:00.000Z" }))
+    ).rejects.toBeInstanceOf(IdentityHeldElsewhereError);
+    expect(await store.findStoredLinkedIdentity("discord", "u1")).toEqual(held);
+    expect(await store.listStoredLinkedIdentitiesForAccount(b.id)).toEqual([]);
+  });
+
+  it("upsert by the holder still refreshes its own row, keeping its id", async () => {
+    const { store, a } = await twoAccounts();
+    const first = await store.upsertLinkedIdentity(input(a.id, "u1", { username: "one" }));
+    const again = await store.upsertLinkedIdentity(input(a.id, "u1", { username: "two", updatedAt: "2026-11-14T00:00:00.000Z" }));
+    expect([again.id, again.accountId, again.username]).toEqual([first.id, a.id, "two"]);
+  });
+
+  it("unlink: deletes one of two, refuses the last, reports another account's or a missing id as not_found", async () => {
+    const { store, a, b } = await twoAccounts();
+    const one = await store.upsertLinkedIdentity(input(a.id, "u1"));
+    const two = await store.upsertLinkedIdentity(input(a.id, "u2"));
+    const theirs = await store.upsertLinkedIdentity(input(b.id, "u3"));
+    expect(await store.unlinkLinkedIdentity(a.id, theirs.id)).toEqual({ kind: "not_found" });
+    expect(await store.unlinkLinkedIdentity(a.id, "no-such")).toEqual({ kind: "not_found" });
+    expect(await store.unlinkLinkedIdentity(b.id, theirs.id)).toEqual({ kind: "last_identity" });
+    const done = await store.unlinkLinkedIdentity(a.id, one.id);
+    expect(done).toMatchObject({ kind: "unlinked", identity: { id: one.id, provider: "discord", providerUserId: "u1" } });
+    expect(await store.unlinkLinkedIdentity(a.id, two.id)).toEqual({ kind: "last_identity" });
+    expect((await store.listStoredLinkedIdentitiesForAccount(a.id)).map((i) => i.id)).toEqual([two.id]);
+    expect(await store.findStoredLinkedIdentity("discord", "u3")).toMatchObject({ id: theirs.id, accountId: b.id });
+  });
+
+  it.skipIf(realPostgresOnly)("two concurrent unlinks of an account's last two identities leave exactly one", async () => {
+    const { store, a } = await twoAccounts();
+    const one = await store.upsertLinkedIdentity(input(a.id, "u1"));
+    const two = await store.upsertLinkedIdentity(input(a.id, "u2"));
+    const results = await Promise.all([store.unlinkLinkedIdentity(a.id, one.id), store.unlinkLinkedIdentity(a.id, two.id)]);
+    expect(results.map((r) => r.kind).sort()).toEqual(["last_identity", "unlinked"]);
+    expect(await store.listStoredLinkedIdentitiesForAccount(a.id)).toHaveLength(1);
   });
 });
 
@@ -496,6 +574,8 @@ async function exerciseStore(store: PostgresStore): Promise<Set<string>> {
   const linked = await s.upsertLinkedIdentity(identity);
   await s.updateLinkedIdentityCredential(linked.id, async () => ({ kind: "keep" }));
   await s.upsertLinkedIdentity({ ...identity, username: "again" });
+  const spare = await s.upsertLinkedIdentity({ ...identity, providerUserId: "u-spare" });
+  expect((await s.unlinkLinkedIdentity(account.id, spare.id)).kind).toBe("unlinked");
   await s.findAccountByLinkedIdentity("discord", "u1");
   await s.findStoredLinkedIdentity("discord", "u1");
   await s.findStoredLinkedIdentityForAccount(account.id, "discord");
@@ -713,6 +793,41 @@ describe.skipIf(!adminUrl)("startup against a live Postgres (HEIMDALL_TEST_PG_AD
       await pool.end();
       expect(failure, `the store runs without ${privilege} on ${table}, so the check need not ask for it`).toBe("42501");
       for (const step of cleanup.splice(0).reverse()) await step();
+    }
+  });
+
+  it("startup refuses a role that lacks DELETE on linked_identities", async () => {
+    expect(STORE_TABLE_PRIVILEGES.linked_identities).toContain("DELETE");
+    const { name, owner } = await appliedDatabase();
+    await grant(owner, { ...STORE_TABLE_PRIVILEGES, linked_identities: ["SELECT", "INSERT", "UPDATE"] });
+    expect(await start(urlFor(name, role, rolePassword), false)).toBe(refusal("SCHEMA_PRIVILEGES"));
+  });
+
+  it("on real Postgres: an upsert never moves an identity, and concurrent unlinks of the last two leave one", async () => {
+    const { name, owner } = await appliedDatabase();
+    const clientA = new PostgresStore(owner);
+    const at = "2026-11-13T12:00:00.000Z";
+    const a = await clientA.createAccount({ createdAt: at, lastSeenAt: at });
+    const b = await clientA.createAccount({ createdAt: at, lastSeenAt: at });
+    const base = { provider: "discord" as const, scopes: [], profileJson: {}, createdAt: at, updatedAt: at };
+    const held = await clientA.upsertLinkedIdentity({ ...base, accountId: a.id, providerUserId: "u1", username: "original" });
+    await expect(clientA.upsertLinkedIdentity({ ...base, accountId: b.id, providerUserId: "u1", username: "thief" })).rejects.toBeInstanceOf(IdentityHeldElsewhereError);
+    expect(await clientA.findStoredLinkedIdentity("discord", "u1")).toEqual(held);
+
+    await clientA.upsertLinkedIdentity({ ...base, accountId: a.id, providerUserId: "u2" });
+    // Two separate pools, as two Heimdall processes would be, race for the last two.
+    const other = fixturePool(urlFor(name));
+    cleanup.push(async () => {
+      await other.end();
+    });
+    const storeB = new PostgresStore(other);
+    for (let round = 0; round < 10; round += 1) {
+      const [first, second] = await clientA.listStoredLinkedIdentitiesForAccount(a.id);
+      expect(first && second, `round ${round} starts with two`).toBeTruthy();
+      const results = await Promise.all([clientA.unlinkLinkedIdentity(a.id, first!.id), storeB.unlinkLinkedIdentity(a.id, second!.id)]);
+      expect(results.map((r) => r.kind).sort(), `round ${round}`).toEqual(["last_identity", "unlinked"]);
+      expect(await clientA.listStoredLinkedIdentitiesForAccount(a.id)).toHaveLength(1);
+      await clientA.upsertLinkedIdentity({ ...base, accountId: a.id, providerUserId: `u-next-${round}` });
     }
   });
 
