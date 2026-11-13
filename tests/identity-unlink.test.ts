@@ -6,9 +6,9 @@ import { buildApp } from "../src/app.js";
 import { issueAccessClaim } from "../src/claims.js";
 import { type Provider } from "../src/contracts.js";
 import { type OAuthProviderRuntime } from "../src/oauth.js";
-import { createRuntimeKeyMaterial } from "../src/signing.js";
+import { createRuntimeKeyMaterial, decodeJwt, signJwt, verifyJwt } from "../src/signing.js";
 import { IdentityHeldElsewhereError, InMemoryStore } from "../src/store/index.js";
-import { createTestConfig, launchFlow } from "./oauth-flow.js";
+import { createTestConfig, launchFlow, launchState, stateOf } from "./oauth-flow.js";
 
 // The member's identity surface: list what an account holds, and take one
 // identity off it. Taking one off is the account's own decision made with
@@ -277,5 +277,54 @@ describe("POST /v1/me/identities/:identityId/unlink", () => {
     vi.setSystemTime(Date.now() + 601_000);
     const res = await unlink(r, rows[1]!.id, accessToken);
     expect([res.statusCode, res.json().error]).toEqual([403, "step_up_required"]);
+  });
+
+  it("the proof window's edge: exactly 600 s old still passes, 601 s does not (frozen clock)", async () => {
+    const r = await rig();
+    const { account, rows } = await seedAccount(r, [["twitch", "t-1"], ["youtube", "y-1"], ["discord", "d-1"]]);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-13T12:00:00.000Z"));
+    const nowS = Math.floor(Date.now() / 1000);
+    const issueWith = async (stepUpAt: number) =>
+      (await issueAccessClaim({ config, keys: r.keys, store: r.store, input: { appSlug: "streampixels", accountId: account.id, linkedIdentities: [], facts: [], stepUpAt } })).accessToken;
+    const tooOld = await unlink(r, rows[1]!.id, await issueWith(nowS - 601));
+    expect([tooOld.statusCode, tooOld.json().error]).toEqual([403, "step_up_required"]);
+    const edge = await unlink(r, rows[1]!.id, await issueWith(nowS - 600));
+    expect(edge.statusCode).toBe(200);
+  });
+
+  it("a one-identity bearer naming another account's identity gets 404, not 409", async () => {
+    const r = await rig();
+    await seedAccount(r, [["twitch", "t-1"]]);
+    const other = await seedAccount(r, [["youtube", "y-other"], ["github", "g-other"]]);
+    const { accessToken } = await signIn(r, true);
+    const res = await unlink(r, other.rows[0]!.id, accessToken);
+    expect([res.statusCode, res.json().error]).toEqual([404, "identity_not_found"]);
+  });
+
+  it("a step_up state in a non-sign_in mode (forged, signed) yields no step_up_at", async () => {
+    const r = await rig();
+    const { account } = await seedAccount(r, [["twitch", "t-1"]]);
+    const started = await r.app.inject({
+      method: "POST",
+      url: "/v1/oauth/twitch/start",
+      headers: spAuth,
+      payload: { appSlug: "streampixels", mode: "link", initiatingAccountId: account.id, returnTo },
+    });
+    expect(started.statusCode).toBe(201);
+    const verified = verifyJwt(stateOf(started.json()), r.keys.publicKey) as { valid: boolean; payload: Record<string, unknown> };
+    expect(verified.valid).toBe(true);
+    expect(verified.payload.mode).toBe("link");
+    const flow = await launchState(r.app, signJwt({ ...verified.payload, step_up: true }, r.keys));
+    const called = await r.app.inject({
+      method: "GET",
+      url: `/v1/oauth/twitch/callback?code=c&state=${encodeURIComponent(flow.state)}`,
+      headers: { cookie: flow.cookie, accept: "application/json" },
+    });
+    expect(called.statusCode).toBe(201);
+    expect(called.json().stepUpRequested, "the forged flag was read").toBe(true);
+    const token = called.json().accessToken as string;
+    expect(token, "the link completion minted an access token to inspect").toBeTruthy();
+    expect(decodeJwt(token).payload.step_up_at).toBeUndefined();
   });
 });
