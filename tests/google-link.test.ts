@@ -5,7 +5,7 @@ import { buildApp } from "../src/app.js";
 import { loadConfig, type HeimdallConfig } from "../src/config.js";
 import { resetGoogleJwksCache } from "../src/google-oidc.js";
 import { type OAuthProviderRuntime } from "../src/oauth.js";
-import { InMemoryStore } from "../src/store/index.js";
+import { IdentityHeldElsewhereError, InMemoryStore } from "../src/store/index.js";
 import { launchFlow, launchWithRedirect, stateOf, type LaunchedFlow } from "./oauth-flow.js";
 
 const CLIENT_ID = "google-client";
@@ -186,6 +186,18 @@ afterEach(async () => {
   globalThis.fetch = originalFetch;
   resetGoogleJwksCache();
   while (apps.length) await apps.pop()?.close();
+});
+
+describe("a link write that loses the race to another account", () => {
+  it("links/confirm answers 409 identity_linked_elsewhere when the store refuses the move after the check passed", async () => {
+    const { app, store } = await build();
+    const { accessToken } = await signInWithDiscord(app);
+    const done = await linkGoogleCallback(app, accessToken);
+    expect(done.statusCode).toBe(201);
+    vi.spyOn(store, "upsertLinkedIdentity").mockRejectedValueOnce(new IdentityHeldElsewhereError());
+    const confirmed = await confirmLink(app, accessToken, done.json().pendingLinkId);
+    expect([confirmed.statusCode, confirmed.json().error]).toEqual([409, "identity_linked_elsewhere"]);
+  });
 });
 
 describe("Google as a Heimdall OIDC provider", () => {

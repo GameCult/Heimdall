@@ -24,7 +24,7 @@ import {
   type OAuthStartRequest,
   type Provider,
 } from "./contracts.js";
-import { issueAccessClaim, type IssueAccessClaimInput } from "./claims.js";
+import { issueAccessClaim, STEP_UP_PROOF_TTL_SECONDS, type IssueAccessClaimInput } from "./claims.js";
 import { builtInAppProfiles, getAppProfile, isAllowedReturnOrigin, serializeAppProfile, admitsProviderForMode, callbackMint, isUsableConnectionTarget } from "./app-profiles.js";
 import { renderBrowserHandoffPage } from "./browser-handoff.js";
 import { consentText, digestOfText, grantViews, GRANTS_PATH, renderConsentPage, renderGrantsPage, type ConsentAsk } from "./consent.js";
@@ -41,7 +41,7 @@ import {
 import { ManagedCredentialRefreshFailed, refreshManagedCredential } from "./managed-credential.js";
 import { authorizationScopes, buildAuthorizationUrl, providerCatalog, providerExpectedEnv } from "./providers.js";
 import { createRuntimeKeyMaterial, signJwt, verifyJwt } from "./signing.js";
-import { createStore, type HeimdallStore } from "./store/index.js";
+import { createStore, IdentityHeldElsewhereError, type HeimdallStore } from "./store/index.js";
 import {
   OAUTH_STATE_SKEW_MS,
   type CreateAccountInput,
@@ -879,28 +879,36 @@ export async function startOAuthFlow(
   };
 }
 
+/** What a live bearer proves: the account its session belongs to, and the claims it was signed with. */
+interface ResolvedBearer {
+  accountId: string;
+  claims: Record<string, unknown>;
+}
+
 /**
- * The account a link start binds to: the one a live Heimdall access token for
- * this app names. The token must verify under Heimdall's own key, be an access
- * token for `appSlug`, be inside its validity window, and belong to a session
+ * The one verifier of a Heimdall access token. The token must verify under
+ * Heimdall's own key, be an access token for `appSlug` (or, when none is
+ * named, for any app), be inside its validity window, and belong to a session
  * the store still holds for that account at that revision. A bearer that fails
- * any of these binds nothing: a link is explicit or it does not happen.
+ * any of these proves nothing.
  */
-async function resolveLinkAccount(
+async function resolveBearer(
   ctx: Pick<HeimdallRuntimeContext, "config" | "keys" | "store">,
-  appSlug: AppSlug,
-  authorization: string | undefined
-): Promise<string | null> {
+  authorization: string | undefined,
+  appSlug?: AppSlug
+): Promise<ResolvedBearer | null> {
   const token = /^Bearer\s+(\S+)$/i.exec(authorization ?? "")?.[1];
   if (!token) return null;
   const verification = verifyJwt(token, ctx.keys.publicKey);
   if (!verification.valid) return null;
   const claims = verification.payload;
+  const audience = appSlug ?? claims.aud;
+  if (!isAppSlug(audience)) return null;
   const now = nowEpochSeconds();
   if (
     claims.typ !== "heimdall_access" ||
     claims.iss !== ctx.config.issuer ||
-    claims.aud !== appSlug ||
+    claims.aud !== audience ||
     typeof claims.account_id !== "string" ||
     typeof claims.sid !== "string" ||
     typeof claims.access_revision !== "number" ||
@@ -910,7 +918,7 @@ async function resolveLinkAccount(
   ) {
     return null;
   }
-  const session = await ctx.store.findSession(appSlug, claims.sid);
+  const session = await ctx.store.findSession(audience, claims.sid);
   if (
     !session ||
     session.accountId !== claims.account_id ||
@@ -919,7 +927,16 @@ async function resolveLinkAccount(
   ) {
     return null;
   }
-  return claims.account_id;
+  return { accountId: claims.account_id, claims };
+}
+
+/** The account a link start binds to: the one a live Heimdall access token for this app names. A link is explicit or it does not happen. */
+async function resolveLinkAccount(
+  ctx: Pick<HeimdallRuntimeContext, "config" | "keys" | "store">,
+  appSlug: AppSlug,
+  authorization: string | undefined
+): Promise<string | null> {
+  return (await resolveBearer(ctx, authorization, appSlug))?.accountId ?? null;
 }
 
 /** The account a Heimdall access token for any app names, when the token and its session are live. */
@@ -927,12 +944,7 @@ async function resolveAccessAccount(
   ctx: Pick<HeimdallRuntimeContext, "config" | "keys" | "store">,
   authorization: string | undefined
 ): Promise<string | null> {
-  const token = /^Bearer\s+(\S+)$/i.exec(authorization ?? "")?.[1];
-  if (!token) return null;
-  const verification = verifyJwt(token, ctx.keys.publicKey);
-  if (!verification.valid) return null;
-  const audience = verification.payload.aud;
-  return isAppSlug(audience) ? resolveLinkAccount(ctx, audience, authorization) : null;
+  return (await resolveBearer(ctx, authorization))?.accountId ?? null;
 }
 
 const grantsPageTokenType = "heimdall_grants_page";
@@ -1847,7 +1859,15 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           await store.touchAccount(account.id, nowIso, accountUpdates);
         }
 
-        await store.upsertLinkedIdentity(buildLinkedIdentityInput(account.id));
+        try {
+          await store.upsertLinkedIdentity(buildLinkedIdentityInput(account.id));
+        } catch (error) {
+          // The check above is the fast path; this is the write refusing a move another account won the race for.
+          if (error instanceof IdentityHeldElsewhereError) {
+            throw new LinkRefusal("link_initiator_mismatch", "This identity belongs to a different account than the one that started the link.");
+          }
+          throw error;
+        }
 
         // Heimdall now holds a credential the person was asked about: the
         // receipt is the record of that agreement, written with the credential.
@@ -1904,6 +1924,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           linkedIdentities: await store.listLinkedIdentitiesForAccount(account.id),
           facts: [...new Set([...entitlementEvaluation.facts, ...linkedFacts]), ...buildGrantFacts(grants)],
           ...(mint === "custody_only" ? { withoutCapabilities: true } : {}),
+          // Proof of a fresh re-authentication, from the signed state alone: only a sign_in the app started with stepUp.
+          ...(statePayload.step_up && statePayload.mode === "sign_in" ? { stepUpAt: nowEpochSeconds() } : {}),
         };
         if (account.displayName !== undefined) {
           issueInput.displayName = account.displayName;
@@ -2214,7 +2236,14 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         reply.code(409);
         return { error: "identity_linked_elsewhere" };
       }
-      await store.upsertLinkedIdentity({ ...pending.identity, accountId, updatedAt: nowIso });
+      try {
+        await store.upsertLinkedIdentity({ ...pending.identity, accountId, updatedAt: nowIso });
+      } catch (error) {
+        // The holder check above is the fast path; a second account may win the race to the identity.
+        if (!(error instanceof IdentityHeldElsewhereError)) throw error;
+        reply.code(409);
+        return { error: "identity_linked_elsewhere" };
+      }
       await store.createAuditEvent({
         accountId,
         appSlug: pending.appSlug,
@@ -2669,6 +2698,109 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     return { error: "sign_in_required", detail: "Send a Heimdall access token as a Bearer token, or open a link from POST /v1/me/grants/link." };
   };
 
+  /**
+   * Writes a revocation receipt for each live grant the account holds on
+   * `provider` (whichever app asked: the credential is one row per account and
+   * provider), and the audit event naming them. The credential is gone or
+   * stripped first, so a failure here leaves a receipt that still reads active
+   * over a credential that is gone, never the reverse. Returns the grants this
+   * call revoked.
+   */
+  const revokeLiveGrants = async (accountId: string, provider: Provider, receipts: Parameters<typeof grantViews>[0], at: string): Promise<string[]> => {
+    const revoked: string[] = [];
+    for (const live of grantViews(receipts).filter((view) => view.provider === provider && view.status === "active")) {
+      const { created } = await store.createConsentReceipt({
+        kind: "revocation",
+        accountId,
+        appSlug: live.appSlug,
+        provider: live.provider,
+        createdAt: at,
+        revokesReceiptId: live.id,
+      });
+      // A concurrent revoke may have written it first; only the writer reports it.
+      if (created) revoked.push(live.id);
+    }
+    if (revoked.length) {
+      await store.createAuditEvent({ accountId, eventType: "consent_revoked", eventPayloadJson: { provider, grantIds: revoked }, createdAt: at });
+    }
+    return revoked;
+  };
+
+  const identityViews = async (accountId: string) =>
+    (await store.listStoredLinkedIdentitiesForAccount(accountId)).map((identity) => ({
+      id: identity.id,
+      provider: identity.provider,
+      providerUserId: identity.providerUserId,
+      ...(identity.username !== undefined ? { username: identity.username } : {}),
+      ...(identity.displayName !== undefined ? { displayName: identity.displayName } : {}),
+      linkedAt: identity.createdAt,
+      scopes: identity.scopes,
+    }));
+
+  // The identities an account holds: ids and public profile facts, never a
+  // credential, a stored profile or an email.
+  app.get("/v1/me/identities", async (request, reply) => {
+    const bearer = await resolveBearer({ config, keys, store }, request.headers.authorization);
+    if (!bearer) return signInRequired(reply);
+    grantsReply(reply);
+    return { accountId: bearer.accountId, identities: await identityViews(bearer.accountId) };
+  });
+
+  // Taking an identity off the account. The bearer alone is not enough: the
+  // access token must come from a step-up sign-in inside the proof window, and
+  // a refresh never carries that proof forward.
+  app.post<{ Params: { identityId: string }; Body?: null }>(
+    "/v1/me/identities/:identityId/unlink",
+    {
+      schema: {
+        params: { type: "object", required: ["identityId"], additionalProperties: false, properties: { identityId: { type: "string", minLength: 1 } } },
+        body: { type: ["object", "null"], additionalProperties: false, properties: {} },
+      },
+    },
+    async (request, reply) => {
+      const bearer = await resolveBearer({ config, keys, store }, request.headers.authorization);
+      if (!bearer) return signInRequired(reply);
+      grantsReply(reply);
+      const { accountId, claims } = bearer;
+      const nowS = nowEpochSeconds();
+      const provedAt = claims.step_up_at;
+      if (typeof provedAt !== "number" || provedAt > nowS || nowS - provedAt > STEP_UP_PROOF_TTL_SECONDS) {
+        reply.code(403);
+        return {
+          error: "step_up_required",
+          detail: `Unlinking needs a sign-in with stepUp completed within the last ${STEP_UP_PROOF_TTL_SECONDS} seconds: POST /v1/oauth/{provider}/start with mode sign_in and stepUp true through an identity on this account whose provider has re-authentication parameters (today twitch, youtube and google; discord and patreon cannot prove), then use the access token that sign-in returns.`,
+        };
+      }
+      const result = await store.unlinkLinkedIdentity(accountId, request.params.identityId);
+      if (result.kind === "not_found") {
+        reply.code(404);
+        return { error: "identity_not_found" };
+      }
+      if (result.kind === "last_identity") {
+        reply.code(409);
+        return { error: "last_identity", detail: "This is the account's only identity; unlinking it would leave the account unreachable." };
+      }
+      const { identity } = result;
+      const at = new Date().toISOString();
+      await store.createAuditEvent({
+        accountId,
+        eventType: "identity_unlinked",
+        eventPayloadJson: { provider: identity.provider, identityId: identity.id },
+        createdAt: at,
+      });
+      // The credential went with the row. When no identity of that provider
+      // is left, the grants that rested on it are taken back in the record too.
+      const remaining = await store.listStoredLinkedIdentitiesForAccount(accountId);
+      if (!remaining.some((other) => other.provider === identity.provider)) {
+        await revokeLiveGrants(accountId, identity.provider, await store.listConsentReceipts(accountId), at);
+      }
+      return {
+        unlinked: { id: identity.id, provider: identity.provider, providerUserId: identity.providerUserId },
+        identities: await identityViews(accountId),
+      };
+    }
+  );
+
   // The signed-in surface for consent: every grant and receipt the account
   // holds, and the one-click way to take each back.
   app.get<{ Querystring: { t?: string } }>(
@@ -2730,26 +2862,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         if (identity) {
           await store.updateLinkedIdentityCredential(identity.id, async () => ({ kind: "revoke", updatedAt: at }));
         }
-        for (const live of grantViews(receipts).filter((view) => view.provider === grant.provider && view.status === "active")) {
-          const { created } = await store.createConsentReceipt({
-            kind: "revocation",
-            accountId,
-            appSlug: live.appSlug,
-            provider: live.provider,
-            createdAt: at,
-            revokesReceiptId: live.id,
-          });
-          // A concurrent revoke may have written it first; only the writer reports it.
-          if (created) revoked.push(live.id);
-        }
-        if (revoked.length) {
-          await store.createAuditEvent({
-            accountId,
-            eventType: "consent_revoked",
-            eventPayloadJson: { provider: grant.provider, grantIds: revoked },
-            createdAt: at,
-          });
-        }
+        revoked.push(...(await revokeLiveGrants(accountId, grant.provider, receipts, at)));
       }
       if (prefersHtml(request.headers.accept) || request.headers["content-type"]?.startsWith("application/x-www-form-urlencoded")) {
         reply.type("text/html; charset=utf-8");

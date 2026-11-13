@@ -153,6 +153,8 @@ export interface AccessClaimPayload {
   typ: "heimdall_access";
   account_id: string;
   access_revision: number;
+  /** Epoch seconds of the step-up sign-in this access token was minted by; absent on every other token, and never carried by a refresh. */
+  step_up_at?: number;
   display_name?: string;
   app: {
     slug: AppSlug;

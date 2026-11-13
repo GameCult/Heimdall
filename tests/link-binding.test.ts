@@ -6,7 +6,7 @@ import { buildApp } from "../src/app.js";
 import { type HeimdallConfig } from "../src/config.js";
 import { type OAuthProviderRuntime } from "../src/oauth.js";
 import { createRuntimeKeyMaterial, signJwt, verifyJwt } from "../src/signing.js";
-import { InMemoryStore } from "../src/store/index.js";
+import { IdentityHeldElsewhereError, InMemoryStore } from "../src/store/index.js";
 import { launchFlow } from "./oauth-flow.js";
 
 function createTestConfig(): HeimdallConfig {
@@ -164,6 +164,15 @@ describe("link callback holds the provider identity to the initiator", () => {
     expect(done.json().completion).toBeUndefined();
     expect(done.body).not.toContain("accessToken");
     expect((await r.store.findAccountByLinkedIdentity("discord", "d-held"))?.id).toBe(other.id);
+  });
+
+  it("maps a store refusal of the move (a race past the check) to link_initiator_mismatch", async () => {
+    const r = await rig("d-race");
+    vi.spyOn(r.store, "upsertLinkedIdentity").mockRejectedValueOnce(new IdentityHeldElsewhereError());
+    const started = await start(r, { mode: "link", initiatingAccountId: r.initiator.id });
+    const done = await callback(r, started.json());
+    expect([done.statusCode, done.json().error]).toEqual([403, "link_initiator_mismatch"]);
+    expect(done.json().completion).toBeUndefined();
   });
 
   it("refuses a link state that carries no initiator (forged or stripped), before attaching anything", async () => {
