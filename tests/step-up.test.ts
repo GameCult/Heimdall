@@ -150,6 +150,8 @@ describe("the flag is the signed state's, not the redeem side's", () => {
       const redeemed = await app.inject({ method: "POST", url: "/v1/apps/streampixels/auth-completions/redeem", payload: { completionCode: code, stepUp: true } });
       expect(redeemed.statusCode).toBe(201);
       expect(redeemed.json().stepUpRequested).toBe(asked ? true : undefined);
+      // The proof is the signed state's too: the claim carries step_up_at exactly when the start asked.
+      expect(typeof redeemed.json().claimSet.step_up_at).toBe(asked ? "number" : "undefined");
     }
   });
 });

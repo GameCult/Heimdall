@@ -11,6 +11,9 @@ import { identityFacts } from "./facts.js";
 import { signJwt, type RuntimeKeyMaterial } from "./signing.js";
 import { type CreateSessionInput, type HeimdallStore } from "./store/types.js";
 
+/** How long a step-up sign-in's proof stays good for an action that demands it (identity unlink). */
+export const STEP_UP_PROOF_TTL_SECONDS = 600;
+
 function nowEpochSeconds(): number {
   return Math.floor(Date.now() / 1000);
 }
@@ -48,6 +51,8 @@ export interface IssueAccessClaimInput {
   sessionId?: string;
   accessRevision?: number;
   ttlSeconds?: number;
+  /** Epoch seconds of a step-up sign-in completing; only that callback sets it, a refresh never does. */
+  stepUpAt?: number;
 }
 
 export interface IssuedAccessClaimResult {
@@ -129,6 +134,10 @@ export async function issueAccessClaim(options: {
     capabilities: sharedCapabilities,
     identities: options.input.linkedIdentities,
   };
+
+  if (options.input.stepUpAt !== undefined) {
+    claimSet.step_up_at = options.input.stepUpAt;
+  }
 
   if (options.input.displayName) {
     claimSet.display_name = options.input.displayName;

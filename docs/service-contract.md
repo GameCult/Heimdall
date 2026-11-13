@@ -548,6 +548,84 @@ Important behavior:
 - the endpoint is not a provider OAuth start path and should not produce a
   provider authorization URL
 
+### `GET /v1/me/identities`
+
+The identities the signed-in account holds, for a member's own view.
+
+Authentication: a live Heimdall access token for any app as
+`Authorization: Bearer` (the same check as `/v1/me/grants`). `401
+sign_in_required` otherwise. The answer is `Cache-Control: no-store`.
+
+```json
+{
+  "accountId": "uuid",
+  "identities": [
+    {
+      "id": "uuid",
+      "provider": "twitch",
+      "providerUserId": "12345",
+      "username": "name",
+      "displayName": "Name",
+      "linkedAt": "2026-11-13T12:00:00.000Z",
+      "scopes": ["user:read:email"]
+    }
+  ]
+}
+```
+
+`username` and `displayName` are present when the provider gave them. The
+answer never carries a token column, the stored provider profile or the
+account's email.
+
+### `POST /v1/me/identities/{identityId}/unlink`
+
+Takes one identity off the signed-in account. It is the only way a linked
+identity is deleted, and it never takes the account's last one.
+
+Authentication: a live Heimdall access token for any app, and fresh proof. The
+body is empty or `null`.
+
+- `401 sign_in_required`: no live bearer.
+- `403 step_up_required`: the access token carries no `step_up_at` claim, or it
+  is in the future, or it is older than 600 seconds
+  (`STEP_UP_PROOF_TTL_SECONDS`, `src/claims.ts`). The remedy is a `sign_in`
+  start with `stepUp: true` (see step-up above) through an identity on the
+  account whose provider has re-authentication parameters, today twitch,
+  youtube and google, then the access token that sign-in returns.
+- `404 identity_not_found`: no such identity, or one that belongs to another
+  account. The two are not distinguishable.
+- `409 last_identity`: the account holds no other identity.
+- `200`: `{"unlinked": {"id", "provider", "providerUserId"}, "identities": [...]}`
+  with the remaining list in the shape above.
+
+`step_up_at` (epoch seconds) is set on the access claim only when the callback's
+signed state has `step_up` true and mode `sign_in`. A refresh never carries it:
+tokens a refresh issues cannot unlink, so proof is renewed only by a new step-up
+sign-in. The unlink writes the audit event `identity_unlinked` (provider and
+identity id only). When the account then holds no identity of that provider, the
+revocation receipts for its live grants of that provider are written, as the
+grants revoke route writes them.
+
+A Twitch step-up proof is weaker than YouTube's or Google's: `force_verify` does
+not force credential re-entry (see the step-up note under the OAuth start
+section, "The strengths differ").
+
+Limits that stay:
+
+- Access tokens issued before the unlink keep the unlinked identity in their
+  `identities` claim and its facts until they expire (`sessionTtlSeconds`).
+- Discord and Patreon identities cannot give proof (no re-authentication
+  parameter); an account holding only those cannot unlink.
+- A stolen access token minted by a step-up sign-in can unlink more than one
+  identity during its 600 second window.
+- A sign-in through a provider whose identity is no longer linked mints a new
+  account.
+
+A link no longer moves an identity: `upsertLinkedIdentity` refuses an identity
+another account holds (`links/confirm` answers `409 identity_linked_elsewhere`,
+the callback `link_initiator_mismatch`). An unlinked identity belongs to no
+account and can be linked by any account through the normal link flow.
+
 ### `POST /v1/apps/{appSlug}/managed-credentials/resolve`
 
 Purpose:

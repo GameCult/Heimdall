@@ -336,6 +336,18 @@ access token (`revoked`) or no refresh is due (`current`; due means a known
 expiry within 5 minutes, a stored refresh token, and a runtime that refreshes).
 It never decides that a refresh happens.
 
+### One writer for `linked_identities` moves
+
+An identity belongs to the account that holds it. `upsertLinkedIdentity` writes
+the holder's own row (`ON CONFLICT (provider, provider_user_id) DO UPDATE ...
+WHERE linked_identities.account_id = EXCLUDED.account_id`; it never sets
+`account_id`) and throws `IdentityHeldElsewhereError` when another account holds
+the identity. `unlinkLinkedIdentity` is the only delete: one transaction locks
+the account row, refuses the account's last identity, and deletes the row only
+for the account that holds it. The store role therefore holds DELETE on
+`linked_identities`, checked at startup. The HTTP side (`/v1/me/identities`) is
+in `service-contract.md`; an unlink needs a step-up proof inside 600 seconds.
+
 ### Three nested guards
 
 1. **Single flight, per process.** `refreshesInFlight` is keyed by store, then

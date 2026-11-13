@@ -41,6 +41,24 @@ export interface StoredLinkedIdentity {
   updatedAt: string;
 }
 
+/**
+ * An upsert named an identity another account holds. A provider identity
+ * belongs to the account that holds it until that account unlinks it; no
+ * write moves it.
+ */
+export class IdentityHeldElsewhereError extends Error {
+  constructor() {
+    super("This provider identity is held by another account.");
+    this.name = "IdentityHeldElsewhereError";
+  }
+}
+
+/** What unlinkLinkedIdentity decided; `identity` is the row as it was deleted. */
+export type UnlinkResult =
+  | { kind: "unlinked"; identity: StoredLinkedIdentity }
+  | { kind: "last_identity" }
+  | { kind: "not_found" };
+
 export interface UpsertLinkedIdentityInput {
   id?: string;
   accountId: string;
@@ -311,7 +329,15 @@ export interface HeimdallStore {
   findStoredLinkedIdentity(provider: Provider, providerUserId: string): Promise<StoredLinkedIdentity | null>;
   findStoredLinkedIdentityForAccount(accountId: string, provider: Provider): Promise<StoredLinkedIdentity | null>;
   listStoredLinkedIdentitiesForAccount(accountId: string): Promise<StoredLinkedIdentity[]>;
+  /** Writes the holder's own row; throws IdentityHeldElsewhereError rather than move another account's identity. */
   upsertLinkedIdentity(input: UpsertLinkedIdentityInput): Promise<StoredLinkedIdentity>;
+  /**
+   * The only delete of a linked identity. One transaction locks the account,
+   * refuses to take its last identity, and deletes the row only if the
+   * account holds it (an id that is missing or another account's is the same
+   * `not_found`).
+   */
+  unlinkLinkedIdentity(accountId: string, identityId: string): Promise<UnlinkResult>;
   /**
    * Serialise decisions about one row's credential. `decide` receives the row
    * as read under the lock (never a caller's snapshot) and the decision is
