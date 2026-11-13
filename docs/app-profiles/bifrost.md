@@ -89,3 +89,10 @@ Heimdall's unlink check. Bifrost must send a fresh nonce per assertion, keep
 the returned token only for the action it is for, and never send a method it did
 not verify: Heimdall cannot tell. Contract, codes, limits and what it does not
 prove are in `docs/service-contract.md`.
+
+Precondition and limit: Bifrost can call this only while it holds the member's
+Heimdall bearer, which it deliberately does not today. Holding it in a cookie
+ticket would turn cookie theft into bearer theft and, with a passkey or email
+code, into unlink power. And unlink accepts any method: a `bifrost-email-code`
+proof can unlink an identity a Google re-authentication would have guarded.
+Requiring a method per route is the later hardening (identity moves).

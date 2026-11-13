@@ -357,7 +357,8 @@ checked a factor; label from the profile's `stepUpAssertion.methods`). Both
 feed the one reader, the unlink check, and a refresh sets neither. The
 asserted route trusts the calling app and is bounded by the app secret, a live
 bearer for that app, the method allowlist, a nonce claimed once per session
-through `claimOAuthStateUse` (phase `step_up_assert`, no new table or grant),
+through `claimOAuthStateUse` (phase `step_up_assert`, no new table or grant;
+retained to the session expiry as of the claim, which a refresh may slide past),
 and in-process fixed-window limits (`src/fixed-window.ts`).
 
 ### Three nested guards

@@ -645,32 +645,45 @@ Body (`additionalProperties` are dropped as on the sibling routes):
 { "method": "bifrost-passkey", "nonce": "16 to 128 characters, fresh per assertion" }
 ```
 
+Nonce: 16 to 128 characters of the base64url alphabet (`A-Za-z0-9_-`), so a
+random token fits and spaces, controls and lone surrogates are a 400 schema
+refusal. `method` is 1 to 64 characters and then must be in the profile's set.
+
 Order of refusals, each a closed `error` code:
 
 - `401 app_auth_required`: missing, wrong or another app's secret. Checked
   first; nothing is written.
 - `403 step_up_assertion_not_permitted`: the app's profile has no
   `stepUpAssertion` grant. Only `bifrost` has one; every other app is refused
-  with its own secret.
+  with its own secret. This branch has its own small budget (5 per 60 s per
+  app); past it the answer is 429.
 - `429 step_up_rate_limited` (`retryAfterSeconds`): the per-app budget (120 per
   60 s, spent by every attempt that passed the secret and the grant, including
-  ones whose bearer then fails) or the per-account budget (10 per 600 s) is
-  spent. In-process fixed windows: they reset when the process restarts and are
-  not shared between instances.
+  ones whose bearer then fails) is spent. In-process fixed windows: they reset
+  when the process restarts and are not shared between instances.
 - `401 sign_in_required`: the bearer is missing, malformed, expired, signed by
   another key, a refresh token, or rests on a session that is not live (no row,
   wrong account, revoked or expired, revision moved). One answer for all of
   them; it does not say whether an account exists.
 - `403 bearer_app_mismatch`: a live bearer issued to another app. An app cannot
-  assert for a token issued to another app.
+  assert for a token issued to another app. It tells only a holder of the
+  secret and a valid bearer that the bearer is live and for another app, which
+  that holder already knows.
+- `429 step_up_rate_limited`: the per-account budget (10 per 600 s) is spent.
+  It is checked after the bearer and its audience, before method and nonce.
 - `400 unknown_step_up_method`: `method` is not in the profile's closed set
   (`methods` in the answer lists it). Bifrost: `bifrost-passkey`,
   `bifrost-email-code`. Provider labels (`provider:*`) cannot be asserted.
 - `409 step_up_nonce_replayed`: that nonce was already spent for this session.
   The claim is the store's `oauth_state_uses` single-use primitive with phase
   `step_up_assert` and the key a SHA-256 of session id and nonce, so it holds
-  across restarts and instances and is kept until the session's own expiry. A
-  refused method or a rate-limited attempt does not spend the nonce.
+  across restarts and instances. **Retention is the session's expiry as of the
+  claim, plus the store's prune margin.** A refresh slides the session's expiry
+  without bound, so a nonce can be pruned while its session is still live and
+  then be accepted again. Replaying it still needs the secret and a live
+  bearer, which is the power to assert with a fresh nonce; the nonce guards a
+  captured request, not a compromised app. A refused method or a rate-limited
+  attempt does not spend the nonce.
 - `201`: `{"accessToken", "claimSet", "stepUp": {"at", "method", "validForSeconds"}}`,
   `Cache-Control: no-store`.
 
@@ -684,11 +697,24 @@ is good for the usual 600 seconds (`STEP_UP_PROOF_TTL_SECONDS`) and only until
 the token's own `exp`.
 
 Receipts: each assertion writes the audit event `step_up_asserted`, and each
-refusal after the secret verified writes `step_up_assertion_refused`, with the
+refusal after the secret verified writes `step_up_assertion_refused`, except
+that a flood is not recorded row by row: a rate-limited refusal is recorded
+once per window per budget (its first), and an app without the grant once per
+window, with the
 app, the account and session when the bearer resolved, `method` (null when it
 was not in the allowlist), `outcome`, `code` and `nonceDigest`. Never the
 secret, the bearer, the minted token or the nonce. A request without the secret
 writes nothing.
+
+Precondition: the route is usable only once the app holds the member's Heimdall
+bearer. Bifrost deliberately does not hold it today. Putting the bearer in a
+cookie ticket would turn cookie theft into bearer theft and, with
+`bifrost-passkey` or `bifrost-email-code`, into unlink power; whether and how
+Bifrost keeps the bearer is its own decision and is not made here.
+
+Unlink accepts any method today. A `bifrost-email-code` proof unlinks an
+identity a Google re-authentication would have guarded. Requiring a method per
+route (identity moves first) is the later hardening and is not in this change.
 
 What this does not prove: Heimdall cannot see the passkey or the code. It trusts
 the calling app's word, exactly as it trusts `stepUpRequested` (asked, not

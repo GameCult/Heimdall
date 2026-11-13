@@ -18,7 +18,7 @@ import { createTestConfig } from "./oauth-flow.js";
 const now = "2026-11-13T12:00:00.000Z";
 const secret = "bifrost-secret";
 const appAuth = { "x-heimdall-app-secret": secret };
-const nonce = (tag: string) => `nonce-${tag}-`.padEnd(32, "x");
+const nonce = (tag: string) => `nonce-${tag.replace(/[^A-Za-z0-9_-]/g, "_")}-`.padEnd(32, "x");
 
 const dir = mkdtempSync(join(tmpdir(), "heimdall-stepup-assert-"));
 const config = { ...createTestConfig(), signingPrivateKeyPath: join(dir, "signing.pem"), bootstrapSigningPrivateKeyOnMissing: true };
@@ -259,7 +259,7 @@ describe("the method and the nonce", () => {
   it("malformed bodies are 400 before anything is minted", async () => {
     const r = await rig();
     const m = await member(r);
-    for (const payload of [{}, { method: "bifrost-passkey" }, { nonce: nonce("a") }, { method: "bifrost-passkey", nonce: "short" }, { method: 7, nonce: nonce("a") }]) {
+    for (const payload of [{}, { method: "bifrost-passkey" }, { nonce: nonce("a") }, { method: "bifrost-passkey", nonce: "short" }, { method: "bifrost-passkey", nonce: "has a space in it, 16+ chars" }, { method: "bifrost-passkey", nonce: `${"a".repeat(20)}\ud800` }, { method: "bifrost-passkey", nonce: "a".repeat(129) }, { method: "bifrost-passkey", nonce: "ok-looking-nonce-é-ünï" }, { method: 7, nonce: nonce("a") }]) {
       expect((await assertStepUp(r, { token: m.token, payload })).statusCode, JSON.stringify(payload)).toBe(400);
     }
     expect(auditOf(r, "step_up_asserted")).toEqual([]);
@@ -276,6 +276,25 @@ describe("the method and the nonce", () => {
     // The replay does not depend on which method rides with it.
     expect(refused(await assertStepUp(r, { token: m.token, method: "bifrost-email-code" }))).toEqual([409, "step_up_nonce_replayed"]);
     expect((await assertStepUp(r, { token: second.token })).statusCode).toBe(201);
+  });
+
+  it("a nonce is retained to the session's expiry as of the claim: a refresh slides the session past it, and then the nonce can be reused (documented limit)", async () => {
+    const r = await rig();
+    const m = await member(r);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const t0 = Date.now();
+    const R = config.refreshTtlSeconds * 1000;
+    expect((await assertStepUp(r, { token: m.token, nonce: nonce("N") })).statusCode).toBe(201);
+    vi.setSystemTime(t0 + R - 60_000);
+    const refreshed = await r.app.inject({ method: "POST", url: "/v1/apps/bifrost/sessions/refresh", payload: { refreshToken: m.issued.refreshToken } });
+    expect(refreshed.statusCode).toBe(201);
+    const token = refreshed.json().accessToken as string;
+    // Inside the retained horizon the replay is still refused, refreshed session or not.
+    expect(refused(await assertStepUp(r, { token, nonce: nonce("N") }))).toEqual([409, "step_up_nonce_replayed"]);
+    // Past the old expiry plus the store's prune margin, the next claim prunes N while the session lives on.
+    vi.setSystemTime(t0 + R + 11 * 60_000);
+    expect((await assertStepUp(r, { token, nonce: nonce("M") })).statusCode).toBe(201);
+    expect((await assertStepUp(r, { token, nonce: nonce("N") })).statusCode).toBe(201);
   });
 
   it("a nonce stays spent for the session's life, past the access token's own expiry, and across a restart of the process", async () => {
@@ -320,6 +339,38 @@ describe("rate limits", () => {
     expect(refused(await assertStepUp(r, { token: m.token }))).toEqual([429, "step_up_rate_limited"]);
     vi.setSystemTime(Date.now() + STEP_UP_ASSERT_LIMITS.app.windowMs + 1000);
     expect((await assertStepUp(r, { token: m.token })).statusCode).toBe(201);
+  });
+});
+
+describe("flood handling", () => {
+  it("a flood is not an audit flood: an app without the grant is audited once per window, a tripped budget once per window", async () => {
+    const r = await rig();
+    const sp = await member(r, "streampixels");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const codes: Record<number, number> = {};
+    for (let i = 0; i < 500; i += 1) {
+      const res = await assertStepUp(r, { app: "streampixels", headers: { "x-heimdall-app-secret": "streampixels-secret" }, token: sp.token, nonce: nonce(`f${i}`) });
+      codes[res.statusCode] = (codes[res.statusCode] ?? 0) + 1;
+    }
+    expect(codes).toEqual({ 403: STEP_UP_ASSERT_LIMITS.notPermitted.max, 429: 500 - STEP_UP_ASSERT_LIMITS.notPermitted.max });
+    const rows = (code: string) => auditOf(r, "step_up_assertion_refused").filter((e) => e.eventPayloadJson.code === code);
+    expect(rows("step_up_assertion_not_permitted")).toHaveLength(1);
+    expect(rows("step_up_rate_limited")).toHaveLength(1);
+    vi.setSystemTime(Date.now() + STEP_UP_ASSERT_LIMITS.notPermitted.windowMs + 1000);
+    await assertStepUp(r, { app: "streampixels", headers: { "x-heimdall-app-secret": "streampixels-secret" }, token: sp.token });
+    expect(rows("step_up_assertion_not_permitted")).toHaveLength(2);
+
+    // The same for the granted app's per-app and per-account budgets.
+    const m = await member(r);
+    const before = r.audit.length;
+    for (let i = 0; i < 300; i += 1) await assertStepUp(r, { token: "garbage", nonce: nonce(`g${i}`) });
+    expect(r.audit.length - before, "garbage-bearer refusals up to the budget, then one row for the trip").toBe(STEP_UP_ASSERT_LIMITS.app.max + 1);
+    vi.setSystemTime(Date.now() + STEP_UP_ASSERT_LIMITS.app.windowMs + 1000);
+    const mark = r.audit.length;
+    for (let i = 0; i < 30; i += 1) await assertStepUp(r, { token: m.token, nonce: nonce(`a${i}`) });
+    const accountRows = r.audit.slice(mark);
+    expect(accountRows.filter((e) => e.eventType === "step_up_asserted")).toHaveLength(STEP_UP_ASSERT_LIMITS.account.max);
+    expect(accountRows.filter((e) => e.eventPayloadJson.code === "step_up_rate_limited")).toHaveLength(1);
   });
 });
 

@@ -17,20 +17,22 @@ export class FixedWindowBudget {
     private readonly maxKeys = 4096,
   ) {}
 
-  /** Spend one attempt for `key`. Returns 0 when allowed, else the seconds until the window turns over. */
-  spend(key: string): number {
+  /**
+   * Spend one attempt for `key`. `n` counts attempts in the window, denied ones
+   * included, so a caller can act on the first denial (`n === max + 1`) and not
+   * on the flood behind it. `retryAfterSeconds` is 0 when allowed.
+   */
+  spend(key: string): { n: number; retryAfterSeconds: number } {
     const at = this.now();
-    const current = this.windows.get(key);
+    let current = this.windows.get(key);
     if (!current || at - current.startedAt >= this.limit.windowMs) {
       this.sweep(at);
-      this.windows.set(key, { startedAt: at, used: 1 });
-      return 0;
-    }
-    if (current.used >= this.limit.max) {
-      return Math.max(1, Math.ceil((current.startedAt + this.limit.windowMs - at) / 1000));
+      current = { startedAt: at, used: 0 };
+      this.windows.set(key, current);
     }
     current.used += 1;
-    return 0;
+    if (current.used <= this.limit.max) return { n: current.used, retryAfterSeconds: 0 };
+    return { n: current.used, retryAfterSeconds: Math.max(1, Math.ceil((current.startedAt + this.limit.windowMs - at) / 1000)) };
   }
 
   /** Drop turned-over windows once the table is full; if it is still full, the oldest key goes. */

@@ -951,18 +951,25 @@ async function resolveAccessAccount(
 }
 
 /** What an app may spend asserting step-up proofs: per member account, and per calling app. */
-export const STEP_UP_ASSERT_LIMITS: { account: FixedWindowLimit; app: FixedWindowLimit } = {
+export const STEP_UP_ASSERT_LIMITS: { account: FixedWindowLimit; app: FixedWindowLimit; notPermitted: FixedWindowLimit } = {
   account: { max: 10, windowMs: 600_000 },
   app: { max: 120, windowMs: 60_000 },
+  // An app whose profile has no grant, holding its own secret: a handful of refusals per window, no more.
+  notPermitted: { max: 5, windowMs: 60_000 },
 };
 
 export interface StepUpAssertBudgets {
   account: FixedWindowBudget;
   app: FixedWindowBudget;
+  notPermitted: FixedWindowBudget;
 }
 
 export function createStepUpAssertBudgets(now: () => number = () => Date.now()): StepUpAssertBudgets {
-  return { account: new FixedWindowBudget(STEP_UP_ASSERT_LIMITS.account, now), app: new FixedWindowBudget(STEP_UP_ASSERT_LIMITS.app, now) };
+  return {
+    account: new FixedWindowBudget(STEP_UP_ASSERT_LIMITS.account, now),
+    app: new FixedWindowBudget(STEP_UP_ASSERT_LIMITS.app, now),
+    notPermitted: new FixedWindowBudget(STEP_UP_ASSERT_LIMITS.notPermitted, now),
+  };
 }
 
 /**
@@ -971,8 +978,10 @@ export function createStepUpAssertBudgets(now: () => number = () => Date.now()):
  * what the route demands: the app's secret AND the member's live bearer for
  * that same app, the profile's explicit grant and method allowlist, a nonce
  * spent once per session, and a rate per account and per app. Every
- * refusal after the secret verified is recorded; a request without the secret
- * writes nothing, since anyone can send one. The audit rows carry a digest of
+ * refusal after the secret verified is recorded, except that a flood is not:
+ * a rate-limited refusal is recorded once per window per budget (its first),
+ * and an app without the grant is recorded once per window; a request without
+ * the secret writes nothing, since anyone can send one. The audit rows carry a digest of
  * the nonce, never the nonce, the bearer or the secret.
  */
 export async function assertStepUp(
@@ -989,7 +998,8 @@ export async function assertStepUp(
   const permitted = getAppProfile(appSlug)?.stepUpAssertion;
   let known: { accountId: string; sessionId: string } | undefined;
   let nonceDigest: string | undefined;
-  const refuse = async (statusCode: number, error: string, extra: Record<string, unknown> = {}): Promise<HandlerResult> => {
+  const refuse = async (statusCode: number, error: string, extra: Record<string, unknown> = {}, record = true): Promise<HandlerResult> => {
+    if (!record) return { statusCode, body: { error, ...extra } };
     await store.createAuditEvent({
       ...(known ? { accountId: known.accountId, sessionId: known.sessionId } : {}),
       appSlug,
@@ -999,13 +1009,17 @@ export async function assertStepUp(
     });
     return { statusCode, body: { error, ...extra } };
   };
-  const limited = (seconds: number) => refuse(429, "step_up_rate_limited", { retryAfterSeconds: seconds });
+  // Audit only the first denial of a window: the rows record that a budget tripped, not every request behind it.
+  const limited = (spent: { n: number; retryAfterSeconds: number }, max: number) =>
+    refuse(429, "step_up_rate_limited", { retryAfterSeconds: spent.retryAfterSeconds }, spent.n === max + 1);
 
   if (!permitted) {
-    return refuse(403, "step_up_assertion_not_permitted", { detail: `${appSlug} may not assert step-up proofs.` });
+    const spent = budgets.notPermitted.spend(appSlug);
+    if (spent.retryAfterSeconds) return limited(spent, STEP_UP_ASSERT_LIMITS.notPermitted.max);
+    return refuse(403, "step_up_assertion_not_permitted", { detail: `${appSlug} may not assert step-up proofs.` }, spent.n === 1);
   }
-  const appWait = budgets.app.spend(appSlug);
-  if (appWait) return limited(appWait);
+  const appSpent = budgets.app.spend(appSlug);
+  if (appSpent.retryAfterSeconds) return limited(appSpent, STEP_UP_ASSERT_LIMITS.app.max);
 
   const bearer = await resolveBearer(ctx, headers.authorization as string | undefined);
   if (!bearer) {
@@ -1016,8 +1030,8 @@ export async function assertStepUp(
   if (bearer.claims.aud !== appSlug) {
     return refuse(403, "bearer_app_mismatch", { detail: `The access token was not issued to ${appSlug}.` });
   }
-  const accountWait = budgets.account.spend(bearer.accountId);
-  if (accountWait) return limited(accountWait);
+  const accountSpent = budgets.account.spend(bearer.accountId);
+  if (accountSpent.retryAfterSeconds) return limited(accountSpent, STEP_UP_ASSERT_LIMITS.account.max);
 
   nonceDigest = createHash("sha256").update(`heimdall-step-up-nonce\0${sessionId}\0${input.nonce}`).digest("hex");
   if (!permitted.methods.includes(input.method)) {
@@ -2553,7 +2567,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           additionalProperties: false,
           properties: {
             method: { type: "string", minLength: 1, maxLength: 64 },
-            nonce: { type: "string", minLength: 16, maxLength: 128 },
+            // base64url alphabet: what a random token looks like, and no spaces, controls or lone surrogates.
+            nonce: { type: "string", pattern: "^[A-Za-z0-9_-]{16,128}$" },
           },
         },
       },
