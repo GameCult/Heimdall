@@ -278,7 +278,7 @@ describe("the method and the nonce", () => {
     expect((await assertStepUp(r, { token: second.token })).statusCode).toBe(201);
   });
 
-  it("a nonce is retained to the session's expiry as of the claim: a refresh slides the session past it, and then the nonce can be reused (documented limit)", async () => {
+  it("a nonce is retained to the session's expiry as of the claim plus the 10.5 min prune horizon; a refresh slides the session past that and the nonce can be reused (documented limit)", async () => {
     const r = await rig();
     const m = await member(r);
     vi.useFakeTimers({ toFake: ["Date"] });
@@ -289,11 +289,14 @@ describe("the method and the nonce", () => {
     const refreshed = await r.app.inject({ method: "POST", url: "/v1/apps/bifrost/sessions/refresh", payload: { refreshToken: m.issued.refreshToken } });
     expect(refreshed.statusCode).toBe(201);
     const token = refreshed.json().accessToken as string;
-    // Inside the retained horizon the replay is still refused, refreshed session or not.
-    expect(refused(await assertStepUp(r, { token, nonce: nonce("N") }))).toEqual([409, "step_up_nonce_replayed"]);
-    // Past the old expiry plus the store's prune margin, the next claim prunes N while the session lives on.
-    vi.setSystemTime(t0 + R + 11 * 60_000);
+    expect(refused(await assertStepUp(r, { token, nonce: nonce("N") })).join()).toBe("409,step_up_nonce_replayed");
+    // 10 min past the old expiry: a claim runs the prune, and N is still inside the 10.5 min horizon (10 min margin + 30 s skew).
+    vi.setSystemTime(t0 + R + 10 * 60_000);
     expect((await assertStepUp(r, { token, nonce: nonce("M") })).statusCode).toBe(201);
+    expect(refused(await assertStepUp(r, { token, nonce: nonce("N") }))).toEqual([409, "step_up_nonce_replayed"]);
+    // Past the horizon the next claim prunes N (lazily, with the claim) while the session lives on.
+    vi.setSystemTime(t0 + R + 10 * 60_000 + 31_000 + 2_000);
+    expect((await assertStepUp(r, { token, nonce: nonce("K") })).statusCode).toBe(201);
     expect((await assertStepUp(r, { token, nonce: nonce("N") })).statusCode).toBe(201);
   });
 
@@ -343,6 +346,18 @@ describe("rate limits", () => {
 });
 
 describe("flood handling", () => {
+  it("the not-permitted budget is per app: one app's flood neither blocks bifrost's own call nor another ungranted app's first refusal", async () => {
+    const r = await rig();
+    const sp = await member(r, "streampixels");
+    const rp = await member(r, "repixelizer");
+    const b = await member(r);
+    const as = (app: string, appSecret: string, token: string, i: number) => assertStepUp(r, { app, headers: { "x-heimdall-app-secret": appSecret }, token, nonce: nonce(`i${i}`) });
+    for (let i = 0; i < 50; i += 1) await as("streampixels", "streampixels-secret", sp.token, i);
+    expect((await as("streampixels", "streampixels-secret", sp.token, 99)).statusCode).toBe(429);
+    expect(refused(await as("repixelizer", "repixelizer-secret", rp.token, 1))).toEqual([403, "step_up_assertion_not_permitted"]);
+    expect((await assertStepUp(r, { token: b.token })).statusCode).toBe(201);
+  });
+
   it("a flood is not an audit flood: an app without the grant is audited once per window, a tripped budget once per window", async () => {
     const r = await rig();
     const sp = await member(r, "streampixels");
@@ -356,6 +371,7 @@ describe("flood handling", () => {
     const rows = (code: string) => auditOf(r, "step_up_assertion_refused").filter((e) => e.eventPayloadJson.code === code);
     expect(rows("step_up_assertion_not_permitted")).toHaveLength(1);
     expect(rows("step_up_rate_limited")).toHaveLength(1);
+    expect(rows("step_up_rate_limited")[0]!.eventPayloadJson.budget).toBe("notPermitted");
     vi.setSystemTime(Date.now() + STEP_UP_ASSERT_LIMITS.notPermitted.windowMs + 1000);
     await assertStepUp(r, { app: "streampixels", headers: { "x-heimdall-app-secret": "streampixels-secret" }, token: sp.token });
     expect(rows("step_up_assertion_not_permitted")).toHaveLength(2);
@@ -370,7 +386,8 @@ describe("flood handling", () => {
     for (let i = 0; i < 30; i += 1) await assertStepUp(r, { token: m.token, nonce: nonce(`a${i}`) });
     const accountRows = r.audit.slice(mark);
     expect(accountRows.filter((e) => e.eventType === "step_up_asserted")).toHaveLength(STEP_UP_ASSERT_LIMITS.account.max);
-    expect(accountRows.filter((e) => e.eventPayloadJson.code === "step_up_rate_limited")).toHaveLength(1);
+    const trips = accountRows.filter((e) => e.eventPayloadJson.code === "step_up_rate_limited");
+    expect(trips.map((e) => e.eventPayloadJson.budget)).toEqual(["account"]);
   });
 });
 

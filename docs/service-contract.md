@@ -649,10 +649,13 @@ Nonce: 16 to 128 characters of the base64url alphabet (`A-Za-z0-9_-`), so a
 random token fits and spaces, controls and lone surrogates are a 400 schema
 refusal. `method` is 1 to 64 characters and then must be in the profile's set.
 
-Order of refusals, each a closed `error` code:
+Schema validation (body shape, `method` length, the nonce pattern and length,
+the app slug) runs before the secret is checked and answers `400` with
+Fastify's fixed schema error, the same for every caller whatever the secret and
+never audited. Then the order of refusals, each a closed `error` code:
 
-- `401 app_auth_required`: missing, wrong or another app's secret. Checked
-  first; nothing is written.
+- `401 app_auth_required`: missing, wrong or another app's secret. The first
+  check of the handler; nothing is written.
 - `403 step_up_assertion_not_permitted`: the app's profile has no
   `stepUpAssertion` grant. Only `bifrost` has one; every other app is refused
   with its own secret. This branch has its own small budget (5 per 60 s per
@@ -678,7 +681,8 @@ Order of refusals, each a closed `error` code:
   The claim is the store's `oauth_state_uses` single-use primitive with phase
   `step_up_assert` and the key a SHA-256 of session id and nonce, so it holds
   across restarts and instances. **Retention is the session's expiry as of the
-  claim, plus the store's prune margin.** A refresh slides the session's expiry
+  claim plus 10.5 minutes (the 10 minute prune margin and 30 s clock skew), and
+  pruning is lazy: each successful claim deletes at most 50 expired rows.** A refresh slides the session's expiry
   without bound, so a nonce can be pruned while its session is still live and
   then be accepted again. Replaying it still needs the secret and a live
   bearer, which is the power to assert with a fresh nonce; the nonce guards a
@@ -698,13 +702,16 @@ the token's own `exp`.
 
 Receipts: each assertion writes the audit event `step_up_asserted`, and each
 refusal after the secret verified writes `step_up_assertion_refused`, except
-that a flood is not recorded row by row: a rate-limited refusal is recorded
-once per window per budget (its first), and an app without the grant once per
-window, with the
+that two kinds are not recorded row by row: a rate-limited refusal is recorded
+once per window per budget (its first; the row's `budget` names `app`,
+`account` or `notPermitted`), and an app without the grant once per window.
+Every other refusal under budget still writes a row each, up to about 121 a
+minute for a holder of the secret, and `audit_events` has no retention: that is
+an open follow-up. Rows carry the
 app, the account and session when the bearer resolved, `method` (null when it
-was not in the allowlist), `outcome`, `code` and `nonceDigest`. Never the
-secret, the bearer, the minted token or the nonce. A request without the secret
-writes nothing.
+was not in the allowlist), `outcome`, `code`, `budget` (rate-limit rows) and `nonceDigest`. Never the
+secret, the bearer, the minted token or the nonce. A request without the secret,
+or failing schema validation, writes nothing.
 
 Precondition: the route is usable only once the app holds the member's Heimdall
 bearer. Bifrost deliberately does not hold it today. Putting the bearer in a

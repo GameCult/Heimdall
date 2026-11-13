@@ -998,28 +998,31 @@ export async function assertStepUp(
   const permitted = getAppProfile(appSlug)?.stepUpAssertion;
   let known: { accountId: string; sessionId: string } | undefined;
   let nonceDigest: string | undefined;
+  let tripped: string | undefined;
   const refuse = async (statusCode: number, error: string, extra: Record<string, unknown> = {}, record = true): Promise<HandlerResult> => {
     if (!record) return { statusCode, body: { error, ...extra } };
     await store.createAuditEvent({
       ...(known ? { accountId: known.accountId, sessionId: known.sessionId } : {}),
       appSlug,
       eventType: "step_up_assertion_refused",
-      eventPayloadJson: { outcome: "refused", code: error, method: permitted?.methods.includes(input.method) ? input.method : null, nonceDigest: nonceDigest ?? null },
+      eventPayloadJson: { outcome: "refused", code: error, budget: tripped ?? null, method: permitted?.methods.includes(input.method) ? input.method : null, nonceDigest: nonceDigest ?? null },
       createdAt: new Date().toISOString(),
     });
     return { statusCode, body: { error, ...extra } };
   };
   // Audit only the first denial of a window: the rows record that a budget tripped, not every request behind it.
-  const limited = (spent: { n: number; retryAfterSeconds: number }, max: number) =>
-    refuse(429, "step_up_rate_limited", { retryAfterSeconds: spent.retryAfterSeconds }, spent.n === max + 1);
+  const limited = (budget: string, spent: { n: number; retryAfterSeconds: number }, max: number) => {
+    tripped = budget;
+    return refuse(429, "step_up_rate_limited", { retryAfterSeconds: spent.retryAfterSeconds }, spent.n === max + 1);
+  };
 
   if (!permitted) {
     const spent = budgets.notPermitted.spend(appSlug);
-    if (spent.retryAfterSeconds) return limited(spent, STEP_UP_ASSERT_LIMITS.notPermitted.max);
+    if (spent.retryAfterSeconds) return limited("notPermitted", spent, STEP_UP_ASSERT_LIMITS.notPermitted.max);
     return refuse(403, "step_up_assertion_not_permitted", { detail: `${appSlug} may not assert step-up proofs.` }, spent.n === 1);
   }
   const appSpent = budgets.app.spend(appSlug);
-  if (appSpent.retryAfterSeconds) return limited(appSpent, STEP_UP_ASSERT_LIMITS.app.max);
+  if (appSpent.retryAfterSeconds) return limited("app", appSpent, STEP_UP_ASSERT_LIMITS.app.max);
 
   const bearer = await resolveBearer(ctx, headers.authorization as string | undefined);
   if (!bearer) {
@@ -1031,7 +1034,7 @@ export async function assertStepUp(
     return refuse(403, "bearer_app_mismatch", { detail: `The access token was not issued to ${appSlug}.` });
   }
   const accountSpent = budgets.account.spend(bearer.accountId);
-  if (accountSpent.retryAfterSeconds) return limited(accountSpent, STEP_UP_ASSERT_LIMITS.account.max);
+  if (accountSpent.retryAfterSeconds) return limited("account", accountSpent, STEP_UP_ASSERT_LIMITS.account.max);
 
   nonceDigest = createHash("sha256").update(`heimdall-step-up-nonce\0${sessionId}\0${input.nonce}`).digest("hex");
   if (!permitted.methods.includes(input.method)) {
