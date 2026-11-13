@@ -348,6 +348,18 @@ for the account that holds it. The store role therefore holds DELETE on
 `linked_identities`, checked at startup. The HTTP side (`/v1/me/identities`) is
 in `service-contract.md`; an unlink needs a step-up proof inside 600 seconds.
 
+### Step-up proof has two sources
+
+An access token's `step_up_at` is set in exactly two places: the `sign_in`
+step-up callback (Heimdall asked the provider to re-authenticate; label
+`provider:<name>`) and `assertStepUp`, the app-asserted route (the app says it
+checked a factor; label from the profile's `stepUpAssertion.methods`). Both
+feed the one reader, the unlink check, and a refresh sets neither. The
+asserted route trusts the calling app and is bounded by the app secret, a live
+bearer for that app, the method allowlist, a nonce claimed once per session
+through `claimOAuthStateUse` (phase `step_up_assert`, no new table or grant),
+and in-process fixed-window limits (`src/fixed-window.ts`).
+
 ### Three nested guards
 
 1. **Single flight, per process.** `refreshesInFlight` is keyed by store, then

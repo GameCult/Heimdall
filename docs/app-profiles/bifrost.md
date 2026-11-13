@@ -77,3 +77,15 @@ patron points locally.
 This route is a bridge from auth-owned Patreon evidence to Bifrost-owned
 governance meaning. Heimdall still does not own points, votes, tiers, ledger
 history, or payout policy.
+
+## App-asserted step-up
+
+Bifrost's profile carries `stepUpAssertion: { methods: ["bifrost-passkey",
+"bifrost-email-code"] }`, the only such grant. With its secret and a member's
+live Heimdall bearer, Bifrost calls `POST /v1/apps/bifrost/step-up` with
+`{method, nonce}` after it has checked the factor itself, and receives an access
+token for the same session whose `step_up_at` and `step_up_method` satisfy
+Heimdall's unlink check. Bifrost must send a fresh nonce per assertion, keep
+the returned token only for the action it is for, and never send a method it did
+not verify: Heimdall cannot tell. Contract, codes, limits and what it does not
+prove are in `docs/service-contract.md`.
