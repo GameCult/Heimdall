@@ -11,6 +11,20 @@ import { providerCatalog } from "../src/providers.js";
 import { InMemoryStore } from "../src/store/index.js";
 import { createTestConfig, setCookieOf, stateOf } from "./oauth-flow.js";
 
+// Records the options of every inflate the app runs, so the bomb test can pin the output cap
+// itself instead of timing a refusal. Behaviour is the real inflate.
+const inflateCalls = vi.hoisted(() => [] as Array<{ maxOutputLength: number | undefined }>);
+vi.mock("node:zlib", async (importOriginal) => {
+  const real = await importOriginal<typeof import("node:zlib")>();
+  return {
+    ...real,
+    inflateRawSync: ((buf: Parameters<typeof real.inflateRawSync>[0], opts?: Parameters<typeof real.inflateRawSync>[1]) => {
+      inflateCalls.push({ maxOutputLength: opts?.maxOutputLength });
+      return real.inflateRawSync(buf, opts);
+    }) as typeof real.inflateRawSync,
+  };
+});
+
 // The consent cut for managed custody (docs/joystick-consent-flow.md): the ask,
 // the typed refusal, the receipt, and the signed-in page that lists and revokes.
 
@@ -220,7 +234,7 @@ describe("the ask", () => {
     const signedAsk = (ctx: ReturnType<typeof getHeimdallRuntimeContext>, jti: string, exp: number, text: Buffer) =>
       signJwt({ typ: "heimdall_consent_ask", iss: ctx.config.issuer, jti, iat: exp - 600, exp, ct: deflateRawSync(text).toString("base64url") }, ctx.keys);
 
-    it("is read up to 16 KB and no further: one byte over is refused, and a bomb is refused quickly", async () => {
+    it("is read up to 16 KB and no further: one byte over is refused, and a bomb is inflated under that cap", async () => {
       const { app } = await newApp();
       const ctx = getHeimdallRuntimeContext(app);
       const state = await startConnect(app);
@@ -228,9 +242,12 @@ describe("the ask", () => {
       const answerWith = (text: Buffer, decision: "decline" | "continue" = "decline") =>
         answer(app, state, decision, `__Host-heimdall-ask-${jti}=${signedAsk(ctx, jti, exp, text)}`, "application/json");
       expect((await answerWith(Buffer.alloc(16 * 1024 + 1, 97))).json()).toEqual({ error: "state_not_bound" });
-      const t0 = Date.now();
-      expect((await answerWith(Buffer.alloc(300 * 1024 * 1024))).json()).toEqual({ error: "state_not_bound" });
-      expect(Date.now() - t0).toBeLessThan(1500);
+      // A bomb: far past the cap once inflated. It is refused, and the inflate that refused it was
+      // handed the cap, so it never produced more than 16 KB (the property, not a wall-clock proxy).
+      inflateCalls.length = 0;
+      expect((await answerWith(Buffer.alloc(4 * 1024 * 1024))).json()).toEqual({ error: "state_not_bound" });
+      expect(inflateCalls.length).toBeGreaterThan(0);
+      expect(inflateCalls.every((c) => c.maxOutputLength !== undefined && c.maxOutputLength <= 16 * 1024)).toBe(true);
       // At the cap it is read.
       expect((await answerWith(Buffer.alloc(16 * 1024, 97))).json()).toMatchObject({ error: "consent_refused" });
     });
