@@ -4,6 +4,7 @@ import { type FastifyInstance } from "fastify";
 import { buildApp, getHeimdallRuntimeContext, startOAuthFlow } from "../src/app.js";
 import { resolveAppCaller } from "../src/app-caller.js";
 import { decodeJwt, signJwt } from "../src/signing.js";
+import { OAUTH_STATE_PRUNE_BATCH, OAUTH_STATE_PRUNE_MARGIN_MS, OAUTH_STATE_SKEW_MS } from "../src/store/types.js";
 import { createMockDiscordRuntime, createTestConfig, launchFlow, setCookieOf, stateOf } from "./oauth-flow.js";
 
 // Heimdall's OAuth states complete once, only in the browser that launched
@@ -280,23 +281,69 @@ describe("OAuth state binding", () => {
     });
   });
 
-  it("the memory store keeps a use record until the state's exp + 30 s skew", async () => {
-    const app = await newApp();
-    const ctx = getHeimdallRuntimeContext(app);
-    const claim = (jti: string, usedAt: number) =>
-      ctx.store.claimOAuthStateUse({
-        jti,
-        phase: "launch",
-        appSlug: "bifrost",
-        usedAt: new Date(usedAt).toISOString(),
-        expiresAt: new Date(1_000_000).toISOString(),
-      });
-    expect(await claim("a", 900_000)).toBe(true);
-    // Past exp but inside the skew a state still verifies, so its record must still refuse a replay.
-    expect(await claim("b", 1_000_000 + 29_999)).toBe(true);
-    expect(await claim("a", 1_000_000 + 29_999)).toBe(false);
-    expect(await claim("c", 1_000_000 + 30_000)).toBe(true);
-    expect(await claim("a", 1_000_000 + 30_000)).toBe(true);
+  describe("use-record retention", () => {
+    // Only Date is faked: the routes stamp each claim with the clock, and the rest of the event loop stays real.
+    const clockAt = (ms: number) => vi.useFakeTimers({ toFake: ["Date"], now: ms });
+    const seedStale = async (app: FastifyInstance, count: number, beforeMs: number) => {
+      const ctx = getHeimdallRuntimeContext(app);
+      for (let i = 0; i < count; i += 1) {
+        const expiresAt = new Date(beforeMs - i).toISOString();
+        await ctx.store.claimOAuthStateUse({ jti: `stale-${i}`, phase: "launch", appSlug: "bifrost", usedAt: expiresAt, expiresAt });
+      }
+    };
+
+    it("later claims never prune a live state: its launch and callback replays stay refused", async () => {
+      const app = await newApp();
+      const start = await bifrostStart(app);
+      const victim = await launchFlow(app, start);
+      const exp = decodeJwt(victim.state).payload.exp as number;
+
+      // More stale records than one batch, then another user's flow, whose claims do the pruning.
+      const staleBefore = Date.now() - OAUTH_STATE_SKEW_MS - OAUTH_STATE_PRUNE_MARGIN_MS;
+      await seedStale(app, OAUTH_STATE_PRUNE_BATCH + 10, staleBefore);
+      await launchFlow(app, await bifrostStart(app));
+
+      const launchReplay = await app.inject({ method: "GET", url: launchUrl(start) });
+      expect(launchReplay.json()).toEqual({ error: "state_already_launched" });
+
+      // The callback is not pruned either: it completes once, and its replay is refused.
+      expect((await callback(app, victim.state, victim.cookie, "code=victim-code")).statusCode).toBe(201);
+      expect((await callback(app, victim.state, victim.cookie, "code=victim-code")).json()).toEqual({ error: "state_already_used" });
+
+      // Inside exp + skew the state still verifies, and the record still refuses it.
+      clockAt((exp + OAUTH_STATE_SKEW_MS / 1000 - 1) * 1000);
+      await launchFlow(app, await bifrostStart(app));
+      const lateReplay = await app.inject({ method: "GET", url: launchUrl(start) });
+      expect(lateReplay.json()).toEqual({ error: "state_already_launched" });
+
+    });
+
+    it("once its records are pruned, an expired state is refused as state_expired, by the state and not the record", async () => {
+      const app = await newApp();
+      const ctx = getHeimdallRuntimeContext(app);
+      const start = await bifrostStart(app);
+      const victim = await launchFlow(app, start);
+      const exp = decodeJwt(victim.state).payload.exp as number;
+
+      // Past exp + skew + margin the victim's launch record is prunable; a new claim removes it.
+      const pruneAt = (exp + (OAUTH_STATE_SKEW_MS + OAUTH_STATE_PRUNE_MARGIN_MS) / 1000 + 1) * 1000;
+      clockAt(pruneAt);
+      await launchFlow(app, await bifrostStart(app));
+      const record = {
+        jti: decodeJwt(victim.state).payload.jti as string,
+        phase: "launch" as const,
+        appSlug: "bifrost" as const,
+        usedAt: new Date(pruneAt).toISOString(),
+        expiresAt: new Date(exp * 1000).toISOString(),
+      };
+      // The record is gone, as the store (not the route) would now let the claim through ...
+      expect(await ctx.store.claimOAuthStateUse(record)).toBe(true);
+      // ... yet the routes refuse the state itself.
+      const launchReplay = await app.inject({ method: "GET", url: launchUrl(start) });
+      expect(launchReplay.statusCode).toBe(400);
+      expect(launchReplay.json()).toEqual({ error: "state_expired" });
+      expect((await callback(app, victim.state, victim.cookie)).json()).toEqual({ error: "state_expired" });
+    });
   });
 
   it("a provider refusal from the launching browser still denies the attempt, once", async () => {
