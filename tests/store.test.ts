@@ -249,6 +249,10 @@ describe.each(unlinkStores)("linked_identities writes, %s", (_name, make) => {
     expect(await store.listStoredLinkedIdentitiesForAccount(b.id)).toEqual([]);
   });
 
+  it.skipIf(realPostgresOnly)("moveIdentities keeps one contract: moved, replayed, conflict, lapsed proof, coverage, reversal", async () => {
+    await exerciseMoveContract(await make());
+  });
+
   it("upsert by the holder still refreshes its own row, keeping its id", async () => {
     const { store, a } = await twoAccounts();
     const first = await store.upsertLinkedIdentity(input(a.id, "u1", { username: "one" }));
@@ -477,9 +481,10 @@ describe("PostgresStore.checkSchema", () => {
       "capability_grants",
       "entitlement_snapshots",
       "consent_receipts",
+      "identity_moves",
       "audit_events",
     ]);
-    expect(REQUIRED_COLUMNS).toHaveLength(113);
+    expect(REQUIRED_COLUMNS).toHaveLength(121);
     expect(REQUIRED_COLUMNS).toEqual(
       expect.arrayContaining([
         { table: "auth_completions", column: "code", type: "TEXT", nullable: false },
@@ -490,7 +495,7 @@ describe("PostgresStore.checkSchema", () => {
         { table: "auth_completions", column: "attempt_id", type: "TEXT", nullable: true },
       ])
     );
-    expect(REQUIRED_KEYS).toHaveLength(17);
+    expect(REQUIRED_KEYS).toHaveLength(19);
     expect(REQUIRED_KEYS).toEqual(
       expect.arrayContaining([
         { table: "linked_identities", columns: "provider,provider_user_id", predicate: "" },
@@ -498,6 +503,7 @@ describe("PostgresStore.checkSchema", () => {
         { table: "oauth_state_uses", columns: "jti,phase", predicate: "" },
         { table: "consent_receipts", columns: "revokes_receipt_id", predicate: "revokes_receipt_id IS NOT NULL" },
         { table: "consent_receipts", columns: "account_id,id", predicate: "" },
+        { table: "identity_moves", columns: "reverses_move_id", predicate: "reverses_move_id IS NOT NULL" },
         { table: "entitlement_snapshots", columns: "account_id,provider,scope", predicate: "" },
         { table: "auth_completions", columns: "app_slug,attempt_id", predicate: "attempt_id IS NOT NULL AND consumed_at IS NULL" },
       ])
@@ -648,7 +654,106 @@ async function exerciseStore(store: PostgresStore): Promise<Set<string>> {
   expect(second.receipt.id).toBe(first.receipt.id);
   expect((await s.listConsentReceipts(account.id)).map((r) => r.kind)).toEqual(["grant", "revocation"]);
   await s.createAuditEvent({ eventType: "probe", eventPayloadJson: {}, createdAt: now });
+  const target = await s.createAccount({ createdAt: now, lastSeenAt: now });
+  await s.upsertLinkedIdentity({ ...identity, accountId: target.id, provider: "patreon", providerUserId: "u-target" });
+  const moveId = `move-${randomUUID()}`;
+  expect((await s.moveIdentities({ moveId, appSlug: "bifrost", fromAccountId: account.id, toAccountId: target.id, identityIds: "all", covers: "account", proofSessions: [], proof: { from: [], to: null }, at: now })).kind).toBe("moved");
+  expect((await s.findIdentityMove(moveId))?.id).toBe(moveId);
+  expect(await s.resolveAccount(account.id)).toBe(target.id);
   return called;
+}
+
+/**
+ * The move contract both stores keep, once. Each case builds its own accounts,
+ * so the order of cases proves nothing and a store holding earlier moves is fine.
+ */
+async function exerciseMoveContract(store: HeimdallStore): Promise<void> {
+  const at = "2026-11-14T12:00:00.000Z";
+  const later = "2999-01-01T00:00:00.000Z";
+  const proofTiers = { from: [{ tier: "strong" as const, method: "bifrost-passkey", identityId: null }], to: { tier: "weak" as const, method: null, identityId: null } };
+  const side = async (providers: Array<"discord" | "google" | "patreon">) => {
+    const account = await store.createAccount({ createdAt: at, lastSeenAt: at });
+    const rows = [];
+    for (const provider of providers) {
+      rows.push(await store.upsertLinkedIdentity({ accountId: account.id, provider, providerUserId: `${provider}-${randomUUID()}`, accessTokenEncrypted: "A", refreshTokenEncrypted: "R", scopes: [], profileJson: {}, createdAt: at, updatedAt: at }));
+    }
+    const sessionId = randomUUID();
+    await store.createSession({ id: sessionId, accountId: account.id, appSlug: "bifrost", createdAt: at, lastSeenAt: at, expiresAt: later, accessRevision: 1, claimsJson: {} });
+    return { account, rows, proofSession: { appSlug: "bifrost" as const, sessionId, accountId: account.id, accessRevision: 1 } };
+  };
+  const input = (from: Awaited<ReturnType<typeof side>>, to: Awaited<ReturnType<typeof side>>, extra: Record<string, unknown> = {}) => ({
+    moveId: `move-${randomUUID()}`,
+    appSlug: "bifrost" as const,
+    fromAccountId: from.account.id,
+    toAccountId: to.account.id,
+    identityIds: "all" as const,
+    covers: "account" as const,
+    proofSessions: [from.proofSession, to.proofSession],
+    proof: proofTiers,
+    at,
+    ...extra,
+  });
+  const held = async (a: { account: { id: string } }) => (await store.listStoredLinkedIdentitiesForAccount(a.account.id)).map((i) => i.id).sort();
+
+  // Moved: rows, credentials, sessions and the record.
+  const a = await side(["discord", "google"]);
+  const b = await side(["patreon"]);
+  const first = input(a, b);
+  const moved = await store.moveIdentities(first);
+  expect(moved.kind).toBe("moved");
+  expect(await held(a)).toEqual([]);
+  expect(await held(b)).toEqual([...a.rows.map((r) => r.id), ...b.rows.map((r) => r.id)].sort());
+  for (const row of await store.listStoredLinkedIdentitiesForAccount(b.account.id)) {
+    if (a.rows.some((r) => r.id === row.id)) expect([row.accessTokenEncrypted, row.refreshTokenEncrypted]).toEqual([undefined, undefined]);
+    else expect(row.accessTokenEncrypted, "the destination's own credential is untouched").toBe("A");
+  }
+  const record = await store.findIdentityMove(first.moveId);
+  expect(record).toMatchObject({ id: first.moveId, fromAccountId: a.account.id, toAccountId: b.account.id, proof: proofTiers, createdAt: at });
+  expect(record!.moved.map((m) => m.credentialStripped)).toEqual([true, true]);
+  expect((await store.findSession("bifrost", a.proofSession.sessionId))!.accessRevision).toBe(2);
+  expect((await store.findSession("bifrost", b.proofSession.sessionId))!.accessRevision).toBe(1);
+  expect(await store.resolveAccount(a.account.id)).toBe(b.account.id);
+  expect(await store.resolveAccount(b.account.id)).toBe(b.account.id);
+
+  // Replay answers from the row, even though the proof session is gone; a different pair is a conflict.
+  expect(await store.moveIdentities(first)).toEqual({ kind: "replayed", move: record });
+  const c = await side(["discord"]);
+  expect(await store.moveIdentities({ ...first, toAccountId: c.account.id })).toEqual({ kind: "move_id_conflict" });
+  expect(await store.moveIdentities({ ...first, reversesMoveId: "x" })).toEqual({ kind: "move_id_conflict" });
+
+  // Into or out of an alias.
+  expect((await store.moveIdentities(input(a, c, { proofSessions: [c.proofSession] }))).kind).toBe("already_moved");
+  expect((await store.moveIdentities(input(c, a, { proofSessions: [c.proofSession] }))).kind).toBe("already_moved");
+
+  // A proof session that was revoked, or has moved on a revision, has lapsed.
+  const d = await side(["google"]);
+  const e = await side(["patreon"]);
+  await store.revokeSession("bifrost", e.proofSession.sessionId, e.account.id, 1, at);
+  expect((await store.moveIdentities(input(d, e))).kind).toBe("proof_lapsed");
+  expect(await held(d)).toHaveLength(1);
+
+  // Coverage and conflict.
+  const f = await side(["discord", "google"]);
+  const g = await side(["patreon"]);
+  expect((await store.moveIdentities(input(f, g, { covers: [f.rows[0]!.id] }))).kind).toBe("identity_not_proved");
+  expect((await store.moveIdentities(input(f, g, { identityIds: ["nope"] }))).kind).toBe("identity_not_found");
+  const h = await side(["discord"]);
+  expect(await store.moveIdentities(input(f, h))).toEqual({ kind: "provider_conflict", provider: "discord" });
+  expect(await held(f)).toHaveLength(2);
+  const onlyDiscord = await store.moveIdentities(input(f, g, { identityIds: [f.rows[0]!.id], covers: [f.rows[0]!.id] }));
+  expect(onlyDiscord.kind).toBe("moved");
+  expect(await held(f)).toEqual([f.rows[1]!.id]);
+
+  // Reversal: moves exactly what the forward carried, once, and a reversal is not itself reversible.
+  const forward = (moved as { move: { id: string } }).move;
+  const back = input(b, a, { reversesMoveId: forward.id, proofSessions: [], identityIds: a.rows.map((r) => r.id), covers: a.rows.map((r) => r.id) });
+  const reversed = await store.moveIdentities(back);
+  expect(reversed.kind).toBe("moved");
+  expect(await held(a)).toEqual(a.rows.map((r) => r.id).sort());
+  expect(await held(b)).toEqual(b.rows.map((r) => r.id));
+  expect(await store.resolveAccount(a.account.id)).toBe(a.account.id);
+  expect((await store.moveIdentities({ ...back, moveId: `move-${randomUUID()}` })).kind).toBe("not_reversible");
+  expect((await store.moveIdentities(input(a, b, { reversesMoveId: back.moveId, proofSessions: [], identityIds: "all" }))).kind).toBe("not_reversible");
 }
 
 // Against a real Postgres, through the startup path itself: createStore, with
@@ -803,6 +908,83 @@ describe.skipIf(!adminUrl)("startup against a live Postgres (HEIMDALL_TEST_PG_AD
     expect(await start(urlFor(name, role, rolePassword), false)).toBe(refusal("SCHEMA_PRIVILEGES"));
   });
 
+  it("startup refuses a role that lacks INSERT or SELECT on identity_moves", async () => {
+    expect(STORE_TABLE_PRIVILEGES.identity_moves).toEqual(["SELECT", "INSERT"]);
+    for (const [kept, dropped] of [[["SELECT"], "INSERT"], [["INSERT"], "SELECT"]] as const) {
+      const { name, owner } = await appliedDatabase();
+      await grant(owner, { ...STORE_TABLE_PRIVILEGES, identity_moves: kept });
+      expect(await start(urlFor(name, role, rolePassword), false), `without ${dropped}`).toBe(refusal("SCHEMA_PRIVILEGES"));
+    }
+  });
+
+  it("on real Postgres: the move contract holds", async () => {
+    const { owner } = await appliedDatabase();
+    await exerciseMoveContract(new PostgresStore(owner));
+  });
+
+  describe("concurrent moves", () => {
+    const at = "2026-11-14T12:00:00.000Z";
+    async function pair(store: PostgresStore) {
+      const make = async (provider: "discord" | "patreon") => {
+        const account = await store.createAccount({ createdAt: at, lastSeenAt: at });
+        await store.upsertLinkedIdentity({ accountId: account.id, provider, providerUserId: `${provider}-${randomUUID()}`, scopes: [], profileJson: {}, createdAt: at, updatedAt: at });
+        const sessionId = randomUUID();
+        await store.createSession({ id: sessionId, accountId: account.id, appSlug: "bifrost", createdAt: at, lastSeenAt: at, expiresAt: "2999-01-01T00:00:00.000Z", accessRevision: 1, claimsJson: {} });
+        return { id: account.id, proof: { appSlug: "bifrost" as const, sessionId, accountId: account.id, accessRevision: 1 } };
+      };
+      return { x: await make("discord"), y: await make("patreon") };
+    }
+    const request = (from: { id: string; proof: object }, to: { id: string; proof: object }, moveId: string) => ({
+      moveId,
+      appSlug: "bifrost" as const,
+      fromAccountId: from.id,
+      toAccountId: to.id,
+      identityIds: "all" as const,
+      covers: "account" as const,
+      proofSessions: [from.proof, to.proof] as never,
+      proof: { from: [], to: null },
+      at,
+    });
+
+    it("opposite moves A->B and B->A over two pools leave one applied and never deadlock, ten rounds", async () => {
+      const { name, owner } = await appliedDatabase();
+      const storeA = new PostgresStore(owner);
+      const other = fixturePool(urlFor(name));
+      cleanup.push(async () => {
+        await other.end();
+      });
+      const storeB = new PostgresStore(other);
+      for (let round = 0; round < 10; round += 1) {
+        const { x, y } = await pair(storeA);
+        const results = await Promise.all([
+          storeA.moveIdentities(request(x, y, `move-${randomUUID()}`)),
+          storeB.moveIdentities(request(y, x, `move-${randomUUID()}`)),
+        ]);
+        const kinds = results.map((r) => r.kind).sort();
+        expect(kinds[0], `round ${round}: ${kinds}`).toBe("moved");
+        expect(["already_moved", "proof_lapsed"], `round ${round}: ${kinds}`).toContain(kinds[1]);
+        const held = (await storeA.listStoredLinkedIdentitiesForAccount(x.id)).length + (await storeA.listStoredLinkedIdentitiesForAccount(y.id)).length;
+        expect(held, "no identity is lost or duplicated").toBe(2);
+      }
+    });
+
+    it("two concurrent identical moveIds: one moved, one replayed", async () => {
+      const { name, owner } = await appliedDatabase();
+      const storeA = new PostgresStore(owner);
+      const other = fixturePool(urlFor(name));
+      cleanup.push(async () => {
+        await other.end();
+      });
+      const storeB = new PostgresStore(other);
+      for (let round = 0; round < 5; round += 1) {
+        const { x, y } = await pair(storeA);
+        const body = request(x, y, `move-${randomUUID()}`);
+        const results = await Promise.all([storeA.moveIdentities(body), storeB.moveIdentities(body)]);
+        expect(results.map((r) => r.kind).sort(), `round ${round}`).toEqual(["moved", "replayed"]);
+      }
+    });
+  });
+
   it("on real Postgres: an upsert never moves an identity, and concurrent unlinks of the last two leave one", async () => {
     const { name, owner } = await appliedDatabase();
     const clientA = new PostgresStore(owner);
@@ -920,6 +1102,7 @@ describe.skipIf(!adminUrl)("startup against a live Postgres (HEIMDALL_TEST_PG_AD
     const appliedByIndex = {
       auth_completions_attempt_unconsumed_unique_idx: "auth_completions",
       consent_receipts_revokes_unique_idx: "consent_receipts",
+      identity_moves_reverses_unique_idx: "identity_moves",
     };
     const partialKeys = REQUIRED_KEYS.flatMap((key, index) => (key.predicate === "" ? [] : [{ key, index }]));
     expect(partialKeys.map(({ key }) => key.table).sort()).toEqual(Object.values(appliedByIndex).sort());
