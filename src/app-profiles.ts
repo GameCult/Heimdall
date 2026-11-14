@@ -65,6 +65,13 @@ export interface AppProfile {
    * Absent for every app that may not assert.
    */
   stepUpAssertion?: { methods: readonly string[] };
+  /**
+   * The app may move linked identities between two accounts it holds proofs
+   * for (POST /v1/apps/{app}/identity-moves). `accountProofMethods` are the
+   * asserted step_up_method labels that prove a whole account rather than one
+   * login; each must be one of stepUpAssertion.methods. Absent: the app may not move.
+   */
+  identityMoves?: { accountProofMethods: readonly string[] };
 }
 
 /** The membership signal shared by every app that gates on GameCult membership. */
@@ -164,6 +171,8 @@ const bifrostProfile: AppProfile = {
   allowedReturnOrigins: ["https://bifrost.gamecult.org"],
   startRequiresAppCaller: true,
   stepUpAssertion: { methods: ["bifrost-passkey", "bifrost-email-code"] },
+  // A passkey proves the account; an email code proves an inbox, which is one login's worth at most.
+  identityMoves: { accountProofMethods: ["bifrost-passkey"] },
   capabilities: [
     {
       key: "member_access",

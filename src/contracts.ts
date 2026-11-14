@@ -162,6 +162,10 @@ export interface AccessClaimPayload {
    * exactly when step_up_at is; never carried by a refresh.
    */
   step_up_method?: string;
+  /** Epoch seconds of the sign-in this access token was minted by, with auth_identity_id; absent unless a sign_in callback minted it, and never carried by a refresh. */
+  auth_at?: number;
+  /** The linked_identities.id the sign-in came through; present exactly when auth_at is. It is the only record of which login proved the session, and it describes the sign-in, not an asserted factor. */
+  auth_identity_id?: string;
   display_name?: string;
   app: {
     slug: AppSlug;

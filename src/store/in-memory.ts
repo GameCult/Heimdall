@@ -26,9 +26,13 @@ import {
   type StoredLinkedIdentity,
   type StoredSession,
   type StoredPrivateCommandReceipt,
+  type MoveIdentitiesInput,
+  type MoveResult,
+  type StoredIdentityMove,
   type UnlinkResult,
   type UpsertLinkedIdentityInput,
 } from "./types.js";
+import { decideMove, movedRecord } from "./identity-move.js";
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -63,6 +67,7 @@ export class InMemoryStore implements HeimdallStore {
   private readonly entitlementSnapshots = new Map<string, CreateEntitlementSnapshotInput>();
   private readonly auditEvents = new Map<string, CreateAuditEventInput>();
   private readonly consentReceipts: StoredConsentReceipt[] = [];
+  private readonly identityMoves = new Map<string, StoredIdentityMove>();
 
   async ensureSchema(): Promise<void> {
     return;
@@ -200,6 +205,84 @@ export class InMemoryStore implements HeimdallStore {
     if (held <= 1) return { kind: "last_identity" };
     this.linkedIdentities.delete(identityId);
     return { kind: "unlinked", identity: clone(target) };
+  }
+
+  /** No await between the reads and the writes: the event loop is the lock. */
+  async moveIdentities(input: MoveIdentitiesInput): Promise<MoveResult> {
+    const at = Date.parse(input.at);
+    const forwardMove = input.reversesMoveId !== undefined ? this.identityMoves.get(input.reversesMoveId) : undefined;
+    const sourceIdentities = [...this.linkedIdentities.values()].filter((identity) => identity.accountId === input.fromAccountId);
+    const destinationIdentities = [...this.linkedIdentities.values()].filter((identity) => identity.accountId === input.toAccountId);
+    const decision = decideMove(input, {
+      existing: this.identityMoves.get(input.moveId) ?? null,
+      forward: forwardMove ? { move: forwardMove, reversed: this.isReversed(forwardMove.id) } : null,
+      proofSessionsLive: input.proofSessions.every((proof) => {
+        const session = this.sessions.get(proof.sessionId);
+        return (
+          session !== undefined &&
+          session.appSlug === proof.appSlug &&
+          session.accountId === proof.accountId &&
+          session.accessRevision === proof.accessRevision &&
+          Date.parse(session.expiresAt) > at
+        );
+      }),
+      sourceIdentities: clone(sourceIdentities),
+      destinationProviders: new Set(destinationIdentities.map((identity) => identity.provider)),
+      sourceIsAlias: sourceIdentities.length === 0 && this.hasUnreversedMoveFrom(input.fromAccountId),
+      destinationIsAlias: destinationIdentities.length === 0 && this.hasUnreversedMoveFrom(input.toAccountId),
+    });
+    if (decision.kind === "replayed") return { kind: "replayed", move: clone(decision.move) };
+    if (decision.kind === "refused") return decision.result;
+
+    for (const identity of decision.identities) {
+      const row = this.linkedIdentities.get(identity.id)!;
+      row.accountId = input.toAccountId;
+      row.updatedAt = input.at;
+      delete row.accessTokenEncrypted;
+      delete row.refreshTokenEncrypted;
+      delete row.tokenExpiresAt;
+      delete row.refreshFailedAt;
+    }
+    for (const session of this.sessions.values()) {
+      if (session.accountId === input.fromAccountId && Date.parse(session.expiresAt) > at) {
+        session.expiresAt = input.at;
+        session.lastSeenAt = input.at;
+        session.accessRevision += 1;
+      }
+    }
+    for (const row of [...this.pendingLinks.values(), ...this.authCompletions.values()]) {
+      if (row.accountId === input.fromAccountId && !row.consumedAt && Date.parse(row.expiresAt) > at) row.expiresAt = input.at;
+    }
+    const move: StoredIdentityMove = {
+      id: input.moveId,
+      appSlug: input.appSlug,
+      fromAccountId: input.fromAccountId,
+      toAccountId: input.toAccountId,
+      ...(input.reversesMoveId !== undefined ? { reversesMoveId: input.reversesMoveId } : {}),
+      moved: movedRecord(decision.identities),
+      proof: clone(input.proof),
+      createdAt: input.at,
+    };
+    this.identityMoves.set(move.id, clone(move));
+    return { kind: "moved", move };
+  }
+
+  async findIdentityMove(moveId: string): Promise<StoredIdentityMove | null> {
+    return clone(this.identityMoves.get(moveId) ?? null);
+  }
+
+  async resolveAccount(accountId: string): Promise<string> {
+    if ([...this.linkedIdentities.values()].some((identity) => identity.accountId === accountId)) return accountId;
+    const unreversed = [...this.identityMoves.values()].filter((move) => move.fromAccountId === accountId && !this.isReversed(move.id));
+    return unreversed.at(-1)?.toAccountId ?? accountId;
+  }
+
+  private isReversed(moveId: string): boolean {
+    return [...this.identityMoves.values()].some((move) => move.reversesMoveId === moveId);
+  }
+
+  private hasUnreversedMoveFrom(accountId: string): boolean {
+    return [...this.identityMoves.values()].some((move) => move.fromAccountId === accountId && !this.isReversed(move.id));
   }
 
   async updateLinkedIdentityCredential(

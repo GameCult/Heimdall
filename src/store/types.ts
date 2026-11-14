@@ -59,6 +59,60 @@ export type UnlinkResult =
   | { kind: "last_identity" }
   | { kind: "not_found" };
 
+/** One login a move carried; `credentialStripped` is history written at the move (the row held a token the move dropped). */
+export interface MovedIdentity {
+  id: string;
+  provider: Provider;
+  providerUserId: string;
+  credentialStripped: boolean;
+}
+
+/** What each side's proofs were, as tiers and methods only: never a token, sid, email or name. */
+export interface IdentityMoveProof {
+  from: { tier: "strong" | "weak"; method: string | null; identityId: string | null }[];
+  to: { tier: "strong" | "weak"; method: string | null; identityId: string | null } | null;
+}
+
+/** The append-only record of one move. */
+export interface StoredIdentityMove {
+  id: string;
+  appSlug: AppSlug;
+  fromAccountId: string;
+  toAccountId: string;
+  reversesMoveId?: string;
+  moved: MovedIdentity[];
+  proof: IdentityMoveProof;
+  createdAt: string;
+}
+
+export interface MoveIdentitiesInput {
+  moveId: string;
+  appSlug: AppSlug;
+  fromAccountId: string;
+  toAccountId: string;
+  /** The logins to carry, or every login the source holds. */
+  identityIds: readonly string[] | "all";
+  /** What the caller's from-proofs cover: the whole account, or exactly these logins. */
+  covers: "account" | readonly string[];
+  /** Sessions the proofs rested on; each must still be live when the transaction commits. */
+  proofSessions: readonly { appSlug: AppSlug; sessionId: string; accountId: string; accessRevision: number }[];
+  reversesMoveId?: string;
+  proof: IdentityMoveProof;
+  at: string;
+}
+
+/** What moveIdentities decided. Refusals write nothing. */
+export type MoveResult =
+  | { kind: "moved"; move: StoredIdentityMove }
+  | { kind: "replayed"; move: StoredIdentityMove }
+  | { kind: "move_id_conflict" }
+  | { kind: "proof_lapsed" }
+  | { kind: "already_moved" }
+  | { kind: "identity_not_found" }
+  | { kind: "identity_not_proved" }
+  | { kind: "provider_conflict"; provider: Provider }
+  | { kind: "not_reversible" };
+
 export interface UpsertLinkedIdentityInput {
   id?: string;
   accountId: string;
@@ -339,6 +393,22 @@ export interface HeimdallStore {
    * `not_found`).
    */
   unlinkLinkedIdentity(accountId: string, identityId: string): Promise<UnlinkResult>;
+  /**
+   * The only writer that sets a linked identity's account to another account,
+   * in one transaction: lock both accounts (in id order), answer a repeated
+   * moveId from its row, re-check the proof sessions, refuse what the rules
+   * refuse, move the rows with their credentials stripped, revoke the source's
+   * sessions and expire its pending links and unredeemed completions, and
+   * append the identity_moves row. A reversal (`reversesMoveId`) moves back
+   * exactly what the forward move carried. The destination never loses an identity.
+   */
+  moveIdentities(input: MoveIdentitiesInput): Promise<MoveResult>;
+  findIdentityMove(moveId: string): Promise<StoredIdentityMove | null>;
+  /**
+   * One hop, derived and never stored: the destination of an unreversed move
+   * from `accountId` when it now holds no identity, else `accountId` itself.
+   */
+  resolveAccount(accountId: string): Promise<string>;
   /**
    * Serialise decisions about one row's credential. `decide` receives the row
    * as read under the lock (never a caller's snapshot) and the decision is

@@ -24,7 +24,7 @@ import {
   type OAuthStartRequest,
   type Provider,
 } from "./contracts.js";
-import { issueAccessClaim, signAssertedStepUpClaim, STEP_UP_PROOF_TTL_SECONDS, type IssueAccessClaimInput } from "./claims.js";
+import { issueAccessClaim, proofCovers, proofTier, signAssertedStepUpClaim, STEP_UP_PROOF_TTL_SECONDS, type IssueAccessClaimInput } from "./claims.js";
 import { FixedWindowBudget, type FixedWindowLimit } from "./fixed-window.js";
 import { builtInAppProfiles, getAppProfile, isAllowedReturnOrigin, serializeAppProfile, admitsProviderForMode, callbackMint, isUsableConnectionTarget } from "./app-profiles.js";
 import { renderBrowserHandoffPage } from "./browser-handoff.js";
@@ -1976,8 +1976,9 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           await store.touchAccount(account.id, nowIso, accountUpdates);
         }
 
+        let signedInIdentity: StoredLinkedIdentity;
         try {
-          await store.upsertLinkedIdentity(buildLinkedIdentityInput(account.id));
+          signedInIdentity = await store.upsertLinkedIdentity(buildLinkedIdentityInput(account.id));
         } catch (error) {
           // The check above is the fast path; this is the write refusing a move another account won the race for.
           if (error instanceof IdentityHeldElsewhereError) {
@@ -2043,6 +2044,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           ...(mint === "custody_only" ? { withoutCapabilities: true } : {}),
           // Proof of a fresh re-authentication, from the signed state alone: only a sign_in the app started with stepUp.
           ...(statePayload.step_up && statePayload.mode === "sign_in" ? { stepUpAt: nowEpochSeconds(), stepUpMethod: `provider:${statePayload.provider}` } : {}),
+          // Which login proved this session, and when: only a sign_in, so a link or connect never counts as a sign-in.
+          ...(statePayload.mode === "sign_in" ? { authAt: nowEpochSeconds(), authIdentityId: signedInIdentity.id } : {}),
         };
         if (account.displayName !== undefined) {
           issueInput.displayName = account.displayName;
@@ -2911,8 +2914,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       grantsReply(reply);
       const { accountId, claims } = bearer;
       const nowS = nowEpochSeconds();
-      const provedAt = claims.step_up_at;
-      if (typeof provedAt !== "number" || provedAt > nowS || nowS - provedAt > STEP_UP_PROOF_TTL_SECONDS) {
+      if (proofTier(claims, nowS) !== "strong") {
         reply.code(403);
         return {
           error: "step_up_required",
