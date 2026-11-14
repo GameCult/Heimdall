@@ -216,6 +216,29 @@ CREATE UNIQUE INDEX IF NOT EXISTS consent_receipts_revokes_unique_idx
 CREATE INDEX IF NOT EXISTS consent_receipts_account_idx
   ON consent_receipts(account_id, created_at);
 
+-- One row per identity move, append-only: no UPDATE and no DELETE, and no
+-- ON DELETE CASCADE, so the record outlives nothing it names. moved_json is
+-- [{id, provider, providerUserId, credentialStripped}]; proof_json is
+-- {from: [{tier, method, identityId}], to: {...} | null}. Never a token, sid,
+-- email or name. A move is reversed once: the second row naming it conflicts.
+CREATE TABLE IF NOT EXISTS identity_moves (
+  id TEXT PRIMARY KEY,
+  app_slug TEXT NOT NULL,
+  from_account_id TEXT NOT NULL REFERENCES accounts(id),
+  to_account_id TEXT NOT NULL REFERENCES accounts(id),
+  reverses_move_id TEXT REFERENCES identity_moves(id),
+  moved_json JSONB NOT NULL,
+  proof_json JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS identity_moves_reverses_unique_idx
+  ON identity_moves(reverses_move_id)
+  WHERE reverses_move_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS identity_moves_from_idx
+  ON identity_moves(from_account_id);
+
 CREATE TABLE IF NOT EXISTS audit_events (
   id TEXT PRIMARY KEY,
   account_id TEXT,

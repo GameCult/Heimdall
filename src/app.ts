@@ -24,7 +24,7 @@ import {
   type OAuthStartRequest,
   type Provider,
 } from "./contracts.js";
-import { issueAccessClaim, signAssertedStepUpClaim, STEP_UP_PROOF_TTL_SECONDS, type IssueAccessClaimInput } from "./claims.js";
+import { issueAccessClaim, proofCovers, proofTier, signAssertedStepUpClaim, STEP_UP_PROOF_TTL_SECONDS, type IssueAccessClaimInput } from "./claims.js";
 import { FixedWindowBudget, type FixedWindowLimit } from "./fixed-window.js";
 import { builtInAppProfiles, getAppProfile, isAllowedReturnOrigin, serializeAppProfile, admitsProviderForMode, callbackMint, isUsableConnectionTarget } from "./app-profiles.js";
 import { renderBrowserHandoffPage } from "./browser-handoff.js";
@@ -47,6 +47,7 @@ import {
   OAUTH_STATE_SKEW_MS,
   type CreateAccountInput,
   type StoredCapabilityGrant,
+  type StoredIdentityMove,
   type StoredLinkedIdentity,
   type UpsertLinkedIdentityInput,
 } from "./store/types.js";
@@ -1064,6 +1065,184 @@ export async function assertStepUp(
   };
 }
 
+export const MOVE_ID_PATTERN = "^[A-Za-z0-9_-]{16,64}$";
+
+export interface MoveIdentitiesBody {
+  moveId: string;
+  fromProofs: string[];
+  toProof?: string;
+  identityIds?: string[];
+  reversesMoveId?: string;
+}
+
+/** The answer a move gives, derived from its stored row so a replay is byte-identical to the first answer. */
+function moveReceipt(move: StoredIdentityMove) {
+  const tier = (proofs: { tier: "strong" | "weak" }[]) => (proofs.some((proof) => proof.tier === "strong") ? "strong" : "weak");
+  return {
+    moveId: move.id,
+    accountId: move.toAccountId,
+    movedIdentityIds: move.moved.map((moved) => moved.id),
+    proof: { from: tier(move.proof.from), to: move.proof.to ? move.proof.to.tier : null },
+    ...(move.reversesMoveId !== undefined ? { reversesMoveId: move.reversesMoveId } : {}),
+  };
+}
+
+/**
+ * POST /v1/apps/{app}/identity-moves: the one sanctioned way a login changes
+ * account. The caller's secret and its profile's identityMoves grant open the
+ * route; the accounts come only from the proofs (live bearers of this app,
+ * fresh by proofTier), never from the body, an email or a name. A proof
+ * through login X moves X; only an asserted account proof (the profile's
+ * accountProofMethods) speaks for the whole account. The store decides and
+ * commits; this route verifies, maps refusals to fixed codes, then writes the
+ * revocation receipts the move owes (revokeLiveGrants stays their one writer)
+ * and the audit row. A replayed moveId is answered before the proofs are
+ * verified, because the first success revoked the source's sessions.
+ */
+export async function moveIdentitiesRoute(
+  ctx: Pick<HeimdallRuntimeContext, "config" | "keys" | "store">,
+  revokeLiveGrants: (accountId: string, provider: Provider, receipts: Parameters<typeof grantViews>[0], at: string) => Promise<string[]>,
+  appSlug: AppSlug,
+  headers: Record<string, string | string[] | undefined>,
+  body: MoveIdentitiesBody
+): Promise<HandlerResult> {
+  const { config, keys, store } = ctx;
+  const refuse = (statusCode: number, error: string, extra: Record<string, unknown> = {}): HandlerResult => ({ statusCode, body: { error, ...extra } });
+  if (!resolveAppCaller(config, appSlug, headers)) return refuse(401, "app_auth_required");
+  const grant = getAppProfile(appSlug)?.identityMoves;
+  if (!grant) return refuse(403, "not_allowed_for_app");
+
+  // The providers a move carried away from its source that the source no longer holds: their grants are taken back under the source.
+  const settleGrants = async (move: StoredIdentityMove) => {
+    const held = new Set((await store.listStoredLinkedIdentitiesForAccount(move.fromAccountId)).map((identity) => identity.provider));
+    const at = new Date().toISOString();
+    for (const provider of new Set(move.moved.map((moved) => moved.provider))) {
+      if (!held.has(provider)) await revokeLiveGrants(move.fromAccountId, provider, await store.listConsentReceipts(move.fromAccountId), at);
+    }
+  };
+
+  const existing = await store.findIdentityMove(body.moveId);
+  if (existing) {
+    const signedFor = (token: string | undefined, accountId: string) => {
+      const verification = token ? verifyJwt(token, keys.publicKey) : null;
+      return (
+        verification?.valid === true &&
+        verification.payload.typ === "heimdall_access" &&
+        verification.payload.iss === config.issuer &&
+        verification.payload.aud === appSlug &&
+        verification.payload.account_id === accountId
+      );
+    };
+    const same =
+      existing.appSlug === appSlug &&
+      existing.reversesMoveId === body.reversesMoveId &&
+      body.fromProofs.every((token) => signedFor(token, existing.fromAccountId)) &&
+      (existing.reversesMoveId !== undefined ? body.toProof === undefined : signedFor(body.toProof, existing.toAccountId));
+    if (!same) return refuse(409, "move_id_conflict");
+    await settleGrants(existing);
+    return { statusCode: 200, body: moveReceipt(existing) };
+  }
+
+  let forward: StoredIdentityMove | null = null;
+  if (body.reversesMoveId !== undefined) {
+    forward = await store.findIdentityMove(body.reversesMoveId);
+    if (!forward || forward.appSlug !== appSlug || forward.reversesMoveId !== undefined) return refuse(409, "not_reversible");
+  }
+
+  const nowS = nowEpochSeconds();
+  const resolve = (token: string) => resolveBearer(ctx, `Bearer ${token}`, appSlug);
+  const fromBearers = [];
+  for (const token of body.fromProofs) {
+    const bearer = await resolve(token);
+    if (!bearer) return refuse(403, "proof_invalid", { proof: "from" });
+    fromBearers.push(bearer);
+  }
+  const fromAccountId = fromBearers[0]!.accountId;
+  if (fromBearers.some((bearer) => bearer.accountId !== fromAccountId)) return refuse(403, "proof_invalid", { proof: "from" });
+  let toBearer: ResolvedBearer | null = null;
+  if (forward === null) {
+    toBearer = await resolve(body.toProof!);
+    if (!toBearer) return refuse(403, "proof_invalid", { proof: "to" });
+  } else if (fromAccountId !== forward.toAccountId) {
+    return refuse(409, "not_reversible");
+  }
+  const toAccountId = toBearer?.accountId ?? forward!.fromAccountId;
+  if (fromAccountId === toAccountId) return refuse(409, "same_account");
+
+  const proofOf = (bearer: ResolvedBearer, tier: "strong" | "weak") => ({
+    tier,
+    method: tier === "strong" && typeof bearer.claims.step_up_method === "string" ? bearer.claims.step_up_method : null,
+    identityId: typeof bearer.claims.auth_identity_id === "string" ? bearer.claims.auth_identity_id : null,
+  });
+  const fromProof = [];
+  for (const bearer of fromBearers) {
+    const tier = proofTier(bearer.claims, nowS);
+    if (!tier) return refuse(403, "proof_stale", { proof: "from" });
+    fromProof.push(proofOf(bearer, tier));
+  }
+  const toTier = toBearer ? proofTier(toBearer.claims, nowS) : null;
+  if (toBearer && !toTier) return refuse(403, "proof_stale", { proof: "to" });
+
+  const coverage = fromBearers.map((bearer) => proofCovers(bearer.claims, grant.accountProofMethods, nowS));
+  if (coverage.every((covered) => covered === null)) return refuse(403, "identity_not_proved");
+  const covers = coverage.includes("account") ? "account" : coverage.filter((covered): covered is string => covered !== null);
+
+  const at = new Date().toISOString();
+  const result = await store.moveIdentities({
+    moveId: body.moveId,
+    appSlug,
+    fromAccountId,
+    toAccountId,
+    identityIds: forward ? forward.moved.map((moved) => moved.id) : (body.identityIds ?? "all"),
+    covers,
+    proofSessions: [...fromBearers, ...(toBearer ? [toBearer] : [])].map((bearer) => ({
+      appSlug,
+      sessionId: bearer.claims.sid as string,
+      accountId: bearer.accountId,
+      accessRevision: bearer.claims.access_revision as number,
+    })),
+    ...(body.reversesMoveId !== undefined ? { reversesMoveId: body.reversesMoveId } : {}),
+    proof: { from: fromProof, to: toBearer && toTier ? proofOf(toBearer, toTier) : null },
+    at,
+  });
+  switch (result.kind) {
+    case "proof_lapsed":
+      return refuse(403, "proof_invalid");
+    case "already_moved":
+    case "not_reversible":
+    case "move_id_conflict":
+      return refuse(409, result.kind);
+    case "provider_conflict":
+      return refuse(409, "provider_conflict", { provider: result.provider });
+    case "identity_not_found":
+      return refuse(404, "identity_not_found");
+    case "identity_not_proved":
+      return refuse(403, "identity_not_proved");
+    case "replayed":
+      await settleGrants(result.move);
+      return { statusCode: 200, body: moveReceipt(result.move) };
+    case "moved": {
+      const { move } = result;
+      await settleGrants(move);
+      await store.createAuditEvent({
+        accountId: move.fromAccountId,
+        appSlug,
+        eventType: "identity_moved",
+        eventPayloadJson: {
+          moveId: move.id,
+          toAccountId: move.toAccountId,
+          movedIdentityIds: move.moved.map((moved) => moved.id),
+          providers: move.moved.map((moved) => moved.provider),
+          tiers: { from: moveReceipt(move).proof.from, to: moveReceipt(move).proof.to },
+          reversesMoveId: move.reversesMoveId ?? null,
+        },
+        createdAt: at,
+      });
+      return { statusCode: 200, body: moveReceipt(move) };
+    }
+  }
+}
+
 const grantsPageTokenType = "heimdall_grants_page";
 const grantsPageTokenTtlSeconds = 600;
 
@@ -1976,8 +2155,9 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           await store.touchAccount(account.id, nowIso, accountUpdates);
         }
 
+        let signedInIdentity: StoredLinkedIdentity;
         try {
-          await store.upsertLinkedIdentity(buildLinkedIdentityInput(account.id));
+          signedInIdentity = await store.upsertLinkedIdentity(buildLinkedIdentityInput(account.id));
         } catch (error) {
           // The check above is the fast path; this is the write refusing a move another account won the race for.
           if (error instanceof IdentityHeldElsewhereError) {
@@ -2043,6 +2223,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
           ...(mint === "custody_only" ? { withoutCapabilities: true } : {}),
           // Proof of a fresh re-authentication, from the signed state alone: only a sign_in the app started with stepUp.
           ...(statePayload.step_up && statePayload.mode === "sign_in" ? { stepUpAt: nowEpochSeconds(), stepUpMethod: `provider:${statePayload.provider}` } : {}),
+          // Which login proved this session, and when: only a sign_in, so a link or connect never counts as a sign-in.
+          ...(statePayload.mode === "sign_in" ? { authAt: nowEpochSeconds(), authIdentityId: signedInIdentity.id } : {}),
         };
         if (account.displayName !== undefined) {
           issueInput.displayName = account.displayName;
@@ -2911,8 +3093,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       grantsReply(reply);
       const { accountId, claims } = bearer;
       const nowS = nowEpochSeconds();
-      const provedAt = claims.step_up_at;
-      if (typeof provedAt !== "number" || provedAt > nowS || nowS - provedAt > STEP_UP_PROOF_TTL_SECONDS) {
+      if (proofTier(claims, nowS) !== "strong") {
         reply.code(403);
         return {
           error: "step_up_required",
@@ -2946,6 +3127,44 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
         unlinked: { id: identity.id, provider: identity.provider, providerUserId: identity.providerUserId },
         identities: await identityViews(accountId),
       };
+    }
+  );
+
+  // The sanctioned mover of logins between accounts: see moveIdentitiesRoute. Registered here because it
+  // needs revokeLiveGrants, which belongs to this scope.
+  app.post<{ Params: { appSlug: AppSlug }; Body: MoveIdentitiesBody }>(
+    "/v1/apps/:appSlug/identity-moves",
+    {
+      schema: {
+        params: {
+          type: "object",
+          required: ["appSlug"],
+          additionalProperties: false,
+          properties: { appSlug: { type: "string", enum: [...appSlugs] } },
+        },
+        body: {
+          type: "object",
+          required: ["moveId", "fromProofs"],
+          additionalProperties: false,
+          properties: {
+            moveId: { type: "string", pattern: MOVE_ID_PATTERN },
+            fromProofs: { type: "array", minItems: 1, maxItems: 8, items: { type: "string", minLength: 1, maxLength: 8192 } },
+            toProof: { type: "string", minLength: 1, maxLength: 8192 },
+            identityIds: { type: "array", minItems: 1, maxItems: 32, uniqueItems: true, items: { type: "string", minLength: 1 } },
+            reversesMoveId: { type: "string", pattern: MOVE_ID_PATTERN },
+          },
+          // A forward move names its destination proof; a reversal names the move and nothing else about who or what.
+          oneOf: [
+            { required: ["toProof"], not: { anyOf: [{ required: ["reversesMoveId"] }] } },
+            { required: ["reversesMoveId"], not: { anyOf: [{ required: ["toProof"] }, { required: ["identityIds"] }] } },
+          ],
+        },
+      },
+    },
+    async (request, reply) => {
+      const result = await moveIdentitiesRoute({ config, keys, store }, revokeLiveGrants, request.params.appSlug, request.headers, request.body);
+      reply.code(result.statusCode).header("cache-control", "no-store");
+      return result.body;
     }
   );
 

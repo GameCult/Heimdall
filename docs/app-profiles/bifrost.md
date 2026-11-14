@@ -96,3 +96,18 @@ ticket would turn cookie theft into bearer theft and, with a passkey or email
 code, into unlink power. And unlink accepts any method: a `bifrost-email-code`
 proof can unlink an identity a Google re-authentication would have guarded.
 Requiring a method per route is the later hardening (identity moves).
+
+## Identity moves
+
+Bifrost's profile carries `identityMoves: { accountProofMethods:
+["bifrost-passkey"] }`, the only such grant (its methods are a subset of
+`stepUpAssertion.methods`). With its secret, `POST /v1/apps/bifrost/identity-moves`
+moves logins from one Heimdall account to another when it presents fresh proofs
+of both: Bifrost's merge saga owns survivor choice, preview and undo timing;
+Heimdall moves what the proofs cover. A proof through one login moves only that
+login; an asserted `bifrost-passkey` proof covers the whole source account;
+`bifrost-email-code` proves an inbox and does not. A multi-login source without a
+passkey therefore needs one fresh sign-in per login. Until the Google client is
+live, a member's strong proof is the asserted passkey only; Discord and Patreon
+give weak (300 s) proofs. Contract, refusal order and idempotency are in
+`docs/service-contract.md`.

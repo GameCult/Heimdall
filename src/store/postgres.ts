@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient, type QueryResultRow } from "pg";
 import { type AppSlug, type HeimdallAuthAttemptStatus, type LinkedIdentityInput, type Provider } from "../contracts.js";
+import { decideMove, movedRecord, type MoveFacts } from "./identity-move.js";
 import { CREATE_SCHEMA_SQL, REQUIRED_COLUMNS, REQUIRED_KEYS, REQUIRED_TABLES } from "./schema.js";
 import {
   type CreateAccountInput,
@@ -19,6 +20,9 @@ import {
   type CreatePrivateCommandReceiptInput,
   type HeimdallStore,
   IdentityHeldElsewhereError,
+  type MoveIdentitiesInput,
+  type MoveResult,
+  type StoredIdentityMove,
   OAUTH_STATE_PRUNE_BATCH,
   oauthStatePruneCutoffMs,
   type StoredAccount,
@@ -173,6 +177,42 @@ function mapAccountRow(row: AccountRow): StoredAccount {
   }
 
   return account;
+}
+
+interface IdentityMoveRow extends QueryResultRow {
+  id: string;
+  app_slug: AppSlug;
+  from_account_id: string;
+  to_account_id: string;
+  reverses_move_id: string | null;
+  moved_json: StoredIdentityMove["moved"];
+  proof_json: StoredIdentityMove["proof"];
+  created_at: string;
+}
+
+async function selectIdentityMove(db: Pick<Pool, "query">, moveId: string): Promise<StoredIdentityMove | null> {
+  const result = await db.query<IdentityMoveRow>("SELECT * FROM identity_moves WHERE id = $1", [moveId]);
+  const row = result.rows[0];
+  if (!row) return null;
+  return {
+    id: row.id,
+    appSlug: row.app_slug,
+    fromAccountId: row.from_account_id,
+    toAccountId: row.to_account_id,
+    ...(row.reverses_move_id ? { reversesMoveId: row.reverses_move_id } : {}),
+    moved: row.moved_json,
+    proof: row.proof_json,
+    createdAt: new Date(row.created_at).toISOString(),
+  };
+}
+
+/** A move from this account that no reversal names: the account's identities went elsewhere. */
+async function hasUnreversedMoveFrom(db: Pick<Pool, "query">, accountId: string): Promise<boolean> {
+  const result = await db.query(
+    "SELECT 1 FROM identity_moves m WHERE m.from_account_id = $1 AND NOT EXISTS (SELECT 1 FROM identity_moves r WHERE r.reverses_move_id = m.id) LIMIT 1",
+    [accountId]
+  );
+  return (result.rowCount ?? 0) > 0;
 }
 
 function mapLinkedIdentityRow(row: LinkedIdentityRow): StoredLinkedIdentity {
@@ -457,6 +497,9 @@ export function samePredicate(declared: string, actual: string, keyColumns: stri
  * expired oauth_state_uses rows (which needs SELECT for its WHERE), and the one
  * linked_identities row an unlink names (unlinkLinkedIdentity, the only
  * delete there; it needs SELECT for its WHERE and for the account's count).
+ * identity_moves is append-only. moveIdentities is the statement that updates
+ * linked_identities.account_id (its one writer), sessions, pending_links and
+ * auth_completions, all of which already hold UPDATE.
  * audit_events is written and never read back.
  */
 export const STORE_TABLE_PRIVILEGES: Readonly<Record<string, readonly ("SELECT" | "INSERT" | "UPDATE" | "DELETE")[]>> = {
@@ -471,6 +514,7 @@ export const STORE_TABLE_PRIVILEGES: Readonly<Record<string, readonly ("SELECT" 
   capability_grants: ["SELECT", "INSERT"],
   entitlement_snapshots: ["SELECT", "INSERT", "UPDATE"],
   consent_receipts: ["SELECT", "INSERT"],
+  identity_moves: ["SELECT", "INSERT"],
   audit_events: ["INSERT"],
 };
 
@@ -851,6 +895,108 @@ export class PostgresStore implements HeimdallStore {
     } finally {
       client.release();
     }
+  }
+
+  async moveIdentities(input: MoveIdentitiesInput): Promise<MoveResult> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      try {
+        // Both accounts, one statement each in id order, before anything is read: opposite moves queue here
+        // instead of deadlocking. The order is the code's own, not whatever order a plan locks a set in.
+        for (const id of [input.fromAccountId, input.toAccountId].sort()) {
+          await client.query("SELECT id FROM accounts WHERE id = $1 FOR UPDATE", [id]);
+        }
+        const existing = await selectIdentityMove(client, input.moveId);
+        let forward: MoveFacts["forward"] = null;
+        if (input.reversesMoveId !== undefined) {
+          const forwardMove = await selectIdentityMove(client, input.reversesMoveId);
+          const reversal = forwardMove ? await client.query("SELECT 1 FROM identity_moves WHERE reverses_move_id = $1", [forwardMove.id]) : null;
+          forward = forwardMove ? { move: forwardMove, reversed: (reversal?.rowCount ?? 0) > 0 } : null;
+        }
+        let proofSessionsLive = true;
+        for (const proof of input.proofSessions) {
+          const live = await client.query(
+            "SELECT 1 FROM sessions WHERE id = $1 AND app_slug = $2 AND account_id = $3 AND access_revision = $4 AND expires_at > $5",
+            [proof.sessionId, proof.appSlug, proof.accountId, proof.accessRevision, input.at]
+          );
+          if (!live.rowCount) proofSessionsLive = false;
+        }
+        const source = await client.query<LinkedIdentityRow>(
+          "SELECT * FROM linked_identities WHERE account_id = $1 ORDER BY created_at ASC, id ASC FOR UPDATE",
+          [input.fromAccountId]
+        );
+        const destination = await client.query<{ provider: Provider }>("SELECT provider FROM linked_identities WHERE account_id = $1", [input.toAccountId]);
+        const sourceIdentities = source.rows.map(mapLinkedIdentityRow);
+        const decision = decideMove(input, {
+          existing,
+          forward,
+          proofSessionsLive,
+          sourceIdentities,
+          destinationProviders: new Set(destination.rows.map((row) => row.provider)),
+          sourceIsAlias: sourceIdentities.length === 0 && (await hasUnreversedMoveFrom(client, input.fromAccountId)),
+          destinationIsAlias: destination.rowCount === 0 && (await hasUnreversedMoveFrom(client, input.toAccountId)),
+        });
+        if (decision.kind !== "move") {
+          await client.query("ROLLBACK");
+          return decision.kind === "replayed" ? { kind: "replayed", move: decision.move } : decision.result;
+        }
+        const ids = decision.identities.map((identity) => identity.id);
+        await client.query(
+          `UPDATE linked_identities
+           SET account_id = $2, access_token_encrypted = NULL, refresh_token_encrypted = NULL,
+               token_expires_at = NULL, refresh_failed_at = NULL, updated_at = $3
+           WHERE id = ANY($1) AND account_id = $4`,
+          [ids, input.toAccountId, input.at, input.fromAccountId]
+        );
+        await client.query(
+          "UPDATE sessions SET expires_at = $2, last_seen_at = $2, access_revision = access_revision + 1 WHERE account_id = $1 AND expires_at > $2",
+          [input.fromAccountId, input.at]
+        );
+        for (const table of ["pending_links", "auth_completions"]) {
+          await client.query(
+            `UPDATE ${table} SET expires_at = $2 WHERE account_id = $1 AND consumed_at IS NULL AND expires_at > $2`,
+            [input.fromAccountId, input.at]
+          );
+        }
+        const move: StoredIdentityMove = {
+          id: input.moveId,
+          appSlug: input.appSlug,
+          fromAccountId: input.fromAccountId,
+          toAccountId: input.toAccountId,
+          ...(input.reversesMoveId !== undefined ? { reversesMoveId: input.reversesMoveId } : {}),
+          moved: movedRecord(decision.identities),
+          proof: input.proof,
+          createdAt: input.at,
+        };
+        try {
+          await client.query(
+            `INSERT INTO identity_moves (id, app_slug, from_account_id, to_account_id, reverses_move_id, moved_json, proof_json, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+            [move.id, move.appSlug, move.fromAccountId, move.toAccountId, nullable(move.reversesMoveId), JSON.stringify(move.moved), JSON.stringify(move.proof), move.createdAt]
+          );
+        } catch (error) {
+          // The row is the arbiter of a race the locks did not serialise (a reversal of the same move through another pool).
+          if ((error as { code?: string }).code !== "23505") throw error;
+          await client.query("ROLLBACK");
+          const winner = await this.findIdentityMove(input.moveId);
+          if (!winner) return { kind: "not_reversible" };
+          const again = decideMove(input, { existing: winner, forward: null, proofSessionsLive: true, sourceIdentities: [], destinationProviders: new Set(), sourceIsAlias: false, destinationIsAlias: false });
+          return again.kind === "replayed" ? { kind: "replayed", move: again.move } : { kind: "move_id_conflict" };
+        }
+        await client.query("COMMIT");
+        return { kind: "moved", move };
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      }
+    } finally {
+      client.release();
+    }
+  }
+
+  async findIdentityMove(moveId: string): Promise<StoredIdentityMove | null> {
+    return selectIdentityMove(this.pool, moveId);
   }
 
   async updateLinkedIdentityCredential(

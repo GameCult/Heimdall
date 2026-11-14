@@ -720,8 +720,9 @@ cookie ticket would turn cookie theft into bearer theft and, with
 Bifrost keeps the bearer is its own decision and is not made here.
 
 Unlink accepts any method today. A `bifrost-email-code` proof unlinks an
-identity a Google re-authentication would have guarded. Requiring a method per
-route (identity moves first) is the later hardening and is not in this change.
+identity a Google re-authentication would have guarded. Identity moves
+(below) are the first route to require a method for whole-account coverage;
+unlink is unchanged.
 
 What this does not prove: Heimdall cannot see the passkey or the code. It trusts
 the calling app's word, exactly as it trusts `stepUpRequested` (asked, not
@@ -731,6 +732,71 @@ the rate limits. A compromised Bifrost can assert proofs only for members whose
 live bearer it holds. `identity_unlinked` records the proof's `stepUpMethod`
 (`provider:<name>`, an app label, or null), and unlink does not yet require any
 particular method.
+
+### `POST /v1/apps/{appSlug}/identity-moves`
+
+The one sanctioned way a login changes account (`moveIdentities` is the only
+writer of `linked_identities.account_id`). Bifrost owns the merge: survivor
+choice, preview, grace and undo timing. Heimdall receives the choice as which
+proofs fill which side, renders no preview and picks nothing. Only a profile with
+`identityMoves` may call it (today bifrost).
+
+Credential: the app's secret. Body (closed; unknown properties are ignored, and
+no account is ever named by the body):
+
+- `moveId` (`^[A-Za-z0-9_-]{16,64}$`): the caller's idempotency key.
+- `fromProofs`: 1 to 8 live Heimdall access tokens for this app, all of the
+  source account.
+- Forward move: `toProof` (a live token of the destination) and optionally
+  `identityIds` (1 to 32; default every login the source holds).
+- Reversal: `reversesMoveId` instead of `toProof`/`identityIds`. It moves back
+  exactly the logins the forward move carried, once; `fromProofs` must be of the
+  forward move's destination. A reversal is not itself reversible.
+
+Each proof must be fresh: a step-up inside 600 s (`strong`) or a sign-in inside
+300 s (`weak`), by `proofTier`, the same freshness rule the unlink route reads.
+A token with neither claim (a refresh, a link) is stale.
+
+Coverage: a proof through login X (`auth_identity_id`) moves X and nothing else
+from that account. Only a strong proof asserted with a method in the profile's
+`identityMoves.accountProofMethods` (`bifrost-passkey`; not `bifrost-email-code`,
+which proves an inbox) speaks for the whole account. Moving several logins takes
+one proof per login, or the passkey.
+
+Order of refusals, each a fixed code: `401 app_auth_required`; `403
+not_allowed_for_app`; a replayed `moveId` is answered next (below); `409
+not_reversible` (reversal names a missing, foreign or reversal move); `403
+proof_invalid` `{proof: "from"|"to"}` (not a live bearer of this app, or
+`fromProofs` naming two accounts); `409 same_account`; `403 proof_stale`
+`{proof}`; `403 identity_not_proved`; then the store: `403 proof_invalid` (a
+proof session lapsed under the lock), `409 already_moved` (either side is an
+alias), `409 provider_conflict` `{provider}`, `409 not_reversible`, `409
+move_id_conflict`, `404 identity_not_found`, `403 identity_not_proved`. A refusal
+body is `{error, detail?, proof?, provider?}` and never names an account id, an
+identity the caller did not send, an email or a name.
+
+On success, in one transaction: the logins move to the destination with their
+stored credentials stripped; every live session of the source is revoked and its
+pending links and unredeemed completions expire; one append-only `identity_moves`
+row is written. Afterwards, for each moved provider the source no longer holds,
+its live grants get revocation receipts under the source, and `identity_moved`
+is audited. Answer `200`, `Cache-Control: no-store`:
+`{moveId, accountId: <destination>, movedIdentityIds, proof: {from, to}, reversesMoveId?}`,
+with `proof.from` `strong` if any from-proof was strong and `to` null on a
+reversal.
+
+Idempotency: the same `moveId` with the same app, accounts and `reversesMoveId`
+answers the stored receipt byte for byte, even though the first success revoked
+the source's sessions: the proofs are then checked for a valid Heimdall
+signature, issuer, type and audience, and account, not for liveness. The replay
+re-runs the revocation receipts, so a crash between commit and receipts heals on
+the caller's retry. Anything else under a used `moveId` is `409 move_id_conflict`.
+
+What a move leaves: an account holding no login with an unreversed move from it
+is an alias: derived at move time, never stored, and no route resolves it. A
+move into or out of an alias is `already_moved`. Bearers of
+the destination keep their old identity list until they refresh. A sign-in
+through a moved login lands on the destination because the row moved.
 
 ### `POST /v1/apps/{appSlug}/managed-credentials/resolve`
 
@@ -869,6 +935,8 @@ Current claim payload fields:
 - `access_revision`
 - `step_up_at` optional: epoch seconds of the proof; set only by a `sign_in` step-up callback or `POST /v1/apps/{appSlug}/step-up`, never by a refresh
 - `step_up_method` optional: present exactly when `step_up_at` is; `provider:<name>` for a provider step-up sign-in, otherwise the method label the app asserted
+- `auth_at` optional: epoch seconds of the sign-in this token was minted by; set only by a `sign_in` callback (never link, connect or refresh), always with `auth_identity_id`
+- `auth_identity_id` optional: the `linked_identities.id` that sign-in came through; the only record of which login proved the session. An asserted step-up spreads the bearer's claims, so these pass through unchanged
 - `display_name` optional
 - `app.slug`
 - `app.profile_version`

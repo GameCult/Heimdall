@@ -14,6 +14,9 @@ import { type CreateSessionInput, type HeimdallStore } from "./store/types.js";
 /** How long a step-up sign-in's proof stays good for an action that demands it (identity unlink). */
 export const STEP_UP_PROOF_TTL_SECONDS = 600;
 
+/** How long a plain sign-in's proof stays good for an action that accepts a weak proof (an identity move). */
+export const AUTH_PROOF_TTL_SECONDS = 300;
+
 function nowEpochSeconds(): number {
   return Math.floor(Date.now() / 1000);
 }
@@ -55,6 +58,10 @@ export interface IssueAccessClaimInput {
   stepUpAt?: number;
   /** Required with stepUpAt (`provider:<name>`); the claim never carries one without the other. */
   stepUpMethod?: string;
+  /** Epoch seconds of the sign-in that minted this token, with authIdentityId (both or neither). Only a sign_in callback sets them; a refresh, link or connect never does. */
+  authAt?: number;
+  /** The linked_identities.id the sign-in came through. */
+  authIdentityId?: string;
 }
 
 export interface IssuedAccessClaimResult {
@@ -144,6 +151,11 @@ export async function issueAccessClaim(options: {
     }
   }
 
+  if (options.input.authAt !== undefined && options.input.authIdentityId !== undefined) {
+    claimSet.auth_at = options.input.authAt;
+    claimSet.auth_identity_id = options.input.authIdentityId;
+  }
+
   if (options.input.displayName) {
     claimSet.display_name = options.input.displayName;
   }
@@ -228,4 +240,39 @@ export function signAssertedStepUpClaim(options: {
     step_up_method: options.method,
   };
   return { accessToken: signJwt(claimSet, options.keys), claimSet, stepUpAt };
+}
+
+/**
+ * How fresh a bearer's proof of the member is, from its claims alone:
+ * `strong` when a step-up (Heimdall's or the app's asserted one) happened in
+ * the last STEP_UP_PROOF_TTL_SECONDS, else `weak` when the sign-in did in the
+ * last AUTH_PROOF_TTL_SECONDS, else null. The one freshness rule: identity
+ * unlink and identity moves both read it.
+ */
+export function proofTier(claims: Record<string, unknown>, nowS: number): "strong" | "weak" | null {
+  const within = (at: unknown, window: number) => typeof at === "number" && at <= nowS && nowS - at <= window;
+  if (within(claims.step_up_at, STEP_UP_PROOF_TTL_SECONDS)) return "strong";
+  if (within(claims.auth_at, AUTH_PROOF_TTL_SECONDS)) return "weak";
+  return null;
+}
+
+/**
+ * What a fresh proof covers of its account: `account` (every login) only for a
+ * strong proof whose step_up_method the app's profile lists as an account
+ * proof; otherwise the one login the sign-in came through (its id); otherwise
+ * nothing. A proof through login X never speaks for the account's other logins.
+ */
+export function proofCovers(
+  claims: Record<string, unknown>,
+  accountProofMethods: readonly string[],
+  nowS: number
+): "account" | string | null {
+  if (
+    proofTier(claims, nowS) === "strong" &&
+    typeof claims.step_up_method === "string" &&
+    accountProofMethods.includes(claims.step_up_method)
+  ) {
+    return "account";
+  }
+  return typeof claims.auth_identity_id === "string" ? claims.auth_identity_id : null;
 }
