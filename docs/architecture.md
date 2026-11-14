@@ -348,13 +348,29 @@ for the account that holds it. The store role therefore holds DELETE on
 `linked_identities`, checked at startup. The HTTP side (`/v1/me/identities`) is
 in `service-contract.md`; an unlink needs a step-up proof inside 600 seconds.
 
+`moveIdentities` is the only statement that sets `linked_identities.account_id`
+to another account, reached only through `POST /v1/apps/{app}/identity-moves`.
+One transaction locks both accounts in id order (opposite moves queue, they do
+not deadlock), answers a repeated `moveId` from its `identity_moves` row,
+re-checks the proof sessions, applies `decideMove` (one pure function both stores
+call, so memory and Postgres cannot disagree), moves the rows with credentials
+stripped, revokes the source's sessions, expires its pending links and unredeemed
+completions, and appends the row. `identity_moves` is append-only (SELECT and
+INSERT only, checked at startup). An alias is derived by `resolveAccount`, never
+stored.
+
 ### Step-up proof has two sources
 
 An access token's `step_up_at` is set in exactly two places: the `sign_in`
 step-up callback (Heimdall asked the provider to re-authenticate; label
 `provider:<name>`) and `assertStepUp`, the app-asserted route (the app says it
 checked a factor; label from the profile's `stepUpAssertion.methods`). Both
-feed the one reader, the unlink check, and a refresh sets neither. The
+feed the one reader, `proofTier` in `claims.ts` (unlink and identity moves both
+read it: `strong` is a step-up inside 600 s, `weak` a sign-in inside 300 s via
+`auth_at`), and a refresh sets neither. `proofCovers` says what a proof speaks
+for: only a strong proof whose method the profile lists as an account proof
+covers the whole account; any other proof covers the one login in
+`auth_identity_id`. The
 asserted route trusts the calling app and is bounded by the app secret, a live
 bearer for that app, the method allowlist, a nonce claimed once per session
 through `claimOAuthStateUse` (phase `step_up_assert`, no new table or grant;
