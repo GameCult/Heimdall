@@ -517,6 +517,35 @@ describe("the reversal's source must be the forward move's destination", () => {
   });
 });
 
+describe("idempotency is by moveId", () => {
+  it("a replayed reversal under another reversesMoveId is 409 move_id_conflict, not the stored receipt", async () => {
+    const r = await rig();
+    const s = await scene(r);
+    await move(r, { moveId: moveId("fw2"), fromProofs: [s.fromProof.token], toProof: s.toProof.token });
+    const [discord, google] = s.from.rows;
+    const viaMoved = async (via: number) => (await proof(r, { account: s.to.account, rows: [discord!, google!] }, { via })).token;
+    const body = { moveId: moveId("rv2"), fromProofs: [await viaMoved(0), await viaMoved(1)], reversesMoveId: moveId("fw2") };
+    const back = await move(r, body);
+    expect(back.statusCode, back.body).toBe(200);
+    expect((await move(r, body)).body, "the same body replays").toBe(back.body);
+    expect(err(await move(r, { ...body, reversesMoveId: moveId("other") }))).toEqual([409, "move_id_conflict"]);
+    expect(await held(r, s.from)).toHaveLength(2);
+  });
+
+  it("a replay with the same moveId and different identityIds returns the first receipt (steward ruling: the key is the moveId, a retry carries the same body)", async () => {
+    const r = await rig();
+    const from = await acct(r, [["discord"], ["google"]]);
+    const to = await acct(r, [["patreon"]]);
+    const fromProof = await proof(r, from, { stepUp: passkey });
+    const toProof = await proof(r, to);
+    const first = await move(r, { moveId: moveId("ids"), fromProofs: [fromProof.token], toProof: toProof.token, identityIds: [from.rows[0]!.id] });
+    expect(first.json().movedIdentityIds).toEqual([from.rows[0]!.id]);
+    const again = await move(r, { moveId: moveId("ids"), fromProofs: [fromProof.token], toProof: toProof.token, identityIds: [from.rows[1]!.id] });
+    expect([again.statusCode, again.body]).toEqual([200, first.body]);
+    expect(await held(r, from), "and the second selection did not move").toEqual([from.rows[1]!.id]);
+  });
+});
+
 describe("what a refusal says", () => {
   it("no refusal body names an account id, an email, a name or an identity the caller did not send", async () => {
     const r = await rig();
