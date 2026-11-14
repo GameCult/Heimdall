@@ -356,8 +356,10 @@ re-checks the proof sessions, applies `decideMove` (one pure function both store
 call, so memory and Postgres cannot disagree), moves the rows with credentials
 stripped, revokes the source's sessions, expires its pending links and unredeemed
 completions, and appends the row. `identity_moves` is append-only (SELECT and
-INSERT only, checked at startup). An alias is derived by `resolveAccount`, never
-stored.
+INSERT only, checked at startup). An alias (an account with no login and an
+unreversed move from it) is derived inside the transaction to refuse moves into
+or out of it, never stored; nothing resolves an alias to its destination, because
+no consumer needs it and a chain of moves would make one hop wrong.
 
 ### Step-up proof has two sources
 

@@ -405,11 +405,6 @@ export interface HeimdallStore {
   moveIdentities(input: MoveIdentitiesInput): Promise<MoveResult>;
   findIdentityMove(moveId: string): Promise<StoredIdentityMove | null>;
   /**
-   * One hop, derived and never stored: the destination of an unreversed move
-   * from `accountId` when it now holds no identity, else `accountId` itself.
-   */
-  resolveAccount(accountId: string): Promise<string>;
-  /**
    * Serialise decisions about one row's credential. `decide` receives the row
    * as read under the lock (never a caller's snapshot) and the decision is
    * committed before this resolves, so a rotated pair is persisted before any

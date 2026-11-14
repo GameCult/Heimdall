@@ -271,12 +271,6 @@ export class InMemoryStore implements HeimdallStore {
     return clone(this.identityMoves.get(moveId) ?? null);
   }
 
-  async resolveAccount(accountId: string): Promise<string> {
-    if ([...this.linkedIdentities.values()].some((identity) => identity.accountId === accountId)) return accountId;
-    const unreversed = [...this.identityMoves.values()].filter((move) => move.fromAccountId === accountId && !this.isReversed(move.id));
-    return unreversed.at(-1)?.toAccountId ?? accountId;
-  }
-
   private isReversed(moveId: string): boolean {
     return [...this.identityMoves.values()].some((move) => move.reversesMoveId === moveId);
   }

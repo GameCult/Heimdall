@@ -659,7 +659,6 @@ async function exerciseStore(store: PostgresStore): Promise<Set<string>> {
   const moveId = `move-${randomUUID()}`;
   expect((await s.moveIdentities({ moveId, appSlug: "bifrost", fromAccountId: account.id, toAccountId: target.id, identityIds: "all", covers: "account", proofSessions: [], proof: { from: [], to: null }, at: now })).kind).toBe("moved");
   expect((await s.findIdentityMove(moveId))?.id).toBe(moveId);
-  expect(await s.resolveAccount(account.id)).toBe(target.id);
   return called;
 }
 
@@ -712,8 +711,6 @@ async function exerciseMoveContract(store: HeimdallStore): Promise<void> {
   expect(record!.moved.map((m) => m.credentialStripped)).toEqual([true, true]);
   expect((await store.findSession("bifrost", a.proofSession.sessionId))!.accessRevision).toBe(2);
   expect((await store.findSession("bifrost", b.proofSession.sessionId))!.accessRevision).toBe(1);
-  expect(await store.resolveAccount(a.account.id)).toBe(b.account.id);
-  expect(await store.resolveAccount(b.account.id)).toBe(b.account.id);
 
   // Replay answers from the row, even though the proof session is gone; a different pair is a conflict.
   expect(await store.moveIdentities(first)).toEqual({ kind: "replayed", move: record });
@@ -751,9 +748,82 @@ async function exerciseMoveContract(store: HeimdallStore): Promise<void> {
   expect(reversed.kind).toBe("moved");
   expect(await held(a)).toEqual(a.rows.map((r) => r.id).sort());
   expect(await held(b)).toEqual(b.rows.map((r) => r.id));
-  expect(await store.resolveAccount(a.account.id)).toBe(a.account.id);
   expect((await store.moveIdentities({ ...back, moveId: `move-${randomUUID()}` })).kind).toBe("not_reversible");
   expect((await store.moveIdentities(input(a, b, { reversesMoveId: back.moveId, proofSessions: [], identityIds: "all" }))).kind).toBe("not_reversible");
+
+  // A moveId answers only the move that used it: each of app, source, destination and reversal must match.
+  const k = await side(["discord"]);
+  const l = await side(["patreon"]);
+  const m = await side(["google"]);
+  const once = input(k, l);
+  expect((await store.moveIdentities(once)).kind).toBe("moved");
+  expect((await store.moveIdentities({ ...once, fromAccountId: m.account.id })).kind).toBe("move_id_conflict");
+  expect((await store.moveIdentities({ ...once, toAccountId: m.account.id })).kind).toBe("move_id_conflict");
+  expect((await store.moveIdentities({ ...once, appSlug: "streampixels" })).kind).toBe("move_id_conflict");
+  expect((await store.moveIdentities(once)).kind).toBe("replayed");
+
+  // Every step of a move is on Postgres too: expiry of the source's pending links and unredeemed completions, and the stripped credential's expiry and failure mark.
+  const n = await side(["discord", "google"]);
+  const o = await side(["patreon"]);
+  await store.upsertLinkedIdentity({ accountId: n.account.id, provider: "discord", providerUserId: (await store.listStoredLinkedIdentitiesForAccount(n.account.id))[0]!.providerUserId, tokenExpiresAt: "2999-01-01T00:00:00.000Z", scopes: [], profileJson: {}, createdAt: at, updatedAt: at });
+  await store.updateLinkedIdentityCredential(n.rows[1]!.id, async () => ({ kind: "failed", failedAt: at }));
+  const linkOf = (accountId: string) => store.createPendingLink({ appSlug: "bifrost", accountId, provider: "discord", providerUserId: "p", identity: { accountId, provider: "discord", providerUserId: "p", scopes: [], profileJson: {}, createdAt: at, updatedAt: at }, returnTo: "https://x.test/", createdAt: at, expiresAt: later });
+  const completionOf = (accountId: string) => store.createAuthCompletion({ appSlug: "bifrost", provider: "discord", mode: "sign_in", accountId, sessionId: n.proofSession.sessionId, returnTo: "https://x.test/", createdAt: at, expiresAt: later, payloadJson: {} });
+  const sourceLink = await linkOf(n.account.id);
+  const destLink = await linkOf(o.account.id);
+  const sourceCompletion = await completionOf(n.account.id);
+  const destCompletion = await completionOf(o.account.id);
+  expect((await store.moveIdentities(input(n, o))).kind).toBe("moved");
+  const after = "2026-11-14T12:00:01.000Z";
+  expect(await store.consumePendingLink("bifrost", sourceLink.id, n.account.id, after)).toBeNull();
+  expect(await store.consumeAuthCompletion("bifrost", sourceCompletion.code, after)).toBeNull();
+  expect((await store.consumePendingLink("bifrost", destLink.id, o.account.id, after))?.id).toBe(destLink.id);
+  expect((await store.consumeAuthCompletion("bifrost", destCompletion.code, after))?.code).toBe(destCompletion.code);
+  for (const row of (await store.listStoredLinkedIdentitiesForAccount(o.account.id)).filter((r) => n.rows.some((x) => x.id === r.id))) {
+    expect([row.accessTokenEncrypted, row.refreshTokenEncrypted, row.tokenExpiresAt, row.refreshFailedAt], row.provider).toEqual([undefined, undefined, undefined, undefined]);
+  }
+
+  // Each reversal guard on its own: the refusal is not_reversible, never another code, and nothing moves.
+  const fresh = async () => ({ p: await side(["discord", "google"]), q: await side(["patreon"]), t: await side(["patreon"]) });
+  const reverse = (forwardId: string, from: { account: { id: string } }, to: { account: { id: string } }, ids: readonly string[]) => ({
+    moveId: `move-${randomUUID()}`, appSlug: "bifrost" as const, fromAccountId: from.account.id, toAccountId: to.account.id,
+    identityIds: ids, covers: ids, proofSessions: [], reversesMoveId: forwardId, proof: { from: [], to: null }, at,
+  });
+  // (a) already reversed, even though the logins are back on the destination by a later forward move
+  {
+    const { p, q } = await fresh();
+    const ids = p.rows.map((r) => r.id);
+    const m1 = input(p, q);
+    expect((await store.moveIdentities(m1)).kind).toBe("moved");
+    expect((await store.moveIdentities(reverse(m1.moveId, q, p, ids))).kind).toBe("moved");
+    expect((await store.moveIdentities(input(p, q, { proofSessions: [] }))).kind).toBe("moved");
+    expect((await store.moveIdentities(reverse(m1.moveId, q, p, ids))).kind, "reversed once").toBe("not_reversible");
+    expect(await held(p)).toEqual([]);
+  }
+  // (d) the logins are still on the forward's destination but the reversal targets another account
+  {
+    const { p, q } = await fresh();
+    const ids = p.rows.map((r) => r.id);
+    const m1 = input(p, q);
+    expect((await store.moveIdentities(m1)).kind).toBe("moved");
+    const elsewhere = await side(["patreon"]);
+    expect((await store.moveIdentities(reverse(m1.moveId, q, elsewhere, ids))).kind, "to is not the forward's source").toBe("not_reversible");
+    expect(await held(elsewhere)).toHaveLength(1);
+  }
+  // (b) the logins moved on from the destination: not held, so not_reversible (not identity_not_found)
+  // (c) the reversal's source is not the forward's destination, or its target is not the forward's source
+  {
+    const { p, q, t } = await fresh();
+    const ids = p.rows.map((r) => r.id);
+    const m1 = input(p, q);
+    expect((await store.moveIdentities(m1)).kind).toBe("moved");
+    expect((await store.moveIdentities(input(q, t, { identityIds: ids, covers: ids, proofSessions: [] }))).kind).toBe("moved");
+    expect((await store.moveIdentities(reverse(m1.moveId, q, p, ids))).kind, "ids no longer held").toBe("not_reversible");
+    expect((await store.moveIdentities(reverse(m1.moveId, t, p, ids))).kind, "from is not the forward's destination").toBe("not_reversible");
+    const u = await side(["google"]);
+    expect((await store.moveIdentities(reverse(m1.moveId, t, u, ids))).kind, "to is not the forward's source").toBe("not_reversible");
+    expect(await held(t)).toEqual([...ids, ...t.rows.map((r) => r.id)].sort());
+  }
 }
 
 // Against a real Postgres, through the startup path itself: createStore, with
@@ -965,6 +1035,26 @@ describe.skipIf(!adminUrl)("startup against a live Postgres (HEIMDALL_TEST_PG_AD
         expect(["already_moved", "proof_lapsed"], `round ${round}: ${kinds}`).toContain(kinds[1]);
         const held = (await storeA.listStoredLinkedIdentitiesForAccount(x.id)).length + (await storeA.listStoredLinkedIdentitiesForAccount(y.id)).length;
         expect(held, "no identity is lost or duplicated").toBe(2);
+      }
+    });
+
+    it("one moveId over two different pairs at once: one moved, the other move_id_conflict, never a receipt for a move it did not make", async () => {
+      const { name, owner } = await appliedDatabase();
+      const storeA = new PostgresStore(owner);
+      const other = fixturePool(urlFor(name));
+      cleanup.push(async () => {
+        await other.end();
+      });
+      const storeB = new PostgresStore(other);
+      for (let round = 0; round < 6; round += 1) {
+        const one = await pair(storeA);
+        const two = await pair(storeA);
+        const id = `move-${randomUUID()}`;
+        const results = await Promise.all([storeA.moveIdentities(request(one.x, one.y, id)), storeB.moveIdentities(request(two.x, two.y, id))]);
+        expect(results.map((r) => r.kind).sort(), `round ${round}`).toEqual(["move_id_conflict", "moved"]);
+        const winner = (await storeA.findIdentityMove(id))!;
+        const moved = results.find((r) => r.kind === "moved") as { move: { fromAccountId: string } };
+        expect(winner.fromAccountId).toBe(moved.move.fromAccountId);
       }
     });
 

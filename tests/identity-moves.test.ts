@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { buildApp } from "../src/app.js";
 import { builtInAppProfiles } from "../src/app-profiles.js";
-import { AUTH_PROOF_TTL_SECONDS, issueAccessClaim } from "../src/claims.js";
+import { AUTH_PROOF_TTL_SECONDS, issueAccessClaim, proofTier } from "../src/claims.js";
 import { type AppSlug, type Provider } from "../src/contracts.js";
 import { type OAuthProviderRuntime } from "../src/oauth.js";
 import { createRuntimeKeyMaterial } from "../src/signing.js";
@@ -46,6 +46,10 @@ function twitchRuntime(providerUserId: string): OAuthProviderRuntime {
   };
 }
 
+function discordRuntime(providerUserId: string): OAuthProviderRuntime {
+  return { ...twitchRuntime(providerUserId), async resolveIdentity() { return { provider: "discord", providerUserId, username: providerUserId, profile: { id: providerUserId } }; } };
+}
+
 async function rig(twitchUser = "t-signin") {
   const store = new InMemoryStore();
   const audit: CreateAuditEventInput[] = [];
@@ -54,7 +58,7 @@ async function rig(twitchUser = "t-signin") {
     audit.push(structuredClone(input));
     return realAudit(input);
   };
-  const app = await buildApp({ config, store, oauthRuntimes: { twitch: twitchRuntime(twitchUser) } });
+  const app = await buildApp({ config, store, oauthRuntimes: { twitch: twitchRuntime(twitchUser), discord: discordRuntime("d-linked") } });
   apps.push(app);
   const keys = createRuntimeKeyMaterial({ ...config, bootstrapSigningPrivateKeyOnMissing: false });
   return { app, store, keys, audit };
@@ -182,6 +186,18 @@ describe("a sanctioned move", () => {
     expect(err(asReversal)).toEqual([409, "move_id_conflict"]);
     expect(await held(r, other)).toHaveLength(1);
     expect(await held(r, s.to)).toHaveLength(3);
+  });
+
+  it("a replay whose proofs are another app's tokens, or another account's, is 409 move_id_conflict, not the stored receipt", async () => {
+    const r = await rig();
+    const s = await scene(r);
+    const body = { moveId: moveId("rp"), fromProofs: [s.fromProof.token], toProof: s.toProof.token };
+    expect((await move(r, body)).statusCode).toBe(200);
+    const foreign = await proof(r, s.from, { app: "streampixels", stepUp: passkey });
+    expect(err(await move(r, { ...body, fromProofs: [foreign.token] }))).toEqual([409, "move_id_conflict"]);
+    const foreignTo = await proof(r, s.to, { app: "streampixels" });
+    expect(err(await move(r, { ...body, toProof: foreignTo.token }))).toEqual([409, "move_id_conflict"]);
+    expect((await move(r, body)).statusCode, "the genuine proofs still replay").toBe(200);
   });
 
   it("an app without the secret is 401; streampixels with its own secret is 403 not_allowed_for_app", async () => {
@@ -434,12 +450,10 @@ describe("what a move leaves behind", () => {
 });
 
 describe("aliases and reversal", () => {
-  it("an emptied source is an alias; moving into or out of it is 409 already_moved; resolution is one hop", async () => {
+  it("an emptied source is an alias; moving into or out of it is 409 already_moved", async () => {
     const r = await rig();
     const s = await scene(r);
     expect((await move(r, { moveId: moveId("t"), fromProofs: [s.fromProof.token], toProof: s.toProof.token })).statusCode).toBe(200);
-    expect(await r.store.resolveAccount(s.from.account.id)).toBe(s.to.account.id);
-    expect(await r.store.resolveAccount(s.to.account.id)).toBe(s.to.account.id);
     // A session can outlive its logins only by being minted for an account that holds none, which is how a stale caller would look.
     const aliasProof = await proof(r, { account: s.from.account, rows: [s.to.rows[0]!] }, { stepUp: passkey });
     const third = await acct(r, [["github"]]);
@@ -469,7 +483,6 @@ describe("aliases and reversal", () => {
     expect(await held(r, s.from)).toEqual(sourceIds);
     expect(await held(r, s.to)).toHaveLength(1);
     expect((await r.store.listStoredLinkedIdentitiesForAccount(s.from.account.id)).every((i) => i.accessTokenEncrypted === undefined)).toBe(true);
-    expect(await r.store.resolveAccount(s.from.account.id)).toBe(s.from.account.id);
     const own2 = await proof(r, s.to, { via: 0 });
     const again = await move(r, { moveId: moveId("w2"), fromProofs: [own2.token], reversesMoveId: moveId("v") });
     expect(err(again)).toEqual([409, "not_reversible"]);
@@ -477,6 +490,30 @@ describe("aliases and reversal", () => {
     expect(err(reverseTheReversal)).toEqual([409, "not_reversible"]);
     const unknown = await move(r, { moveId: moveId("w4"), fromProofs: [(await proof(r, s.from)).token], reversesMoveId: moveId("nothere") });
     expect(err(unknown)).toEqual([409, "not_reversible"]);
+  });
+});
+
+describe("proofTier", () => {
+  it("a proof dated in the future proves nothing, whichever claim carries it", () => {
+    const n = nowS();
+    expect(proofTier({ auth_at: n + 5 }, n)).toBeNull();
+    expect(proofTier({ step_up_at: n + 5 }, n)).toBeNull();
+    expect(proofTier({ step_up_at: n + 5, auth_at: n }, n), "a future step-up does not hide a valid sign-in").toBe("weak");
+    expect(proofTier({ step_up_at: n, auth_at: n - 9_999 }, n)).toBe("strong");
+  });
+});
+
+describe("the reversal's source must be the forward move's destination", () => {
+  it("is refused as not_reversible before the proofs are judged, even for a stale proof", async () => {
+    const r = await rig();
+    const s = await scene(r);
+    expect((await move(r, { moveId: moveId("fw"), fromProofs: [s.fromProof.token], toProof: s.toProof.token })).statusCode).toBe(200);
+    const third = await acct(r, [["github"]]);
+    const onward = await proof(r, s.to, { stepUp: passkey });
+    expect((await move(r, { moveId: moveId("on"), fromProofs: [onward.token], toProof: (await proof(r, third)).token })).statusCode).toBe(200);
+    const stale = await proof(r, third, { signedInAgo: 9_999 });
+    const res = await move(r, { moveId: moveId("rv"), fromProofs: [stale.token], reversesMoveId: moveId("fw") });
+    expect(err(res)).toEqual([409, "not_reversible"]);
   });
 });
 
@@ -528,6 +565,31 @@ describe("claims: which sign-in a token came from", () => {
     expect(refreshed.statusCode).toBe(201);
     expect(refreshed.json().claimSet.auth_at).toBeUndefined();
     expect(refreshed.json().claimSet.auth_identity_id).toBeUndefined();
+  });
+
+  it("a link callback mints no sign-in proof: no auth_at, no auth_identity_id", async () => {
+    const r = await rig();
+    const holder = await acct(r, [["twitch"]]);
+    const started = await r.app.inject({ method: "POST", url: "/v1/oauth/discord/start", headers: appAuth, payload: { appSlug: "bifrost", mode: "link", initiatingAccountId: holder.account.id, returnTo: "https://bifrost.gamecult.org/x" } });
+    expect(started.statusCode).toBe(201);
+    const flow = await launchFlow(r.app, started.json());
+    const called = await r.app.inject({ method: "GET", url: `/v1/oauth/discord/callback?code=c&state=${encodeURIComponent(flow.state)}`, headers: { cookie: flow.cookie, accept: "application/json" } });
+    expect(called.statusCode).toBe(201);
+    expect(called.json().claimSet.identities).toHaveLength(2);
+    expect(called.json().claimSet.auth_at).toBeUndefined();
+    expect(called.json().claimSet.auth_identity_id).toBeUndefined();
+    expect(called.body).not.toMatch(/auth_at|auth_identity_id/);
+  });
+
+  it("a connect callback mints no sign-in proof either", async () => {
+    const r = await rig("t-connect");
+    const started = await r.app.inject({ method: "POST", url: "/v1/oauth/twitch/start", headers: { "x-heimdall-app-secret": "streampixels-secret" }, payload: { appSlug: "streampixels", mode: "connect", returnTo: "https://streampixels.gamecult.org/signin/return", connection: { kind: "creator", targetId: "creator-1" } } });
+    expect(started.statusCode, started.body).toBe(201);
+    const flow = await launchFlow(r.app, started.json());
+    const called = await r.app.inject({ method: "GET", url: `/v1/oauth/twitch/callback?code=c&state=${encodeURIComponent(flow.state)}`, headers: { cookie: flow.cookie, accept: "application/json" } });
+    expect(called.statusCode, called.body).toBe(201);
+    expect(called.body).toContain("claimSet");
+    expect(called.body).not.toMatch(/auth_at|auth_identity_id/);
   });
 
   it("an asserted step-up carries the bearer's auth claims through unchanged", async () => {

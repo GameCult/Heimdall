@@ -902,8 +902,11 @@ export class PostgresStore implements HeimdallStore {
     try {
       await client.query("BEGIN");
       try {
-        // Both accounts, in id order, before anything is read: opposite moves queue here instead of deadlocking.
-        await client.query("SELECT id FROM accounts WHERE id = ANY($1) ORDER BY id FOR UPDATE", [[input.fromAccountId, input.toAccountId]]);
+        // Both accounts, one statement each in id order, before anything is read: opposite moves queue here
+        // instead of deadlocking. The order is the code's own, not whatever order a plan locks a set in.
+        for (const id of [input.fromAccountId, input.toAccountId].sort()) {
+          await client.query("SELECT id FROM accounts WHERE id = $1 FOR UPDATE", [id]);
+        }
         const existing = await selectIdentityMove(client, input.moveId);
         let forward: MoveFacts["forward"] = null;
         if (input.reversesMoveId !== undefined) {
@@ -994,18 +997,6 @@ export class PostgresStore implements HeimdallStore {
 
   async findIdentityMove(moveId: string): Promise<StoredIdentityMove | null> {
     return selectIdentityMove(this.pool, moveId);
-  }
-
-  async resolveAccount(accountId: string): Promise<string> {
-    const held = await this.pool.query("SELECT 1 FROM linked_identities WHERE account_id = $1 LIMIT 1", [accountId]);
-    if (held.rowCount) return accountId;
-    const moved = await this.pool.query<{ to_account_id: string }>(
-      `SELECT m.to_account_id FROM identity_moves m
-       WHERE m.from_account_id = $1 AND NOT EXISTS (SELECT 1 FROM identity_moves r WHERE r.reverses_move_id = m.id)
-       ORDER BY m.created_at DESC, m.id DESC LIMIT 1`,
-      [accountId]
-    );
-    return moved.rows[0]?.to_account_id ?? accountId;
   }
 
   async updateLinkedIdentityCredential(

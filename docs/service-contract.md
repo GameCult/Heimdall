@@ -793,8 +793,8 @@ re-runs the revocation receipts, so a crash between commit and receipts heals on
 the caller's retry. Anything else under a used `moveId` is `409 move_id_conflict`.
 
 What a move leaves: an account holding no login with an unreversed move from it
-is an alias of the move's destination (derived by `resolveAccount`, never
-stored; one hop). A move into or out of an alias is `already_moved`. Bearers of
+is an alias: derived at move time, never stored, and no route resolves it. A
+move into or out of an alias is `already_moved`. Bearers of
 the destination keep their old identity list until they refresh. A sign-in
 through a moved login lands on the destination because the row moved.
 
