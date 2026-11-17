@@ -225,4 +225,30 @@ describe("Idunn recipe secret declarations", () => {
       expect(serviceNames).toContain(`${name}_FILE`);
     }
   });
+
+  it("declares every other name loadConfig reads, or says why a binding never sets it", () => {
+    // Idunn refuses a binding that sets an undeclared name, so an undeclared
+    // name is a setting no Idunn-admitted generation can ever change.
+    const idunnOwned = new Set([
+      "GAMECULT_IDUNN_RUNTIME_BUNDLE",
+      "GAMECULT_IDUNN_CANDIDATE_BIND",
+      "GAMECULT_IDUNN_PROCESS_WRITE_LEASE",
+    ]);
+    const neverBound = new Set([
+      // The listen socket is the candidate bind under Idunn, and the command port follows it.
+      "HOST",
+      "PORT",
+      // The state root is the --state-root argument; the paths below it are Heimdall's own layout.
+      "GC_ACCESS_DATA_ROOT",
+      "GC_ACCESS_CULTCACHE_PATH",
+      "GC_ACCESS_PROVIDER_HEALTH_IDENTITY_PATH",
+      // The daemon id is the host's name for this process, fixed by the code's default.
+      "GC_ACCESS_IDUNN_DAEMON",
+    ]);
+    const declared = new Set(everyDeclaredName);
+    const unreachable = [...explored.names]
+      .filter((name) => !secretNames.includes(name) && !name.endsWith("_FILE"))
+      .filter((name) => !declared.has(name) && !idunnOwned.has(name) && !neverBound.has(name));
+    expect(unreachable).toEqual([]);
+  });
 });
